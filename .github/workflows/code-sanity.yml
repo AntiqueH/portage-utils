@@ -2,7 +2,7 @@ name: Code Sanity
 
 on:
   push:
-    branches: [upgrade-utils-part-2]
+    branches: [dev]
   pull_request:
   workflow_dispatch:
 
