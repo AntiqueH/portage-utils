@@ -148,7 +148,7 @@ extern FILE *warnout;
 #define errp(fmt, args...) _err(warnp, fmt , ## args)
 #define errfp(fmt, args...) _err(warnfp, fmt, ## args)
 
-typedef enum { _Q_BOOL, _Q_STR, _Q_ISTR, _Q_ISET } var_types;
+typedef enum { _Q_BOOL, _Q_STR, _Q_NSTR, _Q_ISTR, _Q_ISET } var_types;
 typedef struct {
 	const char     *name;
 	const size_t    name_len;

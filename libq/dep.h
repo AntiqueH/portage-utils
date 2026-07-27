@@ -17,6 +17,19 @@
 typedef struct dep_node_ dep_node_t;
 typedef enum dep_status_ dep_status_t;
 
+/* node kinds, exposed so callers can traverse a parsed dep tree:
+ *   DEP_ATOM  a package atom      DEP_ANY  || ( ... )
+ *   DEP_ALL   ( ... ) all-of      DEP_USE  [!]use? ( ... )
+ *   DEP_NOT   negation            others are internal parse states */
+#define DEP_TYPES(X) \
+  X(NULL) X(ATOM) X(USE) X(ANY) X(ALL) X(NOT) X(HUH) X(POPEN) X(PCLOSE) X(WORD)
+#define DEP_TYPE_ENUM(E)  DEP_##E,
+typedef enum dep_type_ {
+  DEP_TYPES(DEP_TYPE_ENUM)
+  DEP_MAX_TYPES
+} dep_type_t;
+#undef DEP_TYPE_ENUM
+
 enum dep_status_ {
   DEP_OK = 1,
   DEP_FAIL,
@@ -45,6 +58,8 @@ array        *dep_nodes(dep_node_t *node);
 tree_pkg_ctx *dep_node_pkg(dep_node_t *node);
 tree_pkg_ctx *dep_node_ipkg(dep_node_t *node);
 atom_ctx     *dep_node_atom(dep_node_t *node);
+dep_type_t    dep_node_type(const dep_node_t *node);
+array        *dep_node_children(const dep_node_t *node);
 
 #endif
 

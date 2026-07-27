@@ -21,6 +21,7 @@
 #include "eat_file.h"
 #include "rmspace.h"
 #include "scandirat.h"
+#include "atom.h"
 #include "set.h"
 #include "xasprintf.h"
 
@@ -31,6 +32,14 @@ int verbose = 0;
 int quiet = 0;
 int twidth;
 bool nocolor;
+bool qmerge_nocolor;
+char *qmerge_jobs_conf;
+bool qmerge_prefetch;
+char *qmerge_moves_conf;
+bool qnews_enable;
+bool qmerge_blockers;
+char *qetuto_keyservers_conf;
+char *qetuto_keys_conf;
 char pretend = 0;
 char *portarch;
 char *portroot;
@@ -41,6 +50,34 @@ char *portvdb;
 char *portlogdir;
 char *pkg_install_mask;
 char *binhost;
+char *qfetchcommand;
+char *qresumecommand;
+char *chost;
+char *cbuild;
+char *accept_keywords;
+char *accept_properties;
+char *accept_restrict;
+char *gentoo_mirrors;
+char *iuse_implicit;
+char *use_expand;
+char *use_expand_hidden;
+char *use_expand_implicit;
+char *use_expand_unprefixed;
+char *var_elibc;
+char *var_kernel;
+
+/* every VAR=value seen in make.globals/profiles/make.conf, raw,
+ * last-wins; used e.g. to resolve USE_EXPAND member variables */
+set *all_config_vars = NULL;
+/* profile-stacked use.mask/use.force (incl. stable variants) */
+set *use_mask  = NULL;
+set *use_force = NULL;
+/* stacked package.accept_keywords/package.keywords entries */
+array *pkg_accept_keywords = NULL;
+array *pkg_license = NULL;
+/* license group name -> space-joined members (GLEP 23), merged across
+ * all overlays' profiles/license_groups */
+set *license_groups = NULL;
 char *pkgdir;
 char *port_tmpdir;
 set  *features;
@@ -51,9 +88,9 @@ array *overlays;
 array *overlay_names;
 array *overlay_src;
 
-static char *portedb;
+char *portedb;
 static char *eprefix;
-static char *accept_license;
+char *accept_license;
 
 #define STR_DEFAULT "built-in default"
 
@@ -399,6 +436,14 @@ set_portage_env_var(env_vars *var, const char *value, const char *src)
 		free(var->src);
 		var->src = xstrdup(src);
 		break;
+	case _Q_NSTR:
+		free(*var->value.s);
+		*var->value.s = xstrdup(value);
+		remove_extra_space(*var->value.s);
+		var->value_len = strlen(*var->value.s);
+		free(var->src);
+		var->src = xstrdup(src);
+		break;
 	case _Q_ISTR:
 	case _Q_ISET:
 		if (strcmp(var->src, STR_DEFAULT) != 0) {
@@ -420,6 +465,313 @@ set_portage_env_var(env_vars *var, const char *value, const char *src)
 			setincr_var(value, var->value.t);
 		break;
 	}
+}
+
+/* strchr that skips backslash-escaped characters, so quoted values
+ * like FETCHCOMMAND="... -U \"Portage\" ..." are scanned correctly */
+static char *
+strchr_unescaped(char *s, int q)
+{
+	bool esc = false;
+
+	for (; *s != '\0'; s++) {
+		if (esc) {
+			esc = false;
+			continue;
+		}
+		if (*s == '\\') {
+			esc = true;
+			continue;
+		}
+		if (*s == (char)q)
+			return s;
+	}
+	return NULL;
+}
+
+/* stack a profile use.mask/use.force style file (one flag per line,
+ * "-flag" reverting a parent entry) into the given set */
+static void
+read_use_flag_file(const char *file, set **into)
+{
+	FILE   *fp;
+	char   *line = NULL;
+	size_t  len  = 0;
+	bool    ignore;
+
+	fp = fopen(file, "r");
+	if (fp == NULL)
+		return;
+	while (getline(&line, &len, fp) != -1) {
+		char *s = rmspace(line);
+
+		if (*s == '\0' || *s == '#')
+			continue;
+		if (*s == '-')
+			del_set(s + 1, *into, &ignore);
+		else
+			*into = add_set_unique(s, *into, &ignore);
+	}
+	free(line);
+	fclose(fp);
+}
+
+/* fold the global wildcard (star-slash-star) entries of package.use
+ * into the USE set; portage treats those as configuration defaults
+ * and they are part of the effective USE advertised in the binpkg
+ * index header.  Handles the USE_EXPAND shorthand "VAR: val ..." */
+static void
+read_package_use_global_file(const char *file)
+{
+	FILE   *fp;
+	char   *line = NULL;
+	size_t  len  = 0;
+	bool    ignore;
+
+	fp = fopen(file, "r");
+	if (fp == NULL)
+		return;
+	while (getline(&line, &len, fp) != -1) {
+		char  *s = rmspace(line);
+		char  *tok;
+		char  *sp;
+		char   prefix[128] = "";
+
+		if (*s == '\0' || *s == '#')
+			continue;
+		tok = strtok_r(s, " \t", &sp);
+		if (tok == NULL || strcmp(tok, "*/*") != 0)
+			continue;
+		while ((tok = strtok_r(NULL, " \t", &sp)) != NULL) {
+			size_t tlen = strlen(tok);
+			char   flag[256];
+			bool   neg;
+
+			if (tlen > 1 && tok[tlen - 1] == ':') {
+				size_t pi;
+
+				/* USE_EXPAND shorthand: subsequent flags get the
+				 * lowercased variable name as prefix */
+				snprintf(prefix, sizeof(prefix), "%.*s_",
+						 (int)(tlen - 1), tok);
+				for (pi = 0; prefix[pi] != '\0'; pi++)
+					prefix[pi] =
+						(char)tolower((unsigned char)prefix[pi]);
+				continue;
+			}
+			neg = tok[0] == '-';
+			snprintf(flag, sizeof(flag), "%s%s",
+					 prefix, tok + (neg ? 1 : 0));
+			if (neg)
+				del_set(flag, ev_use, &ignore);
+			else
+				ev_use = add_set_unique(flag, ev_use, &ignore);
+		}
+	}
+	free(line);
+	fclose(fp);
+}
+
+/* merge every overlay's profiles/license_groups into license_groups;
+ * lines are "GROUP member @nested-group ..."; members accumulate */
+static void
+read_license_groups(void)
+{
+	size_t  n;
+	char   *ov;
+
+	if (overlays == NULL)
+		return;
+	array_for_each(overlays, n, ov) {
+		char    path[_Q_PATH_MAX];
+		FILE   *fp;
+		char   *line = NULL;
+		size_t  len  = 0;
+
+		snprintf(path, sizeof(path), "%s/profiles/license_groups", ov);
+		fp = fopen(path, "r");
+		if (fp == NULL)
+			continue;
+		while (getline(&line, &len, fp) != -1) {
+			char *s = rmspace(line);
+			char *sp;
+			char *grp;
+			char *members;
+			void *prev = NULL;
+
+			if (*s == '\0' || *s == '#')
+				continue;
+			grp = strtok_r(s, " \t", &sp);
+			if (grp == NULL)
+				continue;
+			members = sp == NULL ? (char *)"" : rmspace(sp);
+			if (license_groups == NULL)
+				license_groups = create_set();
+			{
+				const char *old = get_set(grp, license_groups);
+				char       *val;
+
+				if (old != NULL && old[0] != '\0')
+					xasprintf(&val, "%s %s", old, members);
+				else
+					val = xstrdup(members);
+				add_set_value(grp, val, &prev, license_groups);
+				free(prev);
+			}
+		}
+		free(line);
+		fclose(fp);
+	}
+}
+
+/* load an "atom [values...]" per-line config file (the
+ * package.accept_keywords family); invalid atoms are skipped loudly */
+static void
+read_pkgcfg_file(const char *file, array **into)
+{
+	FILE   *fp;
+	char   *line = NULL;
+	size_t  len  = 0;
+
+	fp = fopen(file, "r");
+	if (fp == NULL)
+		return;
+	while (getline(&line, &len, fp) != -1) {
+		char        *s = rmspace(line);
+		char        *sp;
+		char        *tok;
+		depend_atom *a;
+		pkgcfg_t    *pc;
+
+		if (*s == '\0' || *s == '#')
+			continue;
+		tok = strtok_r(s, " \t", &sp);
+		if (tok == NULL)
+			continue;
+		a = atom_explode(tok);
+		if (a == NULL) {
+			warn("%s: invalid atom '%s'", file, tok);
+			continue;
+		}
+		pc = xzalloc(sizeof(*pc));
+		pc->atom = a;
+		pc->vals = xstrdup(sp == NULL ? "" : rmspace(sp));
+		if (*into == NULL)
+			*into = array_new();
+		array_append(*into, pc);
+	}
+	free(line);
+	fclose(fp);
+}
+
+static void
+read_pkgcfg(const char *name, array **into)
+{
+	char            path[_Q_PATH_MAX];
+	struct dirent **dents;
+	int             cnt;
+	int             i;
+
+	snprintf(path, sizeof(path), "%s/etc/portage/%s", configroot, name);
+	cnt = scandir(path, &dents, NULL, alphasort);
+	if (cnt >= 0) {
+		char sub[_Q_PATH_MAX * 2];
+
+		for (i = 0; i < cnt; i++) {
+			if (dents[i]->d_name[0] == '.')
+				continue;
+			snprintf(sub, sizeof(sub), "%s/%s", path, dents[i]->d_name);
+			read_pkgcfg_file(sub, into);
+		}
+		scandir_free(dents, cnt);
+	} else {
+		read_pkgcfg_file(path, into);
+	}
+}
+
+static void
+read_package_use_global(void)
+{
+	char            path[_Q_PATH_MAX];
+	struct dirent **dents;
+	int             cnt;
+	int             i;
+
+	snprintf(path, sizeof(path), "%s/etc/portage/package.use",
+			 configroot);
+	cnt = scandir(path, &dents, NULL, alphasort);
+	if (cnt >= 0) {
+		char sub[_Q_PATH_MAX * 2];
+
+		for (i = 0; i < cnt; i++) {
+			if (dents[i]->d_name[0] == '.')
+				continue;
+			snprintf(sub, sizeof(sub), "%s/%s",
+					 path, dents[i]->d_name);
+			read_package_use_global_file(sub);
+		}
+		scandir_free(dents, cnt);
+	} else {
+		read_package_use_global_file(path);
+	}
+}
+
+/* expand ${VAR}/$VAR references against everything read so far plus
+ * the environment, the way the shell would when sourcing make.conf;
+ * returns a freshly allocated string */
+static char *
+expand_config_refs(const char *s)
+{
+	char   *out  = NULL;
+	size_t  olen = 0;
+	size_t  ocap = 0;
+
+#define OUTC(C) \
+	do { \
+		if (olen + 1 >= ocap) { \
+			ocap = ocap > 0 ? ocap * 2 : 64; \
+			out = xrealloc(out, ocap); \
+		} \
+		out[olen++] = (C); \
+	} while (0)
+
+	while (*s != '\0') {
+		if (*s == '\\' && s[1] == '$') {
+			OUTC('$');
+			s += 2;
+			continue;
+		}
+		if (*s == '$') {
+			const char *p     = s + 1;
+			bool        brace = *p == '{';
+			const char *n     = brace ? p + 1 : p;
+			size_t      nl    = strspn(n,
+					"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+					"abcdefghijklmnopqrstuvwxyz0123456789_");
+
+			if (nl > 0 && nl < 128 && (!brace || n[nl] == '}')) {
+				char        name[128];
+				const char *v;
+
+				memcpy(name, n, nl);
+				name[nl] = '\0';
+				v = all_config_vars != NULL ?
+						get_set(name, all_config_vars) : NULL;
+				if (v == NULL)
+					v = getenv(name);
+				if (v != NULL)
+					for (; *v != '\0'; v++)
+						OUTC(*v);
+				s = n + nl + (brace ? 1 : 0);
+				continue;
+			}
+		}
+		OUTC(*s);
+		s++;
+	}
+	OUTC('\0');
+#undef OUTC
+	return out;
 }
 
 /* Helper to read a portage file (e.g. make.conf, package.mask), or
@@ -511,19 +863,24 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 				continue;
 			}
 
-			/* look for our desired variables and grab their value */
-			for (i = 0; vars[i].name; i++) {
-				if (buf[vars[i].name_len] != '=' &&
-						buf[vars[i].name_len] != ' ')
-					continue;
-				if (strncmp(buf, vars[i].name, vars[i].name_len))
+			/* parse any VAR=value line: every variable is stored
+			 * raw in all_config_vars (so e.g. USE_EXPAND member
+			 * variables can be resolved for the binpkg index), and
+			 * the typed table entries additionally get their
+			 * specific handling */
+			{
+				size_t nlen = strspn(buf,
+						"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
+
+				if (nlen == 0 ||
+						(buf[nlen] != '=' && buf[nlen] != ' '))
 					continue;
 
 				/* make sure we handle spaces between the varname, the =,
 				 * and the value:
 				 * VAR=val   VAR = val   VAR="val"
 				 */
-				s = buf + vars[i].name_len;
+				s = buf + nlen;
 				if ((p = strchr(s, '=')) != NULL)
 					s = p + 1;
 				while (isspace(*s))
@@ -533,7 +890,7 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 					char q = *s;
 
 					/* make sure we handle spacing/comments after the quote */
-					endq = strchr(s + 1, q);
+					endq = strchr_unescaped(s + 1, q);
 					if (!endq) {
 						/* if the last char is not a quote,
 						 * then we span lines */
@@ -541,10 +898,16 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 						char *abuf;
 
 						abuf = NULL;
+						/* the outer reader stripped this line's
+						 * newline: restore it so joined values keep
+						 * their line structure like portage sees it */
+						buflen = strlen(buf) + 2;
+						buf = xrealloc(buf, buflen);
+						strcat(buf, "\n");
 						while (getline(&abuf, &abuflen, fp) != -1) {
 							line++;
 							buf = xrealloc(buf, buflen + abuflen);
-							endq = strchr(abuf, q);
+							endq = strchr_unescaped(abuf, q);
 							if (endq)
 								*endq = '\0';
 
@@ -557,10 +920,11 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 						free(abuf);
 
 						if (!endq)
-							warn("%s%s:%zu: %s: quote mismatch",
-									portroot, file + 1, line, vars[i].name);
+							warn("%s%s:%zu: %.*s: quote mismatch",
+									portroot, file + 1, line,
+									(int)nlen, buf);
 
-						s = buf + vars[i].name_len + 2;
+						s = buf + nlen + 2;
 					} else {
 						*endq = '\0';
 						s++;
@@ -571,9 +935,48 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 					s[off] = '\0';
 				}
 
-				snprintf(npath, sizeof(npath), "%s%s:%zu:%zu-%zu",
-						portroot, file + 1, curline, cbeg, cend);
-				set_portage_env_var(&vars[i], s, npath);
+				/* expand ${VAR} references immediately like the
+				 * shell would; the fetch command templates keep
+				 * theirs for runtime evaluation */
+				{
+					static char *expanded = NULL;
+
+					free(expanded);
+					expanded = NULL;
+					if (!(nlen == 13 &&
+						  strncmp(buf, "QFETCHCOMMAND", 13) == 0) &&
+						!(nlen == 14 &&
+						  strncmp(buf, "QRESUMECOMMAND", 14) == 0) &&
+						strchr(s, '$') != NULL)
+					{
+						expanded = expand_config_refs(s);
+						s = expanded;
+					}
+				}
+
+				/* remember the raw value of every variable */
+				if (nlen < 128) {
+					char  vname[128];
+					void *prev = NULL;
+
+					memcpy(vname, buf, nlen);
+					vname[nlen] = '\0';
+					if (all_config_vars == NULL)
+						all_config_vars = create_set();
+					add_set_value(vname, xstrdup(s), &prev,
+								  all_config_vars);
+					free(prev);
+				}
+
+				for (i = 0; vars[i].name; i++) {
+					if (vars[i].name_len != nlen ||
+							strncmp(buf, vars[i].name, nlen) != 0)
+						continue;
+					snprintf(npath, sizeof(npath), "%s%s:%zu:%zu-%zu",
+							portroot, file + 1, curline, cbeg, cend);
+					set_portage_env_var(&vars[i], s, npath);
+					break;
+				}
 			}
 		} else if (type == PMASK_FILE) {
 			if (*buf == '-') {
@@ -589,13 +992,15 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 						portroot, file + 1, line, cbeg, cend);
 				/* if not necessary, but do it for static code analysers
 				 * which take into accound that hash_add might
-				 * allocate a new set when masks would be NULL -- a case
+				 * allocate a new set when masks would be NULL, a case
 				 * which would never happen */
 				if (masks != NULL) {
 					p = xstrdup(npath);
+					/* hash_add REPLACES the stored value: on a duplicate
+					 * atom the hash now holds p, drop the OLD location */
 					hash_add(masks, buf, p, &e);
 					if (e != NULL)
-						free(p);
+						free(e);
 				}
 			}
 		}
@@ -700,9 +1105,12 @@ overlay_from_path(const char *path)
 		}
 	}
 
-	/* we must match at least the overlay location */
-	if (found_overlay &&
-		found_overlay[max_match] != '\0')
+	/* we must match at least the overlay location; under ROOT the
+	 * matched length is measured against the resolved (prefixed)
+	 * path, so indexing the raw overlay string with it read out of
+	 * bounds, compare lengths instead */
+	if (found_overlay != NULL &&
+		strlen(found_overlay) > max_match)
 	{
 		found_overlay = NULL;
 	}
@@ -804,6 +1212,14 @@ read_portage_profile(const char *profile, env_vars vars[], hash_t *masks)
 	read_portage_file(profile_file, ENV_FILE, vars);
 	strcpy(profile_file + profile_len, "package.mask");
 	read_portage_file(profile_file, PMASK_FILE, masks);
+	strcpy(profile_file + profile_len, "use.mask");
+	read_use_flag_file(profile_file, &use_mask);
+	strcpy(profile_file + profile_len, "use.stable.mask");
+	read_use_flag_file(profile_file, &use_mask);
+	strcpy(profile_file + profile_len, "use.force");
+	read_use_flag_file(profile_file, &use_force);
+	strcpy(profile_file + profile_len, "use.stable.force");
+	read_use_flag_file(profile_file, &use_force);
 }
 
 env_vars vars_to_read[] = {
@@ -826,13 +1242,13 @@ env_vars vars_to_read[] = {
 	_Q_EV(T, V, .value.t = &v, .value_len = 0, D, E)
 
 	_Q_EVS(STR,  ROOT,                portroot,            true,  "/")
-	_Q_EVS(STR,  ACCEPT_LICENSE,      accept_license,      true,  "")
-	_Q_EVS(ISTR, INSTALL_MASK,        install_mask,        true,  "")
-	_Q_EVS(ISTR, PKG_INSTALL_MASK,    pkg_install_mask,    true,  "")
+	_Q_EVS(ISTR, ACCEPT_LICENSE,      accept_license,      true,  "")
+	_Q_EVS(NSTR, INSTALL_MASK,        install_mask,        true,  "")
+	_Q_EVS(NSTR, PKG_INSTALL_MASK,    pkg_install_mask,    true,  "")
 	_Q_EVS(STR,  ARCH,                portarch,            true,  "")
 	_Q_EVS(ISTR, CONFIG_PROTECT,      config_protect,      true,  "/etc")
 	_Q_EVS(ISTR, CONFIG_PROTECT_MASK, config_protect_mask, true,  "")
-	_Q_EVB(BOOL, NOCOLOR,             nocolor,             true,  false)
+	_Q_EVB(BOOL, NOCOLOR,             nocolor,             true,  NULL)
 	_Q_EVT(ISET, FEATURES,            features,            true,  NULL)
 	_Q_EVT(ISET, USE,                 ev_use,              true,  NULL)
 	_Q_EVS(STR,  EPREFIX,             eprefix,             true,  CONFIG_EPREFIX)
@@ -845,13 +1261,37 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  BINPKG_FORMAT,       binpkg_format,       true,  "gpkg")
 	_Q_EVS(STR,  Q_VDB,               portvdb,             true,  CONFIG_EPREFIX "var/db/pkg")
 	_Q_EVS(STR,  Q_EDB,               portedb,             true,  CONFIG_EPREFIX "var/cache/edb")
-	{ NULL, 0, _Q_BOOL, { NULL }, 0, NULL, false, NULL, }
+	_Q_EVS(STR,  QFETCHCOMMAND,       qfetchcommand,       true,  "")
+	_Q_EVS(STR,  QRESUMECOMMAND,      qresumecommand,      true,  "")
+	_Q_EVS(STR,  CHOST,               chost,               true,  "")
+	_Q_EVS(STR,  CBUILD,              cbuild,              true,  "")
+	_Q_EVS(ISTR, ACCEPT_KEYWORDS,     accept_keywords,     true,  "")
+	_Q_EVS(STR,  ACCEPT_PROPERTIES,   accept_properties,   true,  "")
+	_Q_EVS(STR,  ACCEPT_RESTRICT,     accept_restrict,     true,  "")
+	_Q_EVS(STR,  GENTOO_MIRRORS,      gentoo_mirrors,      true,  "")
+	_Q_EVS(ISTR, IUSE_IMPLICIT,       iuse_implicit,       true,  "")
+	_Q_EVS(ISTR, USE_EXPAND,          use_expand,          true,  "")
+	_Q_EVS(ISTR, USE_EXPAND_HIDDEN,   use_expand_hidden,   true,  "")
+	_Q_EVS(ISTR, USE_EXPAND_IMPLICIT, use_expand_implicit, true,  "")
+	_Q_EVS(ISTR, USE_EXPAND_UNPREFIXED, use_expand_unprefixed, true, "")
+	_Q_EVS(STR,  ELIBC,               var_elibc,           true,  "")
+	_Q_EVS(STR,  KERNEL,              var_kernel,          true,  "")
+	_Q_EVB(BOOL, QMERGE_NOCOLOR,      qmerge_nocolor,      true,  NULL)
+	_Q_EVS(STR,  QMERGE_JOBS,         qmerge_jobs_conf,    true,  "")
+	_Q_EVB(BOOL, QMERGE_PREFETCH,     qmerge_prefetch,     true,  (const char *)1)
+	_Q_EVS(STR,  QMERGE_MOVES,        qmerge_moves_conf,   true,  "")
+	_Q_EVB(BOOL, QNEWS_ENABLE,        qnews_enable,        true,  NULL)
+	_Q_EVB(BOOL, QMERGE_BLOCKERS,     qmerge_blockers,     true,  NULL)
+	_Q_EVS(STR,  QETUTO_KEYSERVERS,   qetuto_keyservers_conf, true, "")
+	_Q_EVS(STR,  QETUTO_KEYS,         qetuto_keys_conf,    true,  "")
+	{ NULL, 0, _Q_BOOL, { NULL }, 0, NULL, NULL, NULL, }
 
 #undef _Q_EV
 #undef _Q_EVS
 #undef _Q_EVB
 };
 hash_t *package_masks = NULL;
+hash_t *package_unmasks = NULL;
 
 /* Handle a single file in the repos.conf format. */
 static void
@@ -868,7 +1308,7 @@ read_one_repos_conf(const char *repos_conf, char **primary)
 	char  *r;
 	char  *e;
 	bool   do_trim;
-	bool   is_default;
+	bool   is_default = false;  /* pacify compiler; set by every [section] */
 
 	snprintf(pth, sizeof(pth), "%s%s", portroot, repos_conf);
 	if (getenv("DEBUG"))
@@ -1019,6 +1459,7 @@ initialize_portage_env(void)
 	size_t      i;
 
 	package_masks = hash_new();
+	package_unmasks = hash_new();
 
 	/* figure out where to find our config files, we need to do this
 	 * before handling the files, as it specifies where to find them */
@@ -1095,6 +1536,28 @@ initialize_portage_env(void)
 			 configroot);
 	read_portage_file(pathbuf, ENV_FILE, vars_to_read);
 
+	/* user package.mask (/etc/portage; read_portage_file recurses the dir
+	 * form).  Profile/repo masks were already loaded above; these stack. */
+	snprintf(pathbuf, sizeof(pathbuf), "%s/etc/portage/package.mask",
+			 configroot);
+	read_portage_file(pathbuf, PMASK_FILE, package_masks);
+
+	/* user package.unmask: overrides matching mask entries */
+	snprintf(pathbuf, sizeof(pathbuf), "%s/etc/portage/package.unmask",
+			 configroot);
+	read_portage_file(pathbuf, PMASK_FILE, package_unmasks);
+
+	/* global wildcard package.use entries override make.conf USE */
+	read_package_use_global();
+
+	/* per-package keyword acceptance (GLEP 53 visibility) */
+	read_pkgcfg("package.accept_keywords", &pkg_accept_keywords);
+	read_pkgcfg("package.keywords", &pkg_accept_keywords);
+
+	/* license acceptance (GLEP 23 visibility) */
+	read_license_groups();
+	read_pkgcfg("package.license", &pkg_license);
+
 	/* finally, check the env */
 	for (i = 0; vars_to_read[i].name; i++)
 	{
@@ -1118,7 +1581,15 @@ initialize_portage_env(void)
 		char *svar;
 
 		var = &vars_to_read[i];
-		if (var->type != _Q_STR)
+		if (var->type != _Q_STR && var->type != _Q_NSTR)
+			continue;
+
+		/* never expand fetch command templates here: their ${URI},
+		 * ${DISTDIR} and ${FILE} are runtime variables for the spawned
+		 * shell (escaped as \$ in the config, which this parser does not
+		 * interpret) */
+		if (strcmp(var->name, "QFETCHCOMMAND") == 0 ||
+				strcmp(var->name, "QRESUMECOMMAND") == 0)
 			continue;
 
 		while ((svar = strchr(*var->value.s, '$'))) {
@@ -1248,6 +1719,7 @@ initialize_portage_env(void)
 					fprintf(stderr, "%s = %d\n", var->name, *var->value.b);
 					break;
 				case _Q_STR:
+				case _Q_NSTR:
 				case _Q_ISTR:
 					fprintf(stderr, "%s = %s\n", var->name, *var->value.s);
 					break;
@@ -1301,6 +1773,7 @@ int main(int argc, char **argv)
 		switch (var->type) {
 			case _Q_BOOL:  *var->value.b = var->default_value;           break;
 			case _Q_STR:
+			case _Q_NSTR:
 			case _Q_ISTR:  *var->value.s = xstrdup(var->default_value);  break;
 			case _Q_ISET:  *var->value.t = (set *)var->default_value;    break;
 		}

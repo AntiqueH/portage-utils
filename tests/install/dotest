@@ -5,8 +5,8 @@
 rm -f q
 
 applets=$(q -h | \
-	sed -n '/^Currently defined applets:/,/^Options/p' | \
-	grep ' : ' | \
+	sed -n '/^currently defined applets:/,/^options/p' | \
+	grep -E '^[[:space:]]+q' | \
 	awk '{print $1}'
 )
 rm -f ${applets}
@@ -28,6 +28,6 @@ for app in ${applets} ; do
 		fi
 	fi
 done
-rm ${applets}
+rm -f ${applets}
 
 end

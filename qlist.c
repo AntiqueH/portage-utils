@@ -5,7 +5,8 @@
  * Copyright 2005 Martin Schlemmer     - <azarah@gentoo.org>
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
- * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2018-2026 Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -162,7 +163,7 @@ umapstr(tree_pkg_ctx *pkg_ctx)
 	freeargv(use_argc, use_argv);
 }
 
-/* forward declaration necessary for misuse from qmerge.c, see HACK there */
+/* forward declaration necessary for misuse from qmerge.c, see workaround there */
 bool
 qlist_match(
 		tree_pkg_ctx *pkg_ctx,

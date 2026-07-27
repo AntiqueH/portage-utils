@@ -17,7 +17,7 @@
 
 #include "xsystem.h"
 
-void xsystembash
+int xsystembash_status
 (
   const char  *command,
   const char **argv,
@@ -26,6 +26,22 @@ void xsystembash
 {
   pid_t p;
   int   status;
+
+  /* warn once when the preferred shell is absent: the /bin/sh fallback
+   * below cannot source bash-serialized environments, so phase
+   * execution is degraded */
+  if (argv == NULL)
+  {
+    static bool bash_warned = false;
+
+    if (!bash_warned &&
+        access(CONFIG_EPREFIX "bin/bash", X_OK) != 0)
+    {
+      warn("%sbin/bash not found, falling back to /bin/sh "
+           "(degraded script execution)", CONFIG_EPREFIX);
+      bash_warned = true;
+    }
+  }
 
   p = fork();
   switch (p) {
@@ -61,31 +77,10 @@ void xsystembash
     }
     else
     {
-      int          argc = 0;
-      const char  *a;
-      const char **newargv;
-
-      /* count existing args */
-      for (a = argv[0]; a != NULL; a++, argc++)
-        ;
-      argc += 1 + 1 + 1 + 1;
-      newargv = xmalloc(sizeof(newargv[0]) * (argc + 1));
-      argc = 0;
-      newargv[argc++] = "bash";
-      newargv[argc++] = "--norc";
-      newargv[argc++] = "--noprofile";
-      newargv[argc++] = "-c";
-      for (a = argv[0]; a != NULL; a++)
-        newargv[argc++] = a;
-      newargv[argc] = NULL;
-
-      execv(CONFIG_EPREFIX "bin/bash", (char *const *)newargv);
-
-      /* Hrm, still here ?  Maybe no bash ... */
-      newargv = &newargv[2];  /* shift, two args less */
-      argc = 0;
-      newargv[argc++] = "sh";
-      _exit(execv("/bin/sh", (char *const *)newargv));
+      /* a straight argument vector, not a shell command line:
+       * execute it directly; passing it through `bash -c` would
+       * run argv[0] only, with the rest as positional params */
+      _exit(execvp(argv[0], (char *const *)argv));
     }
 
   default: /* parent */
@@ -97,16 +92,28 @@ void xsystembash
     }
     else if (WIFEXITED(status))
     {
-      if (WEXITSTATUS(status) == 0)
-        return;
-      else
-        err("phase exited %i", WEXITSTATUS(status));
+      return WEXITSTATUS(status);
     }
     /* fall through */
 
   case -1: /* fucked */
     errp("xsystembash(%s) failed", command);
   }
+  return -1;
+}
+
+/* historic strict wrapper: any nonzero exit is fatal */
+void xsystembash
+(
+  const char  *command,
+  const char **argv,
+  int          cwd
+)
+{
+  int status = xsystembash_status(command, argv, cwd);
+
+  if (status != 0)
+    err("phase exited %i", status);
 }
 
 /* vim: set ts=2 sw=2 expandtab cino+=\:0 foldmethod=marker: */

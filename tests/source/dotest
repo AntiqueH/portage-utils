@@ -22,7 +22,9 @@ prune=(
 				-name tests -o
 				-name autotools -o
 				-name autom4te.cache -o
-				-name .deps
+				-name .deps -o
+				-name .docker -o
+				-name curl
 			')'
 		')'
 		-o

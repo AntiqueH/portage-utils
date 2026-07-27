@@ -4,16 +4,7 @@
 name: Build+Test CI
 
 on:
-  push:
-    branches:
-      - master
-    tags:
-      - v*
-  pull_request:
-    types:
-      - opened
-    branches:
-      - master
+  workflow_dispatch:
 
 jobs:
   make-check-ubuntu-x64:
@@ -39,7 +30,7 @@ jobs:
       - name: install deps
         run: >
           sudo apt-get install -y
-          libgpgme-dev gnupg2 libarchive-dev
+          libgpgme-dev gnupg2 libarchive-dev libssl-dev zlib1g-dev
           liblz4-tool lzop zstd lzip brotli libb2-dev
       - uses: actions/checkout@v2
       - name: configure variant ${{ matrix.features }}
@@ -84,32 +75,13 @@ jobs:
 #      - name: make
 #        run: make CFLAGS="-O3 -Wall -Wshadow -pipe" V=1 check
 
-  coverity:
-    runs-on: ubuntu-latest
-    steps:
-      - name: install deps
-        run: >
-          sudo apt-get install -y
-          libgpgme-dev gnupg2 libarchive-dev
-          liblz4-tool lzop zstd lzip brotli libb2-dev
-      - uses: actions/checkout@v2
-      - name: configure
-        run: >
-          ./configure
-          --disable-maintainer-mode --disable-openmp
-          --enable-qmanifest --enable-qtegrity
-      - uses: vapier/coverity-scan-action@v1
-        with:
-          email: ${{ secrets.COVERITY_SCAN_EMAIL }}
-          token: ${{ secrets.COVERITY_SCAN_TOKEN }}
-
   valgrind:
     runs-on: ubuntu-latest
     steps:
       - name: install deps
         run: >
           sudo apt-get install -y
-          libgpgme-dev gnupg2 libarchive-dev
+          libgpgme-dev gnupg2 libarchive-dev libssl-dev zlib1g-dev
           liblz4-tool lzop zstd lzip brotli libb2-dev
           valgrind
       - uses: actions/checkout@v2

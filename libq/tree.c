@@ -538,12 +538,14 @@ tree_ctx *tree_new
       ret->type = TREE_BINPKGS;
 
       snprintf(buf, sizeof(buf), "%s/Packages", path);
-      if (fstatat(ret->portroot_fd, buf, &st, 0) == 0 &&
-          S_ISREG(st.st_mode))
       {
-        free(ret->path);
-        ret->path = xstrdup(buf);
-        ret->type = TREE_PACKAGES;
+        int r = fstatat(ret->portroot_fd, buf, &st, 0);
+        if (r == 0 && S_ISREG(st.st_mode))
+        {
+          free(ret->path);
+          ret->path = xstrdup(buf);
+          ret->type = TREE_PACKAGES;
+        }
       }
 
       /* TODO: we can read the Packages.gz file too, need to elevate
@@ -1017,9 +1019,11 @@ static void tree_pkg_xpak_read_cb
       break; \
     }
     keycmp(pathname, BDEPEND);
+    keycmp(pathname, BUILD_TIME);
     break;
   case 'C':
     keycmp(pathname, CDEPEND);
+    keycmp(pathname, CHOST);
     keycmp(pathname, CONTENTS);
     break;
   case 'D':
@@ -1042,14 +1046,20 @@ static void tree_pkg_xpak_read_cb
   case 'K':
     keycmp(pathname, KEYWORDS);
     break;
+  case 'L':
+    keycmp(pathname, LICENSE);
+    break;
   case 'P':
     keycmp(pathname, PDEPEND);
     keycmp(pathname, PROPERTIES);
     keycmp(pathname, PROVIDE);
+    keycmp(pathname, PROVIDES);
     break;
   case 'R':
     keycmp(pathname, RDEPEND);
+    keycmp(pathname, REPO_REVISIONS);
     keycmp(pathname, REQUIRED_USE);
+    keycmp(pathname, REQUIRES);
     keycmp(pathname, RESTRICT);
     break;
   case 'r':
@@ -1080,12 +1090,70 @@ static void tree_pkg_xpak_read_cb
   (*key)[data_len] = '\0';
 }
 
+#ifdef ENABLE_GPKG
+/* content sniff for a binpkg: an xpak trailer ends with a literal
+ * STOP marker, a gpkg is a tar carrying a gpkg-1 member among its
+ * first entries */
+static bool
+tree_binpkg_sniff_gpkg(int rootfd, const char *path)
+{
+  int                   fd = openat(rootfd, path, O_RDONLY | O_CLOEXEC);
+  char                  tail[4];
+  bool                  gpkg = false;
+  struct archive       *a;
+  struct archive_entry *entry;
+  int                   n = 0;
+
+  if (fd < 0)
+    return false;
+  if (lseek(fd, -4, SEEK_END) >= 0 &&
+      read(fd, tail, 4) == 4 &&
+      memcmp(tail, "STOP", 4) == 0)
+  {
+    close(fd);
+    return false;
+  }
+  lseek(fd, 0, SEEK_SET);
+  a = archive_read_new();
+  archive_read_support_format_tar(a);
+  archive_read_support_filter_all(a);
+  if (archive_read_open_fd(a, fd, BUFSIZ) == ARCHIVE_OK)
+  {
+    while (n++ < 8 && archive_read_next_header(a, &entry) == ARCHIVE_OK)
+    {
+      const char *nm = archive_entry_pathname(entry);
+      const char *bn = nm != NULL ? strrchr(nm, '/') : NULL;
+
+      bn = bn != NULL ? bn + 1 : nm;
+      if (bn != NULL && strcmp(bn, "gpkg-1") == 0)
+      {
+        gpkg = true;
+        break;
+      }
+      archive_read_data_skip(a);
+    }
+  }
+  archive_read_free(a);
+  close(fd);
+  return gpkg;
+}
+#endif
+
 static bool tree_pkg_binpkg_read
 (
   tree_pkg_ctx *pkg
 )
 {
   int fd;
+
+#ifdef ENABLE_GPKG
+  /* misnamed binpkg: content wins over the suffix (e.g. a gpkg served
+   * under a .tbz2 name); a positive sniff is cached on the ctx.  The
+   * xpak STOP-tail check inside the sniff keeps real xpaks cheap. */
+  if (!pkg->binpkg_gpkg &&
+      tree_binpkg_sniff_gpkg(pkg->cat->tree->portroot_fd, pkg->path))
+    pkg->binpkg_gpkg = true;
+#endif
 
   if (pkg->binpkg_gpkg)
   {
@@ -1360,7 +1428,7 @@ atom_ctx *tree_pkg_atom
     if (pkg->atom->SLOT == NULL)
     {
       pkg->atom->SLOT = tree_pkg_meta(pkg, Q_SLOT);
-      if (pkg->atom->SLOT != NULL)
+      if (pkg->atom->SLOT != NULL && pkg->atom->SLOT[0] != '\0')
       {
         char *p;
 
@@ -1381,6 +1449,17 @@ atom_ctx *tree_pkg_atom
           p = pkg->atom->SLOT;
         }
         pkg->atom->SUBSLOT = p;
+      }
+      else
+      {
+        /* the binpkg Packages index omits SLOT when it is the default
+         * "0" (portage defaults-compression); PMS 7.2: an absent SLOT
+         * means slot "0".  Default it so slot-qualified deps (":0",
+         * ":0/0=") match the provider instead of "cannot satisfy". */
+        static char slot0[] = "0";
+
+        pkg->atom->SLOT    = slot0;
+        pkg->atom->SUBSLOT = slot0;
       }
     }
 
@@ -2242,8 +2321,10 @@ int tree_foreach_pkg
             }
             keycmp(k, BDEPEND);
             keycmp(k, BUILD_ID);
+            keycmp(k, BUILD_TIME);
             break;
           case 'C':
+            keycmp(k, CHOST);
             if (strcmp(&k[1], "PV") == 0)
               cpv = v;
             break;
@@ -2276,9 +2357,14 @@ int tree_foreach_pkg
           case 'P':
             keycmp(k, PATH);
             keycmp(k, PDEPEND);
+            keycmp(k, PROPERTIES);
+            keycmp(k, PROVIDES);
             break;
           case 'R':
             keycmp(k, RDEPEND);
+            keycmp(k, REPO_REVISIONS);
+            keycmp(k, REQUIRES);
+            keycmp(k, RESTRICT);
             if (strcmp(&k[1], "EPO") == 0)
             {
               if (pkg->meta[Q_repository] == NULL)

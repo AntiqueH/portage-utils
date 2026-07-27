@@ -33,6 +33,7 @@ extern int	getopt_long(int, char * const *, const char *,
 
 #include "array.h"
 #include "set.h"
+#include "atom.h"
 
 /* applet prototypes */
 typedef int (*APPLET)(int, char **);
@@ -52,6 +53,8 @@ DECLARE_APPLET(qlop)
 DECLARE_APPLET(qmanifest)
 #endif
 DECLARE_APPLET(qmerge)
+DECLARE_APPLET(qnews)
+DECLARE_APPLET(qetuto)
 DECLARE_APPLET(qpkg)
 DECLARE_APPLET(qsearch)
 DECLARE_APPLET(qsize)
@@ -85,6 +88,8 @@ static const struct applet_t {
 	{"qmanifest", qmanifest_main, "<misc args>",     "verify or generate thick Manifest files"},
 #endif
 	{"qmerge",    qmerge_main,    "<pkgnames>",      "fetch and merge binary package"},
+	{"qnews",     qnews_main,     "<action>",        "read GLEP 42 news items"},
+	{"qetuto",    qetuto_main,    "",                "set up binpkg gpg keyring (getuto port)"},
 	{"qpkg",      qpkg_main,      "<misc args>",     "create or manipulate Gentoo binpkgs"},
 	{"qsearch",   qsearch_main,   "<regex>",         "search pkgname/desc"},
 	{"qsize",     qsize_main,     "<pkgname>",       "calculate size usage"},
@@ -174,9 +179,40 @@ extern char pretend;
 extern char *config_protect;
 extern char *config_protect_mask;
 extern char *portvdb;
+extern char *portedb;
 extern char *portlogdir;
 extern char *pkg_install_mask;
+extern char *accept_license;
 extern char *binhost;
+extern char *qfetchcommand;
+extern char *qresumecommand;
+extern char *chost;
+extern char *cbuild;
+extern char *accept_keywords;
+extern char *accept_properties;
+extern char *accept_restrict;
+extern char *gentoo_mirrors;
+extern char *iuse_implicit;
+extern char *use_expand;
+extern char *use_expand_hidden;
+extern char *use_expand_implicit;
+extern char *use_expand_unprefixed;
+extern char *var_elibc;
+extern char *var_kernel;
+extern set  *all_config_vars;
+extern set  *use_mask;
+extern set  *use_force;
+
+/* one line of a package.accept_keywords/package.license style file */
+typedef struct {
+	depend_atom *atom;
+	char        *vals;
+} pkgcfg_t;
+extern array *pkg_accept_keywords;
+extern array *pkg_license;
+extern hash_t *package_masks;   /* cat/pn -> array of package.mask atoms */
+extern hash_t *package_unmasks;
+extern set  *license_groups;
 extern char *pkgdir;
 extern char *port_tmpdir;
 extern set  *features;
@@ -189,6 +225,14 @@ extern array *overlay_src;
 extern char *main_overlay;
 extern int twidth;
 extern bool nocolor;
+extern bool qmerge_nocolor;
+extern char *qmerge_jobs_conf;
+extern char *qmerge_moves_conf;
+extern bool qnews_enable;
+extern bool qmerge_blockers;
+extern char *qetuto_keyservers_conf;
+extern char *qetuto_keys_conf;
+extern bool qmerge_prefetch;
 
 void version_barf(void);
 void usage(int status, const char *flags, struct option const opts[],

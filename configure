@@ -673,6 +673,12 @@ LIBZ_LIBS
 LIBZ_CFLAGS
 LIBARCHIVE_LIBS
 LIBARCHIVE_CFLAGS
+SYSTEM_LIBCURL_FALSE
+SYSTEM_LIBCURL_TRUE
+VCURL_DEPS_LIBS
+VCURL_DEPS_CFLAGS
+LIBCURL_LIBS
+LIBCURL_CFLAGS
 GPGME_LIBS
 GPGME_CFLAGS
 LIBBL2_LIBS
@@ -1942,6 +1948,9 @@ with_eprefix
 enable_qmanifest
 enable_gpkg
 enable_gtree
+enable_gpg
+with_system_libcurl
+enable_werror
 enable_year2038
 '
       ac_precious_vars='build_alias
@@ -1960,6 +1969,10 @@ LIBBL2_CFLAGS
 LIBBL2_LIBS
 GPGME_CFLAGS
 GPGME_LIBS
+LIBCURL_CFLAGS
+LIBCURL_LIBS
+VCURL_DEPS_CFLAGS
+VCURL_DEPS_LIBS
 LIBARCHIVE_CFLAGS
 LIBARCHIVE_LIBS
 LIBZ_CFLAGS
@@ -2607,6 +2620,10 @@ Optional Features:
   --enable-qmanifest      support qmanifest applet
   --enable-gpkg           support GLEP-78 gpkg packages
   --enable-gtree          support gtree cache
+  --disable-gpg           do not use gpgme; gpkg installs without OpenPGP
+                          signature verification
+  --enable-werror         treat warnings in portage-utils own code as errors
+                          (does not affect vendored gnulib/curl)
   --enable-year2038       support timestamps after 2038
 
 Optional Packages:
@@ -2625,6 +2642,8 @@ Optional Packages:
                           Default is 'no'.
   --with-gnulib-prefix=DIR  search for gnulib's runtime data in DIR/share
   --with-eprefix          path for Gentoo/Prefix project
+  --with-system-libcurl   link against the system libcurl instead of the
+                          bundled copy in src/curl
 
 Some influential environment variables:
   CC          C compiler command
@@ -2646,6 +2665,14 @@ Some influential environment variables:
   GPGME_CFLAGS
               C compiler flags for GPGME, overriding pkg-config
   GPGME_LIBS  linker flags for GPGME, overriding pkg-config
+  LIBCURL_CFLAGS
+              C compiler flags for LIBCURL, overriding pkg-config
+  LIBCURL_LIBS
+              linker flags for LIBCURL, overriding pkg-config
+  VCURL_DEPS_CFLAGS
+              C compiler flags for VCURL_DEPS, overriding pkg-config
+  VCURL_DEPS_LIBS
+              linker flags for VCURL_DEPS, overriding pkg-config
   LIBARCHIVE_CFLAGS
               C compiler flags for LIBARCHIVE, overriding pkg-config
   LIBARCHIVE_LIBS
@@ -6510,6 +6537,41 @@ fi
 
 
 
+case "$CFLAGS" in
+*-std=*)
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: not forcing -std=c99, CFLAGS already selects a standard" >&5
+printf "%s\n" "$as_me: not forcing -std=c99, CFLAGS already selects a standard" >&6;}
+	;;
+*)
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether $CC accepts -std=c99" >&5
+printf %s "checking whether $CC accepts -std=c99... " >&6; }
+	pt_save_CFLAGS=$CFLAGS
+	CFLAGS="$CFLAGS -std=c99"
+
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+int
+main (void)
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+		 CFLAGS=$pt_save_CFLAGS ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+	;;
+esac
 ac_header= ac_cache=
 for ac_item in $ac_header_c_list
 do
@@ -30616,6 +30678,12 @@ then :
   enableval=$enable_gtree;
 fi
 
+# Check whether --enable-gpg was given.
+if test ${enable_gpg+y}
+then :
+  enableval=$enable_gpg;
+fi
+
 
 
 # always check libb2, gpgme and libarchive
@@ -30855,6 +30923,29 @@ printf "%s\n" "#define HAVE_BLAKE2B 1" >>confdefs.h
 
 fi
 
+if test "x${enable_gpg}" = "xno"
+then :
+
+        if test "x${enable_qmanifest}" = "xyes"
+then :
+  { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "--enable-qmanifest requires gpgme and cannot be used with --disable-gpg
+See 'config.log' for more details" "$LINENO" 5; }
+fi
+        if test "x${enable_gtree}" = "xyes"
+then :
+  { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "--enable-gtree requires gpgme and cannot be used with --disable-gpg
+See 'config.log' for more details" "$LINENO" 5; }
+fi
+        GPGME="no: disabled by --disable-gpg"
+        enable_qmanifest=no
+        enable_gtree=no
+
+else case e in #(
+  e)
 
 pkg_failed=no
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for gpgme" >&5
@@ -30924,15 +31015,6 @@ as_fn_error $? "--enable-qmanifest was given, but gpgme.pc could not be found
 See 'config.log' for more details" "$LINENO" 5; }
 
 fi
-                    if test "x${enable_gpkg}" = "xyes"
-then :
-
-                            { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
-printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
-as_fn_error $? "--enable-gpkg was given, but gpgme.pc could not be found
-See 'config.log' for more details" "$LINENO" 5; }
-
-fi
                     if test "x${enable_gtree}" = "xyes"
 then :
 
@@ -30944,7 +31026,6 @@ See 'config.log' for more details" "$LINENO" 5; }
 fi
                     GPGME="no: missing dependencies"
                     enable_qmanifest=no
-                    enable_gpkg=no
                     enable_gtree=no
 
 elif test $pkg_failed = untried; then
@@ -30960,15 +31041,6 @@ as_fn_error $? "--enable-qmanifest was given, but gpgme.pc could not be found
 See 'config.log' for more details" "$LINENO" 5; }
 
 fi
-                    if test "x${enable_gpkg}" = "xyes"
-then :
-
-                            { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
-printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
-as_fn_error $? "--enable-gpkg was given, but gpgme.pc could not be found
-See 'config.log' for more details" "$LINENO" 5; }
-
-fi
                     if test "x${enable_gtree}" = "xyes"
 then :
 
@@ -30980,7 +31052,6 @@ See 'config.log' for more details" "$LINENO" 5; }
 fi
                     GPGME="no: missing dependencies"
                     enable_qmanifest=no
-                    enable_gpkg=no
                     enable_gtree=no
 
 else
@@ -30995,6 +31066,194 @@ printf "%s\n" "#define HAVE_GPGME 1" >>confdefs.h
                     GPGME="yes"
 
 fi
+       ;;
+esac
+fi
+
+
+# Check whether --with-system-libcurl was given.
+if test ${with_system_libcurl+y}
+then :
+  withval=$with_system_libcurl; with_system_libcurl=$withval
+else case e in #(
+  e) with_system_libcurl=no ;;
+esac
+fi
+
+
+if test "x${with_system_libcurl}" = "xyes"
+then :
+
+
+pkg_failed=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for libcurl" >&5
+printf %s "checking for libcurl... " >&6; }
+
+if test -n "$LIBCURL_CFLAGS"; then
+    pkg_cv_LIBCURL_CFLAGS="$LIBCURL_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcurl\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libcurl") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_LIBCURL_CFLAGS=`$PKG_CONFIG --cflags "libcurl" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$LIBCURL_LIBS"; then
+    pkg_cv_LIBCURL_LIBS="$LIBCURL_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcurl\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libcurl") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_LIBCURL_LIBS=`$PKG_CONFIG --libs "libcurl" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                LIBCURL_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libcurl" 2>&1`
+        else
+                LIBCURL_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libcurl" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$LIBCURL_PKG_ERRORS" >&5
+
+        { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "--with-system-libcurl given but libcurl.pc could not be found
+See 'config.log' for more details" "$LINENO" 5; }
+elif test $pkg_failed = untried; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+        { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "--with-system-libcurl given but libcurl.pc could not be found
+See 'config.log' for more details" "$LINENO" 5; }
+else
+        LIBCURL_CFLAGS=$pkg_cv_LIBCURL_CFLAGS
+        LIBCURL_LIBS=$pkg_cv_LIBCURL_LIBS
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: using system libcurl" >&5
+printf "%s\n" "$as_me: using system libcurl" >&6;}
+fi
+
+else case e in #(
+  e)
+
+pkg_failed=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for openssl zlib" >&5
+printf %s "checking for openssl zlib... " >&6; }
+
+if test -n "$VCURL_DEPS_CFLAGS"; then
+    pkg_cv_VCURL_DEPS_CFLAGS="$VCURL_DEPS_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"openssl zlib\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "openssl zlib") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_VCURL_DEPS_CFLAGS=`$PKG_CONFIG --cflags "openssl zlib" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$VCURL_DEPS_LIBS"; then
+    pkg_cv_VCURL_DEPS_LIBS="$VCURL_DEPS_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"openssl zlib\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "openssl zlib") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_VCURL_DEPS_LIBS=`$PKG_CONFIG --libs "openssl zlib" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                VCURL_DEPS_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "openssl zlib" 2>&1`
+        else
+                VCURL_DEPS_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "openssl zlib" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$VCURL_DEPS_PKG_ERRORS" >&5
+
+        { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "openssl and zlib are required (vendored libcurl)
+See 'config.log' for more details" "$LINENO" 5; }
+elif test $pkg_failed = untried; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+        { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "openssl and zlib are required (vendored libcurl)
+See 'config.log' for more details" "$LINENO" 5; }
+else
+        VCURL_DEPS_CFLAGS=$pkg_cv_VCURL_DEPS_CFLAGS
+        VCURL_DEPS_LIBS=$pkg_cv_VCURL_DEPS_LIBS
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+
+fi
+   ;;
+esac
+fi
+
+ if test "x${with_system_libcurl}" = "xyes"; then
+  SYSTEM_LIBCURL_TRUE=
+  SYSTEM_LIBCURL_FALSE='#'
+else
+  SYSTEM_LIBCURL_TRUE='#'
+  SYSTEM_LIBCURL_FALSE=
+fi
+
 
 
 pkg_failed=no
@@ -31299,16 +31558,24 @@ then :
 
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether to enable gpkg" >&5
 printf %s "checking whether to enable gpkg... " >&6; }
-  if test "x${GPGME}${LIBARCHIVE}" = "xyesyes"
+  if test "x${LIBARCHIVE}" = "xyes"
 then :
 
-    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+    if test "x${GPGME}" = "xyes"
+then :
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 printf "%s\n" "yes" >&6; }
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes, without OpenPGP signature verification (no gpgme)" >&5
+printf "%s\n" "yes, without OpenPGP signature verification (no gpgme)" >&6; } ;;
+esac
+fi
 
 else case e in #(
   e)
     { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no: missing dependencies" >&5
 printf "%s\n" "no: missing dependencies" >&6; }
+    enable_gpkg=no
    ;;
 esac
 fi
@@ -32366,10 +32633,108 @@ esac
 fi
 
 
+# Check whether --enable-werror was given.
+if test ${enable_werror+y}
+then :
+  enableval=$enable_werror;
+fi
+
+if test "x${enable_werror}" = "xyes"
+then :
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether the C compiler accepts -Wno-unknown-pragmas" >&5
+printf %s "checking whether the C compiler accepts -Wno-unknown-pragmas... " >&6; }
+if test ${ax_cv_check_cflags___Wno_unknown_pragmas+y}
+then :
+  printf %s "(cached) " >&6
+else case e in #(
+  e)
+  ax_check_save_flags=$CFLAGS
+  if test x"$GCC" = xyes ; then
+    add_gnu_werror="-Werror"
+  fi
+  CFLAGS="$CFLAGS  -Wno-unknown-pragmas $add_gnu_werror"
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+int
+main (void)
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  ax_cv_check_cflags___Wno_unknown_pragmas=yes
+else case e in #(
+  e) ax_cv_check_cflags___Wno_unknown_pragmas=no ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+  CFLAGS=$ax_check_save_flags ;;
+esac
+fi
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ax_cv_check_cflags___Wno_unknown_pragmas" >&5
+printf "%s\n" "$ax_cv_check_cflags___Wno_unknown_pragmas" >&6; }
+if test "x$ax_cv_check_cflags___Wno_unknown_pragmas" = xyes
+then :
+  as_fn_append CWFLAGS " -Wno-unknown-pragmas"
+else case e in #(
+  e) : ;;
+esac
+fi
+
+   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether the C compiler accepts -Werror" >&5
+printf %s "checking whether the C compiler accepts -Werror... " >&6; }
+if test ${ax_cv_check_cflags___Werror+y}
+then :
+  printf %s "(cached) " >&6
+else case e in #(
+  e)
+  ax_check_save_flags=$CFLAGS
+  if test x"$GCC" = xyes ; then
+    add_gnu_werror="-Werror"
+  fi
+  CFLAGS="$CFLAGS  -Werror $add_gnu_werror"
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+int
+main (void)
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  ax_cv_check_cflags___Werror=yes
+else case e in #(
+  e) ax_cv_check_cflags___Werror=no ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+  CFLAGS=$ax_check_save_flags ;;
+esac
+fi
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ax_cv_check_cflags___Werror" >&5
+printf "%s\n" "$ax_cv_check_cflags___Werror" >&6; }
+if test "x$ax_cv_check_cflags___Werror" = xyes
+then :
+  as_fn_append CWFLAGS " -Werror"
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: -Werror not supported by this compiler; ignoring" >&5
+printf "%s\n" "$as_me: WARNING: -Werror not supported by this compiler; ignoring" >&2;} ;;
+esac
+fi
+
+fi
 CWFLAGS="$CWFLAGS"
 
 
-ac_config_files="$ac_config_files Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qfile/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qtbz2/Makefile tests/quse/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile"
+ac_config_files="$ac_config_files src/curl/Makefile Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qfile/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qtbz2/Makefile tests/quse/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -32607,6 +32972,10 @@ fi
     gltests_libgnu_LIBOBJDEPS=$gltests_libgnu_libobjdeps
 
 
+if test -z "${SYSTEM_LIBCURL_TRUE}" && test -z "${SYSTEM_LIBCURL_FALSE}"; then
+  as_fn_error $? "conditional \"SYSTEM_LIBCURL\" was never defined.
+Usually this means the macro was only invoked conditionally." "$LINENO" 5
+fi
 if test -z "${QMANIFEST_ENABLED_TRUE}" && test -z "${QMANIFEST_ENABLED_FALSE}"; then
   as_fn_error $? "conditional \"QMANIFEST_ENABLED\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
@@ -33211,6 +33580,7 @@ do
   case $ac_config_target in
     "config.h") CONFIG_HEADERS="$CONFIG_HEADERS config.h" ;;
     "depfiles") CONFIG_COMMANDS="$CONFIG_COMMANDS depfiles" ;;
+    "src/curl/Makefile") CONFIG_FILES="$CONFIG_FILES src/curl/Makefile" ;;
     "Makefile") CONFIG_FILES="$CONFIG_FILES Makefile" ;;
     "libq/Makefile") CONFIG_FILES="$CONFIG_FILES libq/Makefile" ;;
     "autotools/gnulib/Makefile") CONFIG_FILES="$CONFIG_FILES autotools/gnulib/Makefile" ;;
