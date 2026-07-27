@@ -250,6 +250,22 @@ hash_multiple_internal(
  * the file pointed to by fname is returned in the flen argument.
  */
 int
+hash_multiple_cb(
+		hash_read_cb rcb,
+		void  *ctx,
+		char  *md5,
+		char  *sha1,
+		char  *sha256,
+		char  *sha512,
+		char  *blak2b,
+		size_t *flen,
+		int    hashes)
+{
+	return hash_multiple_internal((read_cb)rcb, ctx,
+			md5, sha1, sha256, sha512, blak2b, flen, hashes);
+}
+
+int
 hash_multiple_file_fd(
 		int fd,
 		char *md5,

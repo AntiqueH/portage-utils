@@ -62,6 +62,11 @@ enum tree_open_type {
   X(EPREFIX) \
   X(PATH) \
   X(BUILD_ID) \
+  X(BUILD_TIME) \
+  X(CHOST) \
+  X(PROVIDES) \
+  X(REQUIRES) \
+  X(REPO_REVISIONS) \
   X(repository) \
   X(MD5) \
   X(SHA1) \

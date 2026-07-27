@@ -4,7 +4,8 @@
  *
  * Copyright 2005-2010 Ned Ludd		   - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
- * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2018-2026 Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.  	   - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -968,7 +969,7 @@ int qpkg_main(int argc, char **argv)
 		if (argv[i] == NULL)
 			continue;
 		if (strcmp(argv[i], "world") == 0) {
-			/* this is a crude hack, we include all packages for this,
+			/* this is a crude workaround, we include all packages for this,
 			 * which isn't exactly @world, but all its deps too */
 			tree_foreach_pkg_fast(cb_args.vdb, qpkg_cb, &cb_args, NULL);
 			break;  /* no point in continuing since we did everything */

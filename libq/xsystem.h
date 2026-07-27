@@ -10,7 +10,9 @@
 #define _XSYSTEM_H 1
 
 void xsystembash(const char *command, const char **argv, int cwd);
-#define xsystem(C,F)  xsystembash(C, NULL, F)
-#define xsystemv(V,F) xsystembash(NULL, V, F)
+int  xsystembash_status(const char *command, const char **argv, int cwd);
+#define xsystem(C,F)         xsystembash(C, NULL, F)
+#define xsystemv(V,F)        xsystembash(NULL, V, F)
+#define xsystem_status(C,F)  xsystembash_status(C, NULL, F)
 
 #endif

@@ -48,6 +48,8 @@ Makefile
 /qlop
 /qmanifest
 /qmerge
+/qetuto
+/qnews
 /qpkg
 /qsearch
 /qsize
@@ -92,3 +94,10 @@ Makefile
 /autotools/gnulib/malloc/scratch_buffer.gl.h
 *.dirstamp
 # END GNULIB
+
+#ignore IDEs
+.idea
+.vscode
+.docker
+RESO*
+compile_commands.json

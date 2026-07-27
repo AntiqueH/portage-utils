@@ -869,21 +869,17 @@ atom_equality atom_compare_flg
       }
       else if (!(flags & ATOM_COMP_NOSUBSLOT))
       {
-        if (query->SUBSLOT != query->SLOT)
+        /* compare effective subslots: by convention SUBSLOT points at
+         * SLOT when a package has no explicit subslot, which per PMS
+         * means the subslot defaults to the slot value.  Comparing the
+         * (always non-NULL) effective values lets an explicit query
+         * subslot match an implicit data subslot of the same name
+         * (e.g. dep ":0/0" vs installed SLOT "0"). */
+        if (query->SUBSLOT != query->SLOT &&
+            strcmp(query->SUBSLOT, data->SUBSLOT) != 0)
         {
-          if (data->SUBSLOT == data->SLOT)
-          {
-            if (bl_op == ATOM_BL_NONE)
-              return NOT_EQUAL;
-          }
-          else
-          {
-            if (strcmp(query->SUBSLOT, data->SUBSLOT) != 0)
-            {
-              if (bl_op == ATOM_BL_NONE)
-                return NOT_EQUAL;
-            }
-          }
+          if (bl_op == ATOM_BL_NONE)
+            return NOT_EQUAL;
         }
       }
     }
@@ -1100,9 +1096,13 @@ atom_equality atom_compare_flg
                 ;
               for (; ends2 > s2 && *ends2 == '0'; ends2--)
                 ;
-              /* 3.3L4 ASCII stringwise comparison */
-              n1 = ends1 - s1;
-              n2 = ends2 - s2;
+              /* 3.3L4 ASCII stringwise comparison.  ends{1,2} point AT the
+               * last significant digit (inclusive), so the significant
+               * length is ends - s + 1; using ends - s dropped a char and
+               * made e.g. "100" vs "0" compare zero bytes -> false EQUAL
+               * (so 1.680.100 == 1.680.0). */
+              n1 = ends1 - s1 + 1;
+              n2 = ends2 - s2 + 1;
               n1 = strncmp(s1, s2, n1 > n2 ? n1 : n2);
               n2 = 0;
             }

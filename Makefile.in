@@ -254,25 +254,31 @@ CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(man1dir)"
 PROGRAMS = $(bin_PROGRAMS)
 am__q_SOURCES_DIST = main.c q.c qatom.c qcheck.c qdepends.c qfile.c \
-	qgrep.c qkeyword.c qlist.c qlop.c qmerge.c qpkg.c qsearch.c \
-	qsize.c qtbz2.c qtegrity.c quse.c qwhich.c qxpak.c qmanifest.c
+	qgrep.c qkeyword.c qlist.c qlop.c qnews.c qetuto.c qmerge.c \
+	qpkg.c qsearch.c qsize.c qtbz2.c qtegrity.c quse.c qwhich.c \
+	qxpak.c qmanifest.c
 @QMANIFEST_ENABLED_TRUE@am__objects_1 = q-qmanifest.$(OBJEXT)
 am_q_OBJECTS = q-main.$(OBJEXT) q-q.$(OBJEXT) q-qatom.$(OBJEXT) \
 	q-qcheck.$(OBJEXT) q-qdepends.$(OBJEXT) q-qfile.$(OBJEXT) \
 	q-qgrep.$(OBJEXT) q-qkeyword.$(OBJEXT) q-qlist.$(OBJEXT) \
-	q-qlop.$(OBJEXT) q-qmerge.$(OBJEXT) q-qpkg.$(OBJEXT) \
-	q-qsearch.$(OBJEXT) q-qsize.$(OBJEXT) q-qtbz2.$(OBJEXT) \
-	q-qtegrity.$(OBJEXT) q-quse.$(OBJEXT) q-qwhich.$(OBJEXT) \
-	q-qxpak.$(OBJEXT) $(am__objects_1)
+	q-qlop.$(OBJEXT) q-qnews.$(OBJEXT) q-qetuto.$(OBJEXT) \
+	q-qmerge.$(OBJEXT) q-qpkg.$(OBJEXT) q-qsearch.$(OBJEXT) \
+	q-qsize.$(OBJEXT) q-qtbz2.$(OBJEXT) q-qtegrity.$(OBJEXT) \
+	q-quse.$(OBJEXT) q-qwhich.$(OBJEXT) q-qxpak.$(OBJEXT) \
+	$(am__objects_1)
 q_OBJECTS = $(am_q_OBJECTS)
 am__DEPENDENCIES_1 =
+@SYSTEM_LIBCURL_FALSE@am__DEPENDENCIES_2 =  \
+@SYSTEM_LIBCURL_FALSE@	$(top_builddir)/src/curl/libqcurl.a \
+@SYSTEM_LIBCURL_FALSE@	$(am__DEPENDENCIES_1)
+@SYSTEM_LIBCURL_TRUE@am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1)
 q_DEPENDENCIES = $(top_builddir)/libq/libq.a \
 	$(top_builddir)/autotools/gnulib/libgnu.a \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_2) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1)
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -290,10 +296,11 @@ depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/q-main.Po ./$(DEPDIR)/q-q.Po \
 	./$(DEPDIR)/q-qatom.Po ./$(DEPDIR)/q-qcheck.Po \
-	./$(DEPDIR)/q-qdepends.Po ./$(DEPDIR)/q-qfile.Po \
-	./$(DEPDIR)/q-qgrep.Po ./$(DEPDIR)/q-qkeyword.Po \
-	./$(DEPDIR)/q-qlist.Po ./$(DEPDIR)/q-qlop.Po \
-	./$(DEPDIR)/q-qmanifest.Po ./$(DEPDIR)/q-qmerge.Po \
+	./$(DEPDIR)/q-qdepends.Po ./$(DEPDIR)/q-qetuto.Po \
+	./$(DEPDIR)/q-qfile.Po ./$(DEPDIR)/q-qgrep.Po \
+	./$(DEPDIR)/q-qkeyword.Po ./$(DEPDIR)/q-qlist.Po \
+	./$(DEPDIR)/q-qlop.Po ./$(DEPDIR)/q-qmanifest.Po \
+	./$(DEPDIR)/q-qmerge.Po ./$(DEPDIR)/q-qnews.Po \
 	./$(DEPDIR)/q-qpkg.Po ./$(DEPDIR)/q-qsearch.Po \
 	./$(DEPDIR)/q-qsize.Po ./$(DEPDIR)/q-qtbz2.Po \
 	./$(DEPDIR)/q-qtegrity.Po ./$(DEPDIR)/q-quse.Po \
@@ -385,7 +392,7 @@ am__define_uniq_tagged_files = \
   unique=`for i in $$list; do \
     if test -f "$$i"; then echo $$i; else echo $(srcdir)/$$i; fi; \
   done | $(am__uniquify_input)`
-DIST_SUBDIRS = $(SUBDIRS)
+DIST_SUBDIRS = autotools/gnulib libq src/curl . tests
 am__DIST_COMMON = $(dist_man_MANS) $(srcdir)/Makefile.in \
 	$(srcdir)/config.h.in COPYING INSTALL README.md ar-lib compile \
 	config.guess config.sub depcomp install-sh ltmain.sh missing
@@ -1153,6 +1160,8 @@ LIBARCHIVE_CFLAGS = @LIBARCHIVE_CFLAGS@
 LIBARCHIVE_LIBS = @LIBARCHIVE_LIBS@
 LIBBL2_CFLAGS = @LIBBL2_CFLAGS@
 LIBBL2_LIBS = @LIBBL2_LIBS@
+LIBCURL_CFLAGS = @LIBCURL_CFLAGS@
+LIBCURL_LIBS = @LIBCURL_LIBS@
 LIBGNU_LIBDEPS = @LIBGNU_LIBDEPS@
 LIBGNU_LTLIBDEPS = @LIBGNU_LTLIBDEPS@
 LIBINTL = @LIBINTL@
@@ -1487,6 +1496,8 @@ UNISTD_H_DEFINES_STRUCT_TIMESPEC = @UNISTD_H_DEFINES_STRUCT_TIMESPEC@
 UNISTD_H_HAVE_SYS_RANDOM_H = @UNISTD_H_HAVE_SYS_RANDOM_H@
 UNISTD_H_HAVE_WINSOCK2_H = @UNISTD_H_HAVE_WINSOCK2_H@
 UNISTD_H_HAVE_WINSOCK2_H_AND_USE_SOCKETS = @UNISTD_H_HAVE_WINSOCK2_H_AND_USE_SOCKETS@
+VCURL_DEPS_CFLAGS = @VCURL_DEPS_CFLAGS@
+VCURL_DEPS_LIBS = @VCURL_DEPS_LIBS@
 VERSION = @VERSION@
 WCHAR_T_SUFFIX = @WCHAR_T_SUFFIX@
 WINDOWS_64_BIT_OFF_T = @WINDOWS_64_BIT_OFF_T@
@@ -1562,29 +1573,36 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 ACLOCAL_AMFLAGS = -I autotools/m4
+@SYSTEM_LIBCURL_FALSE@CURL_SUBDIR = src/curl
+@SYSTEM_LIBCURL_TRUE@CURL_SUBDIR = 
+@SYSTEM_LIBCURL_FALSE@CURL_CPPFLAGS = -I$(top_srcdir)/src/curl/include -DCURL_STATICLIB
+@SYSTEM_LIBCURL_TRUE@CURL_CPPFLAGS = $(LIBCURL_CFLAGS)
+@SYSTEM_LIBCURL_FALSE@CURL_LIBS = $(top_builddir)/src/curl/libqcurl.a $(VCURL_DEPS_LIBS)
+@SYSTEM_LIBCURL_TRUE@CURL_LIBS = $(LIBCURL_LIBS)
 SUBDIRS = \
 	autotools/gnulib \
 	libq \
+	$(CURL_SUBDIR) \
 	. \
 	tests \
 	$(NULL)
 
 APPLETS = q qatom qcheck qdepends qfile qgrep qkeyword qlist qlop \
-	qmerge qpkg qsearch qsize qtbz2 qtegrity quse qwhich qxpak \
-	$(NULL) $(am__append_4)
+	qnews qetuto qmerge qpkg qsearch qsize qtbz2 qtegrity quse \
+	qwhich qxpak $(NULL) $(am__append_4)
 dist_man_MANS = man/q.1 man/qatom.1 man/qcheck.1 man/qdepends.1 \
 	man/qfile.1 man/qgrep.1 man/qkeyword.1 man/qlist.1 man/qlop.1 \
 	man/qmerge.1 man/qpkg.1 man/qsearch.1 man/qsize.1 man/qtbz2.1 \
 	man/qtegrity.1 man/quse.1 man/qwhich.1 man/qxpak.1 $(NULL) \
 	$(am__append_3)
 q_SOURCES = main.c q.c qatom.c qcheck.c qdepends.c qfile.c qgrep.c \
-	qkeyword.c qlist.c qlop.c qmerge.c qpkg.c qsearch.c qsize.c \
-	qtbz2.c qtegrity.c quse.c qwhich.c qxpak.c $(NULL) \
-	$(am__append_1)
+	qkeyword.c qlist.c qlop.c qnews.c qetuto.c qmerge.c qpkg.c \
+	qsearch.c qsize.c qtbz2.c qtegrity.c quse.c qwhich.c qxpak.c \
+	$(NULL) $(am__append_1)
 q_CPPFLAGS = -I$(top_srcdir)/libq -I$(top_builddir)/autotools/gnulib \
 	-I$(top_srcdir)/autotools/gnulib $(OPENMP_CFLAGS) \
 	$(LIBBL2_CFLAGS) $(LIBZ_CFLAGS) $(LIBARCHIVE_CFLAGS) \
-	$(CWFLAGS) $(NULL) $(am__append_2)
+	$(CURL_CPPFLAGS) $(CWFLAGS) $(NULL) $(am__append_2)
 q_LDADD = \
 	$(top_builddir)/libq/libq.a \
 	$(top_builddir)/autotools/gnulib/libgnu.a \
@@ -1593,6 +1611,7 @@ q_LDADD = \
 	$(LIBZ_LIBS) \
 	$(GPGME_LIBS) \
 	$(LIBARCHIVE_LIBS) \
+	$(CURL_LIBS) \
 	$(LIB_CRYPTO) \
 	$(LIB_CLOCK_GETTIME) \
 	$(LIB_EACCESS) \
@@ -1716,6 +1735,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qatom.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qcheck.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qdepends.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qetuto.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qfile.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qgrep.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qkeyword.Po@am__quote@ # am--include-marker
@@ -1723,6 +1743,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qlop.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qmanifest.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qmerge.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qnews.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qpkg.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qsearch.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qsize.Po@am__quote@ # am--include-marker
@@ -1891,6 +1912,34 @@ q-qlop.obj: qlop.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qlop.c' object='q-qlop.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qlop.obj `if test -f 'qlop.c'; then $(CYGPATH_W) 'qlop.c'; else $(CYGPATH_W) '$(srcdir)/qlop.c'; fi`
+
+q-qnews.o: qnews.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qnews.o -MD -MP -MF $(DEPDIR)/q-qnews.Tpo -c -o q-qnews.o `test -f 'qnews.c' || echo '$(srcdir)/'`qnews.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qnews.Tpo $(DEPDIR)/q-qnews.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qnews.c' object='q-qnews.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qnews.o `test -f 'qnews.c' || echo '$(srcdir)/'`qnews.c
+
+q-qnews.obj: qnews.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qnews.obj -MD -MP -MF $(DEPDIR)/q-qnews.Tpo -c -o q-qnews.obj `if test -f 'qnews.c'; then $(CYGPATH_W) 'qnews.c'; else $(CYGPATH_W) '$(srcdir)/qnews.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qnews.Tpo $(DEPDIR)/q-qnews.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qnews.c' object='q-qnews.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qnews.obj `if test -f 'qnews.c'; then $(CYGPATH_W) 'qnews.c'; else $(CYGPATH_W) '$(srcdir)/qnews.c'; fi`
+
+q-qetuto.o: qetuto.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qetuto.o -MD -MP -MF $(DEPDIR)/q-qetuto.Tpo -c -o q-qetuto.o `test -f 'qetuto.c' || echo '$(srcdir)/'`qetuto.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qetuto.Tpo $(DEPDIR)/q-qetuto.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qetuto.c' object='q-qetuto.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qetuto.o `test -f 'qetuto.c' || echo '$(srcdir)/'`qetuto.c
+
+q-qetuto.obj: qetuto.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qetuto.obj -MD -MP -MF $(DEPDIR)/q-qetuto.Tpo -c -o q-qetuto.obj `if test -f 'qetuto.c'; then $(CYGPATH_W) 'qetuto.c'; else $(CYGPATH_W) '$(srcdir)/qetuto.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qetuto.Tpo $(DEPDIR)/q-qetuto.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qetuto.c' object='q-qetuto.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qetuto.obj `if test -f 'qetuto.c'; then $(CYGPATH_W) 'qetuto.c'; else $(CYGPATH_W) '$(srcdir)/qetuto.c'; fi`
 
 q-qmerge.o: qmerge.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qmerge.o -MD -MP -MF $(DEPDIR)/q-qmerge.Tpo -c -o q-qmerge.o `test -f 'qmerge.c' || echo '$(srcdir)/'`qmerge.c
@@ -2432,6 +2481,7 @@ distclean: distclean-recursive
 	-rm -f ./$(DEPDIR)/q-qatom.Po
 	-rm -f ./$(DEPDIR)/q-qcheck.Po
 	-rm -f ./$(DEPDIR)/q-qdepends.Po
+	-rm -f ./$(DEPDIR)/q-qetuto.Po
 	-rm -f ./$(DEPDIR)/q-qfile.Po
 	-rm -f ./$(DEPDIR)/q-qgrep.Po
 	-rm -f ./$(DEPDIR)/q-qkeyword.Po
@@ -2439,6 +2489,7 @@ distclean: distclean-recursive
 	-rm -f ./$(DEPDIR)/q-qlop.Po
 	-rm -f ./$(DEPDIR)/q-qmanifest.Po
 	-rm -f ./$(DEPDIR)/q-qmerge.Po
+	-rm -f ./$(DEPDIR)/q-qnews.Po
 	-rm -f ./$(DEPDIR)/q-qpkg.Po
 	-rm -f ./$(DEPDIR)/q-qsearch.Po
 	-rm -f ./$(DEPDIR)/q-qsize.Po
@@ -2500,6 +2551,7 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f ./$(DEPDIR)/q-qatom.Po
 	-rm -f ./$(DEPDIR)/q-qcheck.Po
 	-rm -f ./$(DEPDIR)/q-qdepends.Po
+	-rm -f ./$(DEPDIR)/q-qetuto.Po
 	-rm -f ./$(DEPDIR)/q-qfile.Po
 	-rm -f ./$(DEPDIR)/q-qgrep.Po
 	-rm -f ./$(DEPDIR)/q-qkeyword.Po
@@ -2507,6 +2559,7 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f ./$(DEPDIR)/q-qlop.Po
 	-rm -f ./$(DEPDIR)/q-qmanifest.Po
 	-rm -f ./$(DEPDIR)/q-qmerge.Po
+	-rm -f ./$(DEPDIR)/q-qnews.Po
 	-rm -f ./$(DEPDIR)/q-qpkg.Po
 	-rm -f ./$(DEPDIR)/q-qsearch.Po
 	-rm -f ./$(DEPDIR)/q-qsize.Po

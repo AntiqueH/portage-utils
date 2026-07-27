@@ -589,6 +589,7 @@ int q_main(int argc, char **argv)
 								YELLOW, *var->value.b ? "1" : "0", NORM);
 						break;
 					case _Q_STR:
+					case _Q_NSTR:
 					case _Q_ISTR:
 						printf("%s\"%s\"%s", RED, *var->value.s, NORM);
 						break;
@@ -626,6 +627,7 @@ int q_main(int argc, char **argv)
 							   YELLOW, *var->value.b ? "1" : "0", NORM);
 						break;
 					case _Q_STR:
+					case _Q_NSTR:
 					case _Q_ISTR:
 						printf("%s%s%s", RED, *var->value.s, NORM);
 						break;

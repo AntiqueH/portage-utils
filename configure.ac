@@ -13,6 +13,29 @@ AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([autotools/m4])
 
 AC_PROG_CC
+
+dnl the codebase must stay buildable as ISO C99 so it remains widely
+dnl adoptable (older GCC, and non-GNU compilers alike): force -std=c99
+dnl so any C11+ construct or GNU language extension is rejected at
+dnl compile time.  POSIX/GNU *APIs* stay available through
+dnl AC_USE_SYSTEM_EXTENSIONS (_GNU_SOURCE et al override strict-ANSI
+dnl header gating).  This must sit directly after AC_PROG_CC so all
+dnl subsequent feature tests (gnulib in particular) probe the compiler
+dnl at the same language level.  A -std= supplied in CFLAGS wins.
+case "$CFLAGS" in
+*-std=*)
+	AC_MSG_NOTICE([not forcing -std=c99, CFLAGS already selects a standard])
+	;;
+*)
+	AC_MSG_CHECKING([whether $CC accepts -std=c99])
+	pt_save_CFLAGS=$CFLAGS
+	CFLAGS="$CFLAGS -std=c99"
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
+		[AC_MSG_RESULT([yes])],
+		[AC_MSG_RESULT([no])
+		 CFLAGS=$pt_save_CFLAGS])
+	;;
+esac
 AC_USE_SYSTEM_EXTENSIONS
 AC_OPENMP
 AM_PROG_CC_C_O
@@ -59,6 +82,9 @@ AC_ARG_ENABLE([gpkg],
 AC_ARG_ENABLE([gtree],
               [AS_HELP_STRING([--enable-gtree],
                               [support gtree cache])])
+AC_ARG_ENABLE([gpg],
+              [AS_HELP_STRING([--disable-gpg],
+                              [do not use gpgme; gpkg installs without OpenPGP signature verification])])
 
 
 # always check libb2, gpgme and libarchive
@@ -76,6 +102,17 @@ PKG_CHECK_MODULES([LIBBL2], [libb2],
                     enable_qmanifest=no
                   ])
 
+AS_IF([test "x${enable_gpg}" = "xno"],
+      [
+        AS_IF([test "x${enable_qmanifest}" = "xyes"],
+              [AC_MSG_FAILURE([--enable-qmanifest requires gpgme and cannot be used with --disable-gpg])])
+        AS_IF([test "x${enable_gtree}" = "xyes"],
+              [AC_MSG_FAILURE([--enable-gtree requires gpgme and cannot be used with --disable-gpg])])
+        GPGME="no: disabled by --disable-gpg"
+        enable_qmanifest=no
+        enable_gtree=no
+      ],
+      [
 PKG_CHECK_MODULES([GPGME], [gpgme],
                   [
                     AC_DEFINE([HAVE_GPGME], [1], [Define if you have gpgme])
@@ -86,19 +123,37 @@ PKG_CHECK_MODULES([GPGME], [gpgme],
                           [
                             AC_MSG_FAILURE([--enable-qmanifest was given, but gpgme.pc could not be found])
                           ])
-                    AS_IF([test "x${enable_gpkg}" = "xyes"],
-                          [
-                            AC_MSG_FAILURE([--enable-gpkg was given, but gpgme.pc could not be found])
-                          ])
                     AS_IF([test "x${enable_gtree}" = "xyes"],
                           [
                             AC_MSG_FAILURE([--enable-gtree was given, but gpgme.pc could not be found])
                           ])
                     GPGME="no: missing dependencies"
                     enable_qmanifest=no
-                    enable_gpkg=no
                     enable_gtree=no
                   ])
+      ])
+
+dnl libcurl: default to the bundled copy in src/curl, but let distributions
+dnl link the system libcurl instead with --with-system-libcurl
+AC_ARG_WITH([system-libcurl],
+  [AS_HELP_STRING([--with-system-libcurl],
+    [link against the system libcurl instead of the bundled copy in src/curl])],
+  [with_system_libcurl=$withval], [with_system_libcurl=no])
+
+AS_IF([test "x${with_system_libcurl}" = "xyes"],
+  [
+    PKG_CHECK_MODULES([LIBCURL], [libcurl],
+                      [AC_MSG_NOTICE([using system libcurl])],
+                      [AC_MSG_FAILURE([--with-system-libcurl given but libcurl.pc could not be found])])
+  ],
+  [
+    dnl dependencies of the vendored libcurl in src/curl (HTTP(S)-only)
+    PKG_CHECK_MODULES([VCURL_DEPS], [openssl zlib],
+                      [],
+                      [AC_MSG_FAILURE([openssl and zlib are required (vendored libcurl)])])
+  ])
+
+AM_CONDITIONAL([SYSTEM_LIBCURL], [test "x${with_system_libcurl}" = "xyes"])
 
 PKG_CHECK_MODULES([LIBARCHIVE], [libarchive],
                   [
@@ -160,10 +215,13 @@ fi
 
 AS_IF([test "x${enable_gpkg}" != "xno"], [
   AC_MSG_CHECKING([whether to enable gpkg])
-  AS_IF([test "x${GPGME}${LIBARCHIVE}" = "xyesyes"], [
-    AC_MSG_RESULT([yes])
+  AS_IF([test "x${LIBARCHIVE}" = "xyes"], [
+    AS_IF([test "x${GPGME}" = "xyes"],
+          [AC_MSG_RESULT([yes])],
+          [AC_MSG_RESULT([yes, without OpenPGP signature verification (no gpgme)])])
   ], [
     AC_MSG_RESULT([no: missing dependencies])
+    enable_gpkg=no
   ])
 ], [
   AC_MSG_CHECKING([whether to enable gpkg])
@@ -224,9 +282,26 @@ m4_foreach_w([flag], [
 ], [
 	AX_CHECK_COMPILE_FLAG(flag, AS_VAR_APPEND([CWFLAGS], " flag"))
 ])
+dnl --enable-werror: treat warnings in our own code as errors (CI sanity
+dnl gate).  CWFLAGS is applied only to portage-utils sources + libq, never
+dnl to the vendored gnulib/curl, so this does not fail on their warnings.
+AC_ARG_ENABLE([werror],
+  [AS_HELP_STRING([--enable-werror],
+    [treat warnings in portage-utils own code as errors (does not affect vendored gnulib/curl)])])
+dnl hash.c carries deliberate `#pragma omp` sections; with --disable-openmp
+dnl (OPENMP_CFLAGS empty) -Wall flags them as unknown pragmas, which -Werror
+dnl would then make fatal.  They are intentional no-ops without OpenMP, not a
+dnl code-quality signal, so silence just that warning under the werror gate.
+AS_IF([test "x${enable_werror}" = "xyes"],
+  [AX_CHECK_COMPILE_FLAG([-Wno-unknown-pragmas],
+    [AS_VAR_APPEND([CWFLAGS], " -Wno-unknown-pragmas")])
+   AX_CHECK_COMPILE_FLAG([-Werror],
+    [AS_VAR_APPEND([CWFLAGS], " -Werror")],
+    [AC_MSG_WARN([-Werror not supported by this compiler; ignoring])])])
 AC_SUBST([CWFLAGS], ["$CWFLAGS"])
 
 AC_CONFIG_FILES([
+	src/curl/Makefile
 	Makefile
 	libq/Makefile
 	autotools/gnulib/Makefile

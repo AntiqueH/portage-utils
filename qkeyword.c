@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "atom.h"
 #include "rmspace.h"
@@ -924,9 +925,16 @@ int qkeyword_main(int argc, char **argv)
 			array_append(bucket, atom);
 			pmasks = hash_add(pmasks, atom_format("%[CAT]%[PN]", atom),
 							  bucket, (void **)&ebuck);
+			/* hash_add REPLACES the stored value and returns the
+			 * previous one: the hash now holds bucket, so merge the
+			 * old bucket into it */
 			if (ebuck != NULL) {
-				array_append(ebuck, atom);
-				array_free(bucket);
+				size_t       bn;
+				depend_atom *batom;
+
+				array_for_each(ebuck, bn, batom)
+					array_append(bucket, batom);
+				array_free(ebuck);
 			}
 		}
 

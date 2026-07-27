@@ -1,0 +1,88 @@
+name: Code Sanity
+
+on:
+  push:
+    branches: [upgrade-utils-part-2]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  warnings-gate:
+    runs-on: ubuntu-latest
+    container:
+      image: gentoo/stage3:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc]
+    env:
+      CC: ${{ matrix.cc }}
+      FEATURES: "getbinpkg -binpkg-request-signature -ipc-sandbox -network-sandbox -pid-sandbox -sandbox -usersandbox"
+      EMERGE_DEFAULT_OPTS: "--getbinpkg --usepkg --jobs 4 --quiet-build=y --autounmask-continue"
+      MAKEOPTS: "-j4"
+    steps:
+      - name: Sync portage tree
+        run: emerge-webrsync
+
+      - name: Install build dependencies
+        run: >
+          emerge --oneshot --noreplace
+          dev-vcs/git dev-util/pkgconf
+          dev-libs/openssl sys-libs/zlib
+          app-crypt/gpgme app-arch/libarchive app-crypt/libb2
+          dev-python/pyyaml
+
+      - name: Install clang
+        if: matrix.cc == 'clang'
+        run: emerge --oneshot --noreplace llvm-core/clang
+
+      - uses: actions/checkout@v4
+
+      - name: Toolchain sanity (${{ matrix.cc }})
+        run: |
+          set -x
+          "${CC}" --version
+          printf 'int main(void){return 0;}\n' > /tmp/hello.c
+          "${CC}" -v -o /tmp/hello /tmp/hello.c
+
+      - name: Configure with warnings as errors
+        run: >
+          ./configure
+          --enable-werror
+          --disable-maintainer-mode --disable-openmp
+          --enable-qmanifest --enable-gpkg --enable-gtree
+          || { echo '===== config.log ====='; cat config.log; exit 1; }
+
+      - name: Build
+        run: make V=1
+
+  cppcheck:
+    # Disabled for now: on this legacy codebase cppcheck reports only false
+    # positives / intentional idioms
+    if: false
+    runs-on: ubuntu-latest
+    container:
+      image: gentoo/stage3:latest
+    env:
+      FEATURES: "getbinpkg -binpkg-request-signature -ipc-sandbox -network-sandbox -pid-sandbox -sandbox -usersandbox"
+      EMERGE_DEFAULT_OPTS: "--getbinpkg --usepkg --jobs 4 --quiet-build=y"
+    steps:
+      - name: Sync portage tree
+        run: emerge-webrsync
+
+      - name: Install cppcheck
+        run: emerge --oneshot --noreplace dev-vcs/git dev-util/cppcheck
+
+      - uses: actions/checkout@v4
+
+      - name: Static analysis of portage-utils sources
+        run: >
+          cppcheck
+          --std=c99 --quiet
+          --inline-suppr --error-exitcode=2
+          --suppressions-list=.cppcheck-suppressions
+          --suppress=missingIncludeSystem
+          --suppress=unmatchedSuppression
+          -i src/curl -i autotools/gnulib
+          -I libq -I .
+          *.c libq/*.c

@@ -81,20 +81,20 @@ static const char qlop_desc[] =
 #define qlop_usage(ret) usage(ret, QLOP_FLAGS, qlop_long_opts, qlop_opts_help, qlop_desc, lookup_applet_idx("qlop"))
 
 struct qlop_mode {
-	char do_time:1;
-	char do_merge:1;
-	char do_unmerge:1;
-	char do_autoclean:1;
-	char do_sync:1;
-	char do_running:1;
-	char do_average:1;
-	char do_predict:1;
-	char do_summary:1;
-	char do_human:1;
-	char do_machine:1;
-	char do_endtime:1;
-	char show_lastmerge:1;
-	char show_emerge:1;
+	bool do_time:1;
+	bool do_merge:1;
+	bool do_unmerge:1;
+	bool do_autoclean:1;
+	bool do_sync:1;
+	bool do_running:1;
+	bool do_average:1;
+	bool do_predict:1;
+	bool do_summary:1;
+	bool do_human:1;
+	bool do_machine:1;
+	bool do_endtime:1;
+	bool show_lastmerge:1;
+	bool show_emerge:1;
 	const char *fmt;
 };
 
@@ -526,9 +526,15 @@ static int do_emerge_log(
 					last_merge = tstart_emerge;
 				}
 
+				/* hash_add REPLACES the stored value and hands back the
+				 * old one -- free the displaced atom, NOT the new one
+				 * the hash now owns (the old code freed the stored
+				 * atom, leaving a dangling pointer that blew up as a
+				 * double free in the final cleanup whenever a cat/pn
+				 * appeared twice within one emerge invocation) */
 				atomset = hash_add(atomset, afmt, atom, (void **)&atomw);
 				if (atomw != NULL)
-					atom_implode(atom);
+					atom_implode(atomw);
 			}
 		}
 
@@ -820,6 +826,10 @@ static int do_emerge_log(
 						merge_averages = hash_add(merge_averages,
 												  afmt, pkgw, (void **)&pkg);
 						if (pkg != NULL) {
+							/* hash_add replaced the stored entry with pkgw;
+							 * put the accumulating entry back before
+							 * freeing pkgw below */
+							hash_add(merge_averages, afmt, pkg, NULL);
 							pkg->cnt++;
 							pkg->time += elapsed;
 							/* store max time for do_running */
@@ -966,6 +976,10 @@ static int do_emerge_log(
 						unmerge_averages = hash_add(unmerge_averages,
 									 				afmt, pkgw, (void **)&pkg);
 						if (pkg != NULL) {
+							/* hash_add replaced the stored entry with pkgw;
+							 * put the accumulating entry back before
+							 * freeing pkgw below */
+							hash_add(unmerge_averages, afmt, pkg, NULL);
 							pkg->cnt++;
 							pkg->time += elapsed;
 							/* store max time for do_running */

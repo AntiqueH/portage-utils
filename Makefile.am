@@ -1,8 +1,19 @@
 ACLOCAL_AMFLAGS = -I autotools/m4
 
+if SYSTEM_LIBCURL
+CURL_SUBDIR   =
+CURL_CPPFLAGS = $(LIBCURL_CFLAGS)
+CURL_LIBS     = $(LIBCURL_LIBS)
+else
+CURL_SUBDIR   = src/curl
+CURL_CPPFLAGS = -I$(top_srcdir)/src/curl/include -DCURL_STATICLIB
+CURL_LIBS     = $(top_builddir)/src/curl/libqcurl.a $(VCURL_DEPS_LIBS)
+endif
+
 SUBDIRS = \
 	autotools/gnulib \
 	libq \
+	$(CURL_SUBDIR) \
 	. \
 	tests \
 	$(NULL)
@@ -17,6 +28,8 @@ APPLETS = \
 	qkeyword \
 	qlist \
 	qlop \
+	qnews \
+	qetuto \
 	qmerge \
 	qpkg \
 	qsearch \
@@ -61,6 +74,8 @@ q_SOURCES = \
 	qkeyword.c \
 	qlist.c \
 	qlop.c \
+	qnews.c \
+	qetuto.c \
 	qmerge.c \
 	qpkg.c \
 	qsearch.c \
@@ -79,6 +94,7 @@ q_CPPFLAGS = \
 	$(LIBBL2_CFLAGS) \
 	$(LIBZ_CFLAGS) \
 	$(LIBARCHIVE_CFLAGS) \
+	$(CURL_CPPFLAGS) \
 	$(CWFLAGS) \
 	$(NULL)
 q_LDADD = \
@@ -89,6 +105,7 @@ q_LDADD = \
 	$(LIBZ_LIBS) \
 	$(GPGME_LIBS) \
 	$(LIBARCHIVE_LIBS) \
+	$(CURL_LIBS) \
 	$(LIB_CRYPTO) \
 	$(LIB_CLOCK_GETTIME) \
 	$(LIB_EACCESS) \

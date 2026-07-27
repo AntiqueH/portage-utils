@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #ifndef _MAIN_H
@@ -21,9 +22,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
-#include "colors.h"  /* because err/warn macros use it */
+#include "colors.h"
+#include "set.h"
 
 extern const char *argv0;
 
@@ -115,6 +116,12 @@ extern const char *argv0;
 # define USE_CLEANUP 0
 #endif
 
+#define GETOPT_LONG(A, a, ex) \
+	getopt_long(argc, argv, ex A ## _FLAGS, a ## _long_opts, NULL)
+
+#define a_argument required_argument
+#define opt_argument optional_argument
+
 /* we need the space before the last comma or we trigger a bug in gcc-2 :( */
 extern FILE *warnout;
 #if defined OPTIMIZE_FOR_SIZE && (OPTIMIZE_FOR_SIZE > 1)
@@ -142,5 +149,40 @@ extern FILE *warnout;
 #define errp(fmt, args...) _err(warnp, fmt , ## args)
 #define errfp(fmt, args...) _err(warnfp, fmt, ## args)
 
+static inline char *
+q_deconst(const char *s)
+{
+	union { const char *c; char *m; } u;
+
+	u.c = s;
+	return u.m;
+}
+
+static inline void *
+q_deconst_p(const void *p)
+{
+	union { const void *c; void *m; } u;
+
+	u.c = p;
+	return u.m;
+}
+
+typedef enum { _Q_BOOL, _Q_STR, _Q_NSTR, _Q_ISTR, _Q_ISET } var_types;
+typedef struct {
+	const char     *name;
+	const size_t    name_len;
+	const var_types type;
+	union {
+		char      **s;
+		bool       *b;
+		set       **t;
+	}               value;
+	size_t          value_len;
+	const char     *default_value;
+	char           *src;
+	bool            fromenv;
+} env_vars;
+extern env_vars vars_to_read[];
+extern set *package_masks;
 
 #endif

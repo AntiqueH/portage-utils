@@ -39,25 +39,7 @@
  *                  nodes in an array
  */
 
-#define DEP_TYPES(X) \
-  X(NULL) \
-  X(ATOM) \
-  X(USE) \
-  X(ANY) \
-  X(ALL) \
-  X(NOT) \
-  X(HUH) \
-  X(POPEN) \
-  X(PCLOSE) \
-  X(WORD)
-
-#define DEP_TYPE_ENUM(E)  DEP_##E,
 #define DEP_TYPE_NAME(E)  #E,
-
-typedef enum dep_type_ {
-  DEP_TYPES(DEP_TYPE_ENUM)
-  DEP_MAX_TYPES
-} dep_type_t;
 
 static const char * const dep_type_names[] = {
   DEP_TYPES(DEP_TYPE_NAME)
@@ -920,6 +902,17 @@ array *dep_flatten_tree
   return out;
 }
 
+/* the direct children of a node (one level, structure preserved), for
+ * callers that must distinguish DEP_ANY from DEP_ALL rather than get a
+ * flattened atom list */
+array *dep_node_children
+(
+  const dep_node_t *node
+)
+{
+  return node == NULL ? NULL : node->members;
+}
+
 array *dep_nodes
 (
   dep_node_t *root
@@ -952,6 +945,14 @@ tree_pkg_ctx *dep_node_ipkg
     return NULL;
 
   return node->ipkg;
+}
+
+dep_type_t dep_node_type
+(
+  const dep_node_t *node
+)
+{
+  return node->type;
 }
 
 atom_ctx *dep_node_atom

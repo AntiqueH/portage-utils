@@ -1,0 +1,24 @@
+# cppcheck false positives, all verified by hand (no real bug behind any).
+# The Code Sanity job runs cppcheck at its default (error) severity as a
+# gate; these are the error-level findings it cannot prove safe on its own.
+
+# root is only "uninitialized" when realpath() fails, but that branch calls
+# errp() which never returns; cppcheck does not know errp is noreturn.
+legacyUninitvar:main.c
+
+# buf is xrealloc'd before buf+len every pass (first iter: len+BUFSIZ>cap is
+# always true, len is 0), so buf is never NULL at the pointer add.
+nullPointerArithmetic:qmerge.c
+
+# p points at a local intbuf[4] that WRITE_BE_INT32 fills before fwrite reads
+# it; cppcheck does not track the macro's stores into the buffer.
+uninitvar:libq/xpak.c
+
+# the else branch is entered only when q->buckets[pos] is non-NULL, so the for
+# loop sets ll to a real node before ll->next is written; ll is never NULL here.
+nullPointer:libq/set.c
+
+# informational notes, not findings; cppcheck's --error-exitcode trips on them
+# anyway, so silence them to keep the gate about real diagnostics.
+normalCheckLevelMaxBranches
+toomanyconfigs
