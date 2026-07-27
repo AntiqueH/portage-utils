@@ -50,6 +50,14 @@ SAN_CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-san
 SAN_LDFLAGS="-fsanitize=address,undefined"
 MODERN_C="-Werror=implicit-function-declaration -Werror=implicit-int -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=strict-prototypes"
 
+run_cppcheck=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-cppcheck|--skip-cppcheck) run_cppcheck=0 ;;
+        *) printf 'unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
 summary=()
 rc=0
 
@@ -137,7 +145,12 @@ gcc_gate
 clang_gate
 opt_gate
 sanitizer_run
-cppcheck_run
+if [ "$run_cppcheck" -eq 1 ]; then
+    cppcheck_run
+else
+    hr "5/5 cppcheck static analysis"
+    note SKIP "cppcheck (--no-cppcheck)"
+fi
 restore_default
 
 hr "SUMMARY"

@@ -162,7 +162,7 @@
 /* #define BUSYBOX "/bin/busybox" */
 #define BUSYBOX ""
 
-#define QMERGE_FLAGS "fFsKUepuDNyOij:" COMMON_FLAGS
+#define QMERGE_FLAGS "fFsKUepuDNy1Oij:" COMMON_FLAGS
 static struct option const qmerge_long_opts[] = {
 	{"fetch",   no_argument, NULL, 'f'},
 	{"force",   no_argument, NULL, 'F'},
@@ -178,6 +178,7 @@ static struct option const qmerge_long_opts[] = {
 	{"rebuilt-binaries", no_argument, NULL, 133},
 	{"rebuilt-binaries-timestamp", a_argument, NULL, 137},
 	{"yes",     no_argument, NULL, 'y'},
+	{"oneshot", no_argument, NULL, '1'},
 	{"nodeps",  no_argument, NULL, 'O'},
 	{"index",   no_argument, NULL, 'i'},
 	{"fetchonly",no_argument, NULL, 130},
@@ -205,6 +206,7 @@ static const char * const qmerge_opts_help[] = {
 	"Reinstall same-version binpkgs rebuilt remotely (newer BUILD_TIME)",
 	"With --rebuilt-binaries: only rebuilds with BUILD_TIME >= this epoch",
 	"Don't prompt before overwriting",
+	"Do not add the package(s) to the world set (emerge --oneshot)",
 	"Don't merge dependencies",
 	"Update the Packages index from PKGDIR (incremental; -F: full rebuild)",
 	"Fetch packages (and their deps) into PKGDIR without merging",
@@ -229,6 +231,7 @@ char interactive = 1;
 char install = 0;
 char uninstall = 0;
 char uninstall_force = 0;
+char oneshot = 0;
 char force_download = 0;
 char follow_rdepends = 1;
 char qmerge_strict = 0;
@@ -11147,6 +11150,149 @@ qm_parse_jobs(const char *s)
 	return j < 1 ? 1 : j;
 }
 
+/* this is where oneshot | -1 feature has been added
+ to be documented by @francoisb */
+static set *qm_world_select = NULL;
+
+static void
+qm_world_capture(const char *arg)
+{
+	char *buf = xstrdup(arg);
+
+	rmspace(buf);
+	if (buf[0] != '\0' && buf[0] != '@' &&
+			strcmp(buf, "world") != 0 && strcmp(buf, "all") != 0 &&
+			strcmp(buf, "system") != 0)
+		qm_world_select = add_set_unique(buf, qm_world_select, NULL);
+	free(buf);
+}
+
+static char *
+qm_world_atom(const char *arg)
+{
+	char        *tmp = xstrdup(arg);
+	char        *cc;
+	depend_atom *a;
+	const char  *cat;
+	char        *picked = NULL;
+	char        *ret    = NULL;
+
+	cc = strchr(tmp, '@');
+	if (cc != NULL)
+		*cc = '\0';
+	cc = strstr(tmp, "::");
+	if (cc != NULL)
+		*cc = '\0';
+
+	a = atom_explode(tmp);
+	free(tmp);
+	if (a == NULL)
+		return NULL;
+
+	cat = a->CATEGORY;
+	if (cat == NULL && a->PN != NULL) {
+		bool amb = false;
+
+		picked = qm_pick_category(a->PN, &amb);
+		cat = picked;
+	}
+	if (cat != NULL && a->PN != NULL) {
+		if (a->SLOT != NULL)
+			xasprintf(&ret, "%s/%s:%s", cat, a->PN, a->SLOT);
+		else
+			xasprintf(&ret, "%s/%s", cat, a->PN);
+	}
+	atom_implode(a);
+	free(picked);
+	return ret;
+}
+
+/* note that world_update refers to world file update here
+  to be documented by @francoisb */
+static void
+qm_world_update(void)
+{
+	char   *wdir;
+	char   *wpath;
+	char   *buf   = NULL;
+	size_t  len   = 0;
+	set    *entries;
+	array  *keys;
+	size_t  n;
+	char   *k;
+	int     added = 0;
+
+	if (qm_world_select == NULL || cnt_set(qm_world_select) == 0)
+		return;
+
+	xasprintf(&wdir, "%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
+	xasprintf(&wpath, "%s/world", wdir);
+
+	entries = create_set();
+	if (eat_file(wpath, &buf, &len) && buf != NULL) {
+		char *line;
+		char *sp;
+
+		for (line = strtok_r(buf, "\r\n", &sp);
+			 line != NULL;
+			 line = strtok_r(NULL, "\r\n", &sp))
+		{
+			char *t = rmspace(line);
+
+			if (*t != '\0' && *t != '#')
+				add_set_unique(t, entries, NULL);
+		}
+	}
+	free(buf);
+
+	keys = set_keys(qm_world_select);
+	array_for_each(keys, n, k) {
+		char *wa = qm_world_atom(k);
+
+		if (wa == NULL)
+			continue;
+		if (contains_set(wa, entries) == NULL) {
+			add_set_unique(wa, entries, NULL);
+			qprintf("%s>>>%s Recording %s in \"world\" favorites file\n",
+					GREEN, NORM, wa);
+			added++;
+		}
+		free(wa);
+	}
+	array_free(keys);
+
+	if (added > 0) {
+		array *ek = set_keys(entries);
+		char  *tmp;
+		FILE  *f;
+
+		array_sort(ek, qm_strcmp_cb);
+		mkdir_p(wdir, 0755);
+		xasprintf(&tmp, "%s.qmerge.%d", wpath, (int)getpid());
+		f = fopen(tmp, "w");
+		if (f != NULL) {
+			size_t m;
+			char  *e;
+
+			array_for_each(ek, m, e)
+				fprintf(f, "%s\n", e);
+			fclose(f);
+			if (rename(tmp, wpath) != 0) {
+				warnp("could not update world file %s", wpath);
+				unlink(tmp);
+			}
+		} else {
+			warnp("could not write %s", tmp);
+		}
+		free(tmp);
+		array_free(ek);
+	}
+
+	free_set(entries);
+	free(wpath);
+	free(wdir);
+}
+
 int qmerge_main(int argc, char **argv)
 {
 	int i, ret;
@@ -11190,6 +11336,7 @@ int qmerge_main(int argc, char **argv)
 			case 'D': deep = 1;
 					  install = 1;         break;
 			case 'y': interactive = 0;     break;
+			case '1': oneshot = 1;         break;
 			case 'O': follow_rdepends = 0; break;
 			case 'i': regen_index = true;   break;
 			case 130: fetch_only = 1;
@@ -11269,8 +11416,11 @@ int qmerge_main(int argc, char **argv)
 	 * --show-phases: their arguments are handled raw) */
 	todo = NULL;
 	if (!search_pkgs && !show_phases)
-		for (i = optind; i < argc; ++i)
+		for (i = optind; i < argc; ++i) {
+			if (!uninstall && !oneshot)
+				qm_world_capture(argv[i]);
 			todo = qmerge_add_set(argv[i], todo);
+		}
 
 	if (search_pkgs == 0 && show_phases == 0 && todo == NULL &&
 			force_download != 1) {
@@ -11395,6 +11545,10 @@ int qmerge_main(int argc, char **argv)
 
 	ret = qmerge_run(todo);
 
+	if (install && !uninstall && !pretend && !fetch_only && !oneshot &&
+			ret == EXIT_SUCCESS)
+		qm_world_update();
+
  cleanup:
 	if (todo != NULL)
 		free_set(todo);
@@ -11454,6 +11608,10 @@ int qmerge_main(int argc, char **argv)
 	if (qm_soft_unmerge != NULL) {
 		free_set(qm_soft_unmerge);
 		qm_soft_unmerge = NULL;
+	}
+	if (qm_world_select != NULL) {
+		free_set(qm_world_select);
+		qm_world_select = NULL;
 	}
 	if (qm_usepkg_excl != NULL) {
 		size_t       n;
