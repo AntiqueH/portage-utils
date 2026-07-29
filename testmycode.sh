@@ -13,19 +13,31 @@
 #      trip it. -O2 is used because many diagnostics only fire with the
 #      optimizer on.
 #   2. Clang warnings+errors gate (-O2, --enable-werror): the same gate built
-#      with clang, which reports a different, wider set of warnings than gcc.
+#      with clang, which reports a different, wider set of warnings than gcc,
+#      followed by "make check" so the test suite also runs against the
+#      clang-built binaries (gcc and clang compile latent UB differently).
 #   3. Optimization gate (-O3, --enable-werror): a clean -O3 build to surface
 #      optimization-only diagnostics such as -Wmaybe-uninitialized and
 #      -Wstringop-/-Wformat-truncation that do not appear at lower levels.
-#   4. Sanitizer run (ASan + UBSan): build with
+#   4. LTO + native gate (-O3 -flto -march=native, --enable-werror) plus
+#      "make check". LTO diagnoses cross-TU declaration/type mismatches
+#      (-Wlto-type-mismatch) that no per-file compile can see, and matches
+#      how Gentoo users always built. and probably a lot others do too.
+#   5. C23 gate (-std=c23, --enable-werror) plus "make check". GCC 15 and
+#      recent Clang default to C23, where bool/true/false/nullptr/constexpr/
+#      typeof are keywords, () means (void), and legacy constructs are gone.
+#      The codebase stays C99 (configure pins -std=c99 when CFLAGS carries
+#      no -std=); this gate proves the tree is also valid C23 as per
+#      recommendations from Porting to Modern C @ Gentoo
+#   6. Sanitizer run (ASan + UBSan): build with
 #      -fsanitize=address,undefined -fno-sanitize-recover=all and then run
 #      "make check", so the test suite exercises the code under the
 #      use-after-free, heap-overflow, leak and undefined-behavior detectors.
 #      This is the regime that has caught the real memory bugs in this tree.
-#   5. cppcheck static analysis (skipped if cppcheck is not installed): a
+#   7. cppcheck static analysis (skipped if cppcheck is not installed): a
 #      static pass over our sources only, vendored trees excluded.
 #
-# Gates 1 to 3 also apply the Gentoo "Modern C porting" flag set as errors
+# Gates 1 to 5 also apply the Gentoo "Modern C porting" flag set as errors
 # (https://wiki.gentoo.org/wiki/Modern_C_porting):
 # -Werror=implicit-function-declaration, -Werror=implicit-int,
 # -Werror=int-conversion, -Werror=incompatible-pointer-types and
@@ -72,7 +84,7 @@ note() {
 }
 
 gcc_gate() {
-    hr "1/5 GCC warnings+errors+modern-C gate (-O2 -Werror)"
+    hr "1/7 GCC warnings+errors+modern-C gate (-O2 -Werror)"
     make clean >/dev/null 2>&1
     if ./configure --enable-werror "${FEATURES[@]}" CFLAGS="-O2 -g $MODERN_C" >/dev/null 2>&1 \
             && make -j"$JOBS"; then
@@ -83,18 +95,19 @@ gcc_gate() {
 }
 
 clang_gate() {
-    hr "2/5 Clang warnings+errors+modern-C gate (-O2 -Werror)"
+    hr "2/7 Clang warnings+errors+modern-C gate (-O2 -Werror)"
     make clean >/dev/null 2>&1
     if CC=clang ./configure --enable-werror "${FEATURES[@]}" CFLAGS="-O2 -g $MODERN_C" >/dev/null 2>&1 \
-            && make -j"$JOBS" CC=clang; then
-        note PASS "clang -Werror -O2"
+            && make -j"$JOBS" CC=clang \
+            && make check; then
+        note PASS "clang -Werror -O2 + check"
     else
-        note FAIL "clang -Werror -O2"
+        note FAIL "clang -Werror -O2 + check"
     fi
 }
 
 opt_gate() {
-    hr "3/5 Optimization + modern-C gate (-O3 -Werror)"
+    hr "3/7 Optimization + modern-C gate (-O3 -Werror)"
     make clean >/dev/null 2>&1
     if ./configure --enable-werror "${FEATURES[@]}" CFLAGS="-O3 -g $MODERN_C" >/dev/null 2>&1 \
             && make -j"$JOBS"; then
@@ -104,8 +117,35 @@ opt_gate() {
     fi
 }
 
+lto_native_gate() {
+    hr "4/7 LTO + native ISA gate (-O3 -flto -march=native -Werror) + check"
+    make clean >/dev/null 2>&1
+    if ./configure --enable-werror "${FEATURES[@]}" \
+            CFLAGS="-O3 -g -flto -march=native $MODERN_C" \
+            LDFLAGS="-flto" AR=gcc-ar RANLIB=gcc-ranlib >/dev/null 2>&1 \
+            && make -j"$JOBS" \
+            && make check; then
+        note PASS "gcc -flto -march=native + check"
+    else
+        note FAIL "gcc -flto -march=native + check"
+    fi
+}
+
+c23_gate() {
+    hr "5/7 C23 gate (-std=c23 -Werror) + check"
+    make clean >/dev/null 2>&1
+    if ./configure --enable-werror "${FEATURES[@]}" \
+            CFLAGS="-O2 -g -std=c23 $MODERN_C" >/dev/null 2>&1 \
+            && make -j"$JOBS" \
+            && make check; then
+        note PASS "gcc -std=c23 + check"
+    else
+        note FAIL "gcc -std=c23 + check"
+    fi
+}
+
 sanitizer_run() {
-    hr "4/5 ASan+UBSan build and test suite (make check)"
+    hr "6/7 ASan+UBSan build and test suite (make check)"
     make clean >/dev/null 2>&1
     if ./configure "${FEATURES[@]}" CFLAGS="$SAN_CFLAGS" LDFLAGS="$SAN_LDFLAGS" >/dev/null 2>&1 \
             && make -j"$JOBS" \
@@ -119,7 +159,7 @@ sanitizer_run() {
 }
 
 cppcheck_run() {
-    hr "5/5 cppcheck static analysis"
+    hr "7/7 cppcheck static analysis"
     if ! command -v cppcheck >/dev/null 2>&1; then
         note SKIP "cppcheck (not installed)"
         return 0
@@ -144,11 +184,13 @@ restore_default() {
 gcc_gate
 clang_gate
 opt_gate
+lto_native_gate
+c23_gate
 sanitizer_run
 if [ "$run_cppcheck" -eq 1 ]; then
     cppcheck_run
 else
-    hr "5/5 cppcheck static analysis"
+    hr "7/7 cppcheck static analysis"
     note SKIP "cppcheck (--no-cppcheck)"
 fi
 restore_default
