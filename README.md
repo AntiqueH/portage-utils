@@ -26,8 +26,9 @@ various timestamps correct.
 
 There's a large [TODO](./TODO.md) list with various ideas for
 improvements.  There's also a [HACKING](./HACKING.md) doc to help you get
-started, and [RESOLVER-DESIGN.md](./RESOLVER-DESIGN.md) documents the qmerge
-resolver and binpkg-consumer design.
+started, and [RESOLVER-WIKI.md](./RESOLVER-WIKI.md) TBD wiki documenting all
+deps resolvers (probably we should name this differently). Probably next year,
+when we finish with the qmerge unmerge.
 
 ## Examples
 
@@ -196,6 +197,36 @@ Well, this one is the easiest.
 Everything runs through the `qmerge` applet; `qmerge --help` lists every flag.
 Here's what we've implemented so far.
 
+### make.conf settings
+
+These go in `/etc/portage/make.conf`, same format as the general usual flags from make.conf*.
+
+* colorless qmerge output, independent of the global `NOCOLOR`<br>
+  `QMERGE_NOCOLOR=1`
+
+* default parallel download jobs, same values as `-j`: N, `0` = one per CPU, `y` = max, `n` = serial (default 4)<br>
+  `QMERGE_JOBS=8`
+
+* prefetch upcoming binpkgs while merging (on by default; set `0` to disable)<br>
+  `QMERGE_PREFETCH=0`
+
+* package-moves policy: `repo` (local `profiles/updates` wins, the default), `binhost` (fetched `Moves` wins), `repo-only`, `binhost-only`, or `none`<br>
+  `QMERGE_MOVES="repo"`
+
+  The published `Moves` file is the binhost maintainer's sole
+  responsibility. Be careful not to delete the Moves file from your
+  main repository of prebuilt binaries, else the users that don't have
+  your directive anymore will probably not have enough time to
+  change to your ordered new CAT/PNs.
+
+* enable the GLEP 42 news transport (fetch/emit/apply); off by default, the `qnews` reader works regardless<br>
+  `QNEWS_ENABLE=1`
+
+The per-invocation knobs mirror their command-line flags but are read from the
+**environment only** (not make.conf): `QMERGE_USEPKG_EXCLUDE`,
+`QMERGE_USEPKG_EXCLUDE_LIVE`, `QMERGE_BINPKG_RESPECT_USE`, `QMERGE_BACKTRACK`,
+`QMERGE_IGNORE_TTL`, and `QMERGE_TRUST_HELPER`.
+
 **Actions**
 
 
@@ -277,38 +308,6 @@ Here's what we've implemented so far.
 * the common flags also apply: `-v` verbose, `-q` quiet, `-C`/`--color`, `-h` help, `-V` version<br>
   `qmerge -vK <pkg>`
 
-### make.conf settings
-
-These go in `/etc/portage/make.conf`, same format as the general usual flags from make.conf*.
-
-* colorless qmerge output, independent of the global `NOCOLOR`<br>
-  `QMERGE_NOCOLOR=1`
-
-* default parallel download jobs, same values as `-j`: N, `0` = one per CPU, `y` = max, `n` = serial (default 4)<br>
-  `QMERGE_JOBS=8`
-
-* prefetch upcoming binpkgs while merging (on by default; set `0` to disable)<br>
-  `QMERGE_PREFETCH=0`
-
-* replace the built-in libcurl downloader with a shell fetcher, portage-style with `${URI}` `${DISTDIR}` `${FILE}` (`QRESUMECOMMAND` is the resume variant; unset = built-in libcurl)<br>
-  `QFETCHCOMMAND='wget -O "${DISTDIR}/${FILE}" "${URI}"'`
-
-* package-moves policy: `repo` (local `profiles/updates` wins, the default), `binhost` (fetched `Moves` wins), `repo-only`, `binhost-only`, or `none`<br>
-  `QMERGE_MOVES="repo"`
-
-* enable the GLEP 42 news transport (fetch/emit/apply); off by default, the `qnews` reader works regardless<br>
-  `QNEWS_ENABLE=1`
-
-* keyservers `qetuto` refreshes the binpkg trust keyring from (space/comma list; default: keys.openpgp.org + keys.gentoo.org)<br>
-  `QETUTO_KEYSERVERS="hkps://keys.gentoo.org"`
-
-* release key file(s) `qetuto` imports into the keyring (default: `/usr/share/openpgp-keys/gentoo-release.asc`)<br>
-  `QETUTO_KEYS="/usr/share/openpgp-keys/openpgp-keys-argent.asc"`
-
-The per-invocation knobs mirror their command-line flags but are read from the
-**environment only** (not make.conf): `QMERGE_USEPKG_EXCLUDE`,
-`QMERGE_USEPKG_EXCLUDE_LIVE`, `QMERGE_BINPKG_RESPECT_USE`, `QMERGE_BACKTRACK`,
-`QMERGE_IGNORE_TTL`, and `QMERGE_TRUST_HELPER`.
 
 ### TODO
 
