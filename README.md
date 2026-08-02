@@ -325,3 +325,26 @@ instead.
 * Tackle per pkg pkg_* properly
 * Although everything here is architecturally ideally correct, we still have
 to take a deeper dive in sanitizations
+
+## qetuto, the new getuto
+
+`qetuto` is a C reimplementation of `app-portage/getuto`.
+It prepares and refreshes the OpenPGP trust keyring at
+`/etc/portage/gnupg`, which `qmerge` uses to verify signed binary packages
+(GLEP 78/63/79). On first run it generates a machine-local trust anchor key,
+imports the release keys and locally signs them so gpg reports them as
+trusted; later runs refresh the keyring at most once a day. Needs root.
+The point: a binhost consumer gets a working trust setup from `q` alone,
+without installing getuto or anything it drags in.
+
+* keyservers `qetuto` refreshes the binpkg trust keyring from (space/comma list; default: keys.openpgp.org + keys.gentoo.org)<br>
+  `QETUTO_KEYSERVERS="hkps://keys.gentoo.org"`
+
+* release key file(s) `qetuto` imports into the keyring (default: `/usr/share/openpgp-keys/gentoo-release.asc`)<br>
+  `QETUTO_KEYS="/usr/share/openpgp-keys/openpgp-keys-bicomserverware.asc"`
+
+The only disadvantage of using qetuto is that it's a overcomplex burdern
+that we created for ourselves instead of simply relying on getuto (written
+in bash) which is far more simplistic.
+
+Alas, it is too late.
