@@ -1,9 +1,8 @@
 .SH "$ROOT HANDLING"
-.PP
 By setting the \fIROOT\fP environment variable, you can force \fBqfile\fP to
 work in the sytem of your choice. This example shows queries for owner of
 "/bin/sh", first on your main system, and then on a system mounted on "/mnt":
-.nf\fI
+.nf
 	$ qfile -q /bin/sh
 	app-shells/bash
 	$ ROOT=/mnt qfile -q /bin/sh
@@ -16,7 +15,7 @@ database of the target system, and this paths don't include \fI$ROOT\fP.
 If, on the contrary, you want to query files with their current actual
 paths (including the mount point), you should add the \fB\-\-root\-prefix\fP
 (\fB\-R\fP) option:
-.nf\fI
+.nf
 	$ ROOT=/mnt qfile -Rq /mnt/bin/sh
 	sys-apps/busybox
 .fi
@@ -24,7 +23,7 @@ paths (including the mount point), you should add the \fB\-\-root\-prefix\fP
 The other difference between defaults and \fB\-R\fP queries is the output
 of files paths.  The former doesn't include the \fI$ROOT\fP prefix, and the
 latter does:
-.nf\fI
+.nf
 	$ ROOT=/mnt qfile sh
 	sys-apps/busybox: /bin/sh
 	$ ROOT=/mnt qfile -R sh
@@ -32,7 +31,7 @@ latter does:
 .fi
 .PP
 Sure, the same differences hold when querying for orphan files:
-.nf\fI
+.nf
 	$ ROOT=/mnt qfile -o $(ls /mnt/bin/ | sed 's:^/mnt::')
 	/bin/dostuff.sh
 	$ ROOT=/mnt qfile -Ro /mnt/bin/*

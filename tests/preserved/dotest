@@ -1,0 +1,34 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+m=${ab}/m
+
+mktmpdir
+
+${m} "${PWD}"
+: $(( tpassed += 15 ))
+
+# preservation dotests, the exact same records serialized by python's json.dumps with 
+# portage's options must match our emitter's output
+if command -v python3 >/dev/null 2>&1; then
+	rm -f preserved_libs_registry
+	${m} "${PWD}" oracle >/dev/null
+	python3 - "${PWD}/preserved_libs_registry" <<-'EOF' > oracle.json
+	import json, sys
+	data = {
+	    "dev-libs/esc:esc/sub": ("dev-libs/esc-2.0-r1", "42",
+	        ["/usr/lib64/lib\"quote\ttab.so.2"]),
+	}
+	sys.stdout.write(json.dumps(data,
+	    ensure_ascii=False, indent="\t", sort_keys=True))
+	EOF
+	cmp preserved_libs_registry oracle.json
+	tend $? "preserved: registry bytes identical to python json.dumps"
+else
+	tend 0 "preserved: python3 absent, oracle diff skipped"
+fi
+
+end

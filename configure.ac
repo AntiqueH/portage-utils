@@ -13,15 +13,19 @@ AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([autotools/m4])
 
 AC_PROG_CC
+AC_USE_SYSTEM_EXTENSIONS
 
 dnl the codebase must stay buildable as ISO C99 so it remains widely
 dnl adoptable (older GCC, and non-GNU compilers alike): force -std=c99
 dnl so any C11+ construct or GNU language extension is rejected at
-dnl compile time.  POSIX/GNU *APIs* stay available through
-dnl AC_USE_SYSTEM_EXTENSIONS (_GNU_SOURCE et al override strict-ANSI
-dnl header gating).  This must sit directly after AC_PROG_CC so all
-dnl subsequent feature tests (gnulib in particular) probe the compiler
-dnl at the same language level.  A -std= supplied in CFLAGS wins.
+dnl compile time. POSIX/GNU *APIs* stay available through
+dnl AC_USE_SYSTEM_EXTENSIONS above (_GNU_SOURCE et al override
+dnl strict-ANSI header checks; it must expand before the first compile
+dnl test, hence directly after AC_PROG_CC). This block sits right
+dnl behind them so all subsequent feature tests (gnulib in particular)
+dnl probe the compiler at the same language level. A -std= supplied
+dnl in CFLAGS wins.
+pt_user_CFLAGS=$CFLAGS
 case "$CFLAGS" in
 *-std=*)
 	AC_MSG_NOTICE([not forcing -std=c99, CFLAGS already selects a standard])
@@ -36,7 +40,6 @@ case "$CFLAGS" in
 		 CFLAGS=$pt_save_CFLAGS])
 	;;
 esac
-AC_USE_SYSTEM_EXTENSIONS
 AC_OPENMP
 AM_PROG_CC_C_O
 
@@ -86,6 +89,16 @@ AC_ARG_ENABLE([gpg],
               [AS_HELP_STRING([--disable-gpg],
                               [do not use gpgme; gpkg installs without OpenPGP signature verification])])
 
+AC_ARG_ENABLE([static],
+              [AS_HELP_STRING([--enable-static],
+                              [link q statically; requires static (.a) libraries for the whole dependency closure])])
+PKG_PROG_PKG_CONFIG
+AS_IF([test "x${enable_static}" = "xyes"],
+      [PKG_CONFIG="$PKG_CONFIG --static"
+       AC_DEFINE([Q_STATIC_BUILD], [1],
+                 [Define when q is being linked statically])
+       AC_MSG_NOTICE([static build: pkg-config queried with --static; the whole dependency chainstuff must provide static (.a) libraries])])
+
 
 # always check libb2, gpgme and libarchive
 PKG_CHECK_MODULES([LIBBL2], [libb2],
@@ -133,27 +146,10 @@ PKG_CHECK_MODULES([GPGME], [gpgme],
                   ])
       ])
 
-dnl libcurl: default to the bundled copy in src/curl, but let distributions
-dnl link the system libcurl instead with --with-system-libcurl
-AC_ARG_WITH([system-libcurl],
-  [AS_HELP_STRING([--with-system-libcurl],
-    [link against the system libcurl instead of the bundled copy in src/curl])],
-  [with_system_libcurl=$withval], [with_system_libcurl=no])
-
-AS_IF([test "x${with_system_libcurl}" = "xyes"],
-  [
-    PKG_CHECK_MODULES([LIBCURL], [libcurl],
-                      [AC_MSG_NOTICE([using system libcurl])],
-                      [AC_MSG_FAILURE([--with-system-libcurl given but libcurl.pc could not be found])])
-  ],
-  [
-    dnl dependencies of the vendored libcurl in src/curl (HTTP(S)-only)
-    PKG_CHECK_MODULES([VCURL_DEPS], [openssl zlib],
-                      [],
-                      [AC_MSG_FAILURE([openssl and zlib are required (vendored libcurl)])])
-  ])
-
-AM_CONDITIONAL([SYSTEM_LIBCURL], [test "x${with_system_libcurl}" = "xyes"])
+dnl libcurl: the system one by default; --enable-internal-libs builds the
+dnl curl source tree found in src/curl into q instead (autotools/m4/internal-libs.m4)
+PT_INTERNAL_LIBS
+PT_INTERNAL_CURL
 
 PKG_CHECK_MODULES([LIBARCHIVE], [libarchive],
                   [
@@ -169,31 +165,15 @@ PKG_CHECK_MODULES([LIBARCHIVE], [libarchive],
                     LIBS="$save_LIBS"
                   ],
                   [
-                    AS_IF([test "x${enable_gpkg}" = "xyes"],
-                          [
-                            AC_MSG_FAILURE([--enable-gpkg was given, but libarchive.pc could not be found])
-                          ])
-                    AS_IF([test "x${enable_gtree}" = "xyes"],
-                          [
-                            AC_MSG_FAILURE([--enable-gtree was given, but libarchive.pc could not be found])
-                          ])
-                    LIBARCHIVE="no: missing dependencies"
-                    enable_gpkg=no
-                    enable_gtree=no
+                    AC_MSG_FAILURE([libarchive is required])
                   ])
 
-AS_IF([test "x${enable_qmanifest}" != "xno"], [
-  PKG_CHECK_MODULES([LIBZ], [zlib], [
-    AC_DEFINE([HAVE_LIBZ], [1], [Define if you have zlib])
-    LIBZ="yes"
-  ], [
-    AS_IF([test "x${enable_qmanifest}" = "xyes"], [
-      AC_MSG_FAILURE([--enable-qmanifest was given, but zlib.pc could not be found])
-    ])
-    LIBZ="no: missing dependencies"
-    enable_qmanifest=no
-  ])
+PKG_CHECK_MODULES([LIBZ], [zlib], [
+  AC_DEFINE([HAVE_LIBZ], [1], [Define if you have zlib])
+  LIBZ="yes"
+])
 
+AS_IF([test "x${enable_qmanifest}" != "xno"], [
   AC_MSG_CHECKING([whether to enable qmanifest])
   AS_IF([test "x${LIBBL2}${LIBZ}${GPGME}" = "xyesyesyes"], [
     AC_MSG_RESULT([yes])
@@ -255,9 +235,14 @@ if test "x$enable_gtree" != xno ; then
 			  [Define if gtree should be compiled])
 	do_gtree="yes"
 fi
+do_gpgme=""
+if test "x$GPGME" = xyes ; then
+	do_gpgme="yes"
+fi
 AC_SUBST([QMANIFEST_ENABLED], ["$do_qmanifest"])
 AC_SUBST([GPKG_ENABLED], ["$do_gpkg"])
 AC_SUBST([GTREE_ENABLED], ["$do_gtree"])
+AC_SUBST([GPGME_ENABLED], ["$do_gpgme"])
 
 AX_CFLAGS_WARN_ALL([CWFLAGS])
 AC_DEFUN([PT_CHECK_CFLAG],[AX_CHECK_COMPILER_FLAGS([$1],[CFLAGS="$CFLAGS $1"])])
@@ -284,10 +269,10 @@ m4_foreach_w([flag], [
 ])
 dnl --enable-werror: treat warnings in our own code as errors (CI sanity
 dnl gate).  CWFLAGS is applied only to portage-utils sources + libq, never
-dnl to the vendored gnulib/curl, so this does not fail on their warnings.
+dnl to gnulib or the internal curl, so this does not fail on their warnings.
 AC_ARG_ENABLE([werror],
   [AS_HELP_STRING([--enable-werror],
-    [treat warnings in portage-utils own code as errors (does not affect vendored gnulib/curl)])])
+    [treat warnings in portage-utils own code as errors (does not affect gnulib or the internal curl)])])
 dnl hash.c carries deliberate `#pragma omp` sections; with --disable-openmp
 dnl (OPENMP_CFLAGS empty) -Wall flags them as unknown pragmas, which -Werror
 dnl would then make fatal.  They are intentional no-ops without OpenMP, not a
@@ -300,8 +285,29 @@ AS_IF([test "x${enable_werror}" = "xyes"],
     [AC_MSG_WARN([-Werror not supported by this compiler; ignoring])])])
 AC_SUBST([CWFLAGS], ["$CWFLAGS"])
 
+AS_IF([test "x${enable_static}" = "xyes"],
+      [AS_CASE([" $LIBARCHIVE_LIBS "],
+        [*" -lxml2 "*],
+        [PKG_CHECK_MODULES([STATICXML2], [libxml-2.0],
+          [AS_VAR_APPEND([LIBARCHIVE_LIBS], [" $STATICXML2_LIBS -lstdc++"])],
+          [AC_MSG_NOTICE([libxml-2.0.pc not found; static link may miss libarchive's transitive xml2/icu deps])])])
+       AX_CHECK_LINK_FLAG([-static],
+        [AS_VAR_APPEND([LDFLAGS], [" -static"])],
+        [AC_MSG_ERROR([--enable-static requested but the toolchain cannot link "-static"; install a static libc])])
+       AS_IF([test "x${pt_internal_curl}" != "xyes"],
+        [AC_MSG_CHECKING([whether the system libcurl links statically])
+         pt_save_CFLAGS=$CFLAGS
+         pt_save_LIBS=$LIBS
+         CFLAGS="$CFLAGS $LIBCURL_CFLAGS"
+         LIBS="$LIBCURL_LIBS $LIBS"
+         AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <curl/curl.h>]], [[curl_version();]])],
+          [AC_MSG_RESULT([yes])],
+          [AC_MSG_RESULT([no])
+           AC_MSG_ERROR([--enable-static needs a static libcurl (net-misc/curl@<:@static-libs@:>@) or --enable-internal-libs with a curl source tree in src/curl])])
+         CFLAGS=$pt_save_CFLAGS
+         LIBS=$pt_save_LIBS])])
+
 AC_CONFIG_FILES([
-	src/curl/Makefile
 	Makefile
 	libq/Makefile
 	autotools/gnulib/Makefile
@@ -310,12 +316,14 @@ AC_CONFIG_FILES([
 	tests/atom_compare/Makefile
 	tests/atom_explode/Makefile
 	tests/copy_file/Makefile
+	tests/fuzz/Makefile
 	tests/install/Makefile
 	tests/mkdir/Makefile
 	tests/profile/Makefile
 	tests/qatom/Makefile
 	tests/qcheck/Makefile
 	tests/qdepends/Makefile
+	tests/qetc-update/Makefile
 	tests/qfile/Makefile
 	tests/qlist/Makefile
 	tests/qlop/Makefile
@@ -326,6 +334,8 @@ AC_CONFIG_FILES([
 	tests/qxpak/Makefile
 	tests/rmspace/Makefile
 	tests/source/Makefile
+	tests/usedep/Makefile
+	tests/preserved/Makefile
 ])
 AC_OUTPUT
 

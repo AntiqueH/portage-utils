@@ -47,6 +47,12 @@ bool qmerge_blockers;
 char *qetuto_keyservers_conf;
 char *qetuto_keys_conf;
 char *binpkg_gpg_verify_gpg_home;
+char *binpkg_tar_opts;
+char *accept_chosts;
+char *binpkg_gpg_signing_base_command;
+char *binpkg_gpg_signing_digest;
+char *binpkg_gpg_signing_gpg_home;
+char *binpkg_gpg_signing_key;
 char pretend = 0;
 char *portarch;
 char *portroot;
@@ -60,6 +66,8 @@ char *pkg_install_mask;
 char *binhost;
 char *qfetchcommand;
 char *qresumecommand;
+char *qfetchwrapper;
+char *fetchwrapper;
 char *chost;
 char *cbuild;
 char *accept_keywords;
@@ -96,6 +104,9 @@ set  *ev_use;
 set  *ev_use_neg;
 char *install_mask;
 char *binpkg_format;
+char *binpkg_compress;
+char *binpkg_compress_flags;
+char *qgtree_compress;
 array *overlays;
 array *overlay_names;
 array *overlay_src;
@@ -986,6 +997,10 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 						  strncmp(buf, "QFETCHCOMMAND", 13) == 0) &&
 						!(nlen == 14 &&
 						  strncmp(buf, "QRESUMECOMMAND", 14) == 0) &&
+						!(nlen == 14 &&
+						  strncmp(buf, "QFETCH_WRAPPER", 14) == 0) &&
+						!(nlen == 13 &&
+						  strncmp(buf, "FETCH_WRAPPER", 13) == 0) &&
 						strchr(s, '$') != NULL)
 					{
 						expanded = expand_config_refs(s);
@@ -1011,6 +1026,8 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 					if (vars[i].name_len != nlen ||
 							strncmp(buf, vars[i].name, nlen) != 0)
 						continue;
+					if (vars[i].from_cli)
+						break;
 					snprintf(npath, sizeof(npath), "%s%s:%zu:%zu-%zu",
 							portroot, file + 1, curline, cbeg, cend);
 					set_portage_env_var(&vars[i], s, npath);
@@ -1223,7 +1240,7 @@ read_portage_profile_r(const char *profile, env_vars vars[], hash_t *masks,
 					repo_name = NULL;
 					array_for_each(overlays, n, overlay) {
 						repo_name = array_get(overlay_names, n);
-						if (strcmp(repo_name, s) == 0) {
+						if (repo_name != NULL && strcmp(repo_name, s) == 0) {
 							snprintf(profile_file, sizeof(profile_file),
 									"%s/profiles/%s/", overlay, p);
 							break;
@@ -1331,10 +1348,15 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  PORTAGE_TMPDIR,      port_tmpdir,         true,  CONFIG_EPREFIX "var/tmp/portage/")
 	_Q_EVS(STR,  PKGDIR,              pkgdir,              true,  CONFIG_EPREFIX "var/cache/binpkgs/")
 	_Q_EVS(STR,  BINPKG_FORMAT,       binpkg_format,       true,  "gpkg")
+	_Q_EVS(STR,  BINPKG_COMPRESS,     binpkg_compress,     true,  "")
+	_Q_EVS(STR,  BINPKG_COMPRESS_FLAGS, binpkg_compress_flags, true, "")
+	_Q_EVS(STR,  QGTREE_COMPRESS,     qgtree_compress,     true,  "zstd:3")
 	_Q_EVS(STR,  Q_VDB,               portvdb,             true,  CONFIG_EPREFIX "var/db/pkg")
 	_Q_EVS(STR,  Q_EDB,               portedb,             true,  CONFIG_EPREFIX "var/cache/edb")
 	_Q_EVS(STR,  QFETCHCOMMAND,       qfetchcommand,       true,  "")
 	_Q_EVS(STR,  QRESUMECOMMAND,      qresumecommand,      true,  "")
+	_Q_EVS(STR,  QFETCH_WRAPPER,      qfetchwrapper,       true,  "")
+	_Q_EVS(STR,  FETCH_WRAPPER,       fetchwrapper,        true,  "")
 	_Q_EVS(STR,  CHOST,               chost,               true,  "")
 	_Q_EVS(STR,  CBUILD,              cbuild,              true,  "")
 	_Q_EVS(ISTR, ACCEPT_KEYWORDS,     accept_keywords,     true,  "")
@@ -1365,7 +1387,16 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  QMERGE_REBUILT_BINARIES, qmerge_rebuilt_conf, true, "")
 	_Q_EVS(STR,  BINPKG_GPG_VERIFY_GPG_HOME, binpkg_gpg_verify_gpg_home, true,
 		   CONFIG_EPREFIX "etc/portage/gnupg")
-	{ NULL, 0, _Q_BOOL, { NULL }, 0, NULL, NULL, NULL, }
+	_Q_EVS(STR,  PORTAGE_BINPKG_TAR_OPTS, binpkg_tar_opts, true, "")
+	_Q_EVS(STR,  ACCEPT_CHOSTS,        accept_chosts,       true,  "")
+	_Q_EVS(STR,  BINPKG_GPG_SIGNING_BASE_COMMAND, binpkg_gpg_signing_base_command,
+		   true, "/usr/bin/flock /run/lock/portage-binpkg-gpg.lock "
+		   "/usr/bin/gpg --sign --armor [PORTAGE_CONFIG]")
+	_Q_EVS(STR,  BINPKG_GPG_SIGNING_DIGEST, binpkg_gpg_signing_digest, true,
+		   "SHA512")
+	_Q_EVS(STR,  BINPKG_GPG_SIGNING_GPG_HOME, binpkg_gpg_signing_gpg_home, true, "")
+	_Q_EVS(STR,  BINPKG_GPG_SIGNING_KEY, binpkg_gpg_signing_key, true,  "")
+	{ NULL, 0, _Q_BOOL, { NULL }, 0, NULL, NULL, NULL, false, }
 
 #undef _Q_EV
 #undef _Q_EVS
@@ -1655,6 +1686,8 @@ initialize_portage_env(void)
 			continue;
 
 		var = &vars_to_read[i];
+		if (var->from_cli)
+			continue;
 		s   = getenv(var->name);
 		if (s != NULL)
 			set_portage_env_var(var, s, var->name);
@@ -1679,7 +1712,9 @@ initialize_portage_env(void)
 		 * shell (escaped as \$ in the config, which this parser does not
 		 * interpret) */
 		if (strcmp(var->name, "QFETCHCOMMAND") == 0 ||
-				strcmp(var->name, "QRESUMECOMMAND") == 0)
+				strcmp(var->name, "QRESUMECOMMAND") == 0 ||
+				strcmp(var->name, "QFETCH_WRAPPER") == 0 ||
+				strcmp(var->name, "FETCH_WRAPPER") == 0)
 			continue;
 
 		while ((svar = strchr(*var->value.s, '$'))) {
@@ -1913,6 +1948,7 @@ int main(int argc, char **argv)
 						errp("--root argument could not be resolved");
 					set_portage_env_var(&vars_to_read[0], root,
 										"command line");  /* ROOT */
+					vars_to_read[0].from_cli = true;
 				} else if (strcmp(&argv[i][2], "overlay") == 0 &&
 						   argv[i + 1] != NULL)
 				{

@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _SAFE_IO_H
-#define _SAFE_IO_H 1
+#ifndef SAFE_IO_H
+#define SAFE_IO_H 1
 
 #include <stdio.h>
 #include <unistd.h>

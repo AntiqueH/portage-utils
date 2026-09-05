@@ -35,7 +35,6 @@ format: |
     .br
     If \fB-v\fR|\fB--verbose\fR the base format is instead:
       \fI%[CATEGORY]%[PF]\fR
-    .br
 
     If \fB-k\fR|\fB--binpkgs\fR is set:
       \fI%[BUILDID]\fR is appended
@@ -48,7 +47,6 @@ format: |
     .br
     If \fB-R\fR|\fB--repo\fR is set:
       \fI%[REPO]\fR is appended
-    .br
 
     Note that this only sets the format of the atom field, not the
     entire output line.

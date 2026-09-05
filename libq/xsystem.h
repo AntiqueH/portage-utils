@@ -6,8 +6,8 @@
  * Copyright 2022      Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _XSYSTEM_H
-#define _XSYSTEM_H 1
+#ifndef XSYSTEM_H
+#define XSYSTEM_H 1
 
 void xsystembash(const char *command, const char **argv, int cwd);
 int  xsystembash_status(const char *command, const char **argv, int cwd);

@@ -3,11 +3,10 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _SET_H
-#define _SET_H 1
+#ifndef SET_H
+#define SET_H 1
 
 #include <stdlib.h>
-#include <stdbool.h>
 #include <unistd.h>
 
 #include "array.h"
@@ -27,6 +26,7 @@ bool        set_has_intersection(set_t *l, set_t *r);
 size_t      set_size(set_t *s);
 void        set_clear(set_t *s);
 void        set_free(set_t *s);
+void        set_free_cb(void *s);
 
 /* hash/dict interface */
 typedef struct set_ hash_t;

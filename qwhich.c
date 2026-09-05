@@ -3,6 +3,7 @@
  * Distributed under the terms of the GNU General Public License v2
  *
  * Copyright 2021-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -81,7 +82,7 @@ int qwhich_main(int argc, char **argv)
 	int ret;
 	tree_ctx *t;
 	char *reponam;
-	int repolen;
+	size_t repolen;
 
 	VAL_CLEAR(m);
 
@@ -203,7 +204,7 @@ int qwhich_main(int argc, char **argv)
 
 					printf("%s%s%.*s%s%s%.*s%s\n",
 						   GREEN, m.print_repo ? "" : "/",
-						   repolen, reponam, m.print_repo ? "::" : "/",
+						   (int)repolen, reponam, m.print_repo ? "::" : "/",
 						   DKBLUE, (int)len, path, NORM);
 				}
 			}
@@ -211,7 +212,7 @@ int qwhich_main(int argc, char **argv)
 		}
 		tree_close(t);
 	}
-	array_deepfree(atoms, (array_free_cb *)atom_implode);
+	array_deepfree(atoms, atom_implode_cb);
 	array_free(trees);
 
 	return EXIT_SUCCESS;

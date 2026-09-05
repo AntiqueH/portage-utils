@@ -3,6 +3,7 @@
  * Distributed under the terms of the GNU General Public License v2
  *
  * Copyright 2025-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -113,7 +114,7 @@ file_magic_type file_magic_guess_fd
 
   /* try to rewind, if this fails, what can we do? we still have found
    * what it should be... */
-  (void)lseek(fd, SEEK_CUR, (off_t)-mlen);
+  (void)lseek(fd, (off_t)-mlen, SEEK_CUR);
   return ret;
 }
 

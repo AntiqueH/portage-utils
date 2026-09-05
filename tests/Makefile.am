@@ -1,6 +1,6 @@
 SUBDIRS = \
-	atom_compare atom_explode copy_file mkdir rmspace \
-	qatom qcheck qdepends qfile qlist qlop qmerge qtbz2 quse qxpak \
+	atom_compare atom_explode copy_file fuzz mkdir rmspace usedep preserved \
+	qatom qcheck qdepends qetc-update qfile qlist qlop qmerge qtbz2 quse qxpak \
 	install profile
 
 if QMANIFEST_ENABLED

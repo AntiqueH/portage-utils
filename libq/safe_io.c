@@ -3,6 +3,8 @@
  *
  * Copyright 2005-2019 Gentoo Foundation
  * Distributed under the terms of the GNU General Public License v2
+ *
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -22,7 +24,7 @@ safe_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 	do {
 		this_ret = fwrite(ptr, size, nmemb, stream);
 		if (this_ret == nmemb)
-			return this_ret; /* most likely behavior */
+			return ret + this_ret; /* most likely behavior */
 		if (this_ret == 0) {
 			if (feof(stream))
 				break;
@@ -65,6 +67,10 @@ ssize_t safe_write(int fd, const void *buf, size_t len)
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;
+			return -1;
+		}
+		if (ret == 0) {
+			errno = EIO;
 			return -1;
 		}
 		buf += ret;

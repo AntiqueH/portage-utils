@@ -1,0 +1,6 @@
+LDPATH="/usr/lib64:/usr/lib:/lib64"
+PATH="/usr/sbin"
+CONFIG_PROTECT="/etc"
+COLON_SEPARATED="LDPATH PATH"
+export GCC_SPECS=''
+# a comment line

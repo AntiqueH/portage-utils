@@ -5,10 +5,11 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
-#ifndef _APPLETS_H_
-#define _APPLETS_H_ 1
+#ifndef APPLETS_H_
+#define APPLETS_H_ 1
 
 #if defined(__sun) && defined(__SVR4)
 /* workaround non-const defined name in option struct, such that we
@@ -28,17 +29,13 @@ extern int	getopt_long(int, char * const *, const char *,
 # include <getopt.h>
 #endif
 
-#define GETOPT_LONG(A, a, ex) \
-	getopt_long(argc, argv, ex A ## _FLAGS, a ## _long_opts, NULL)
-
-#define a_argument required_argument
-#define opt_argument optional_argument
-
 #include <stdbool.h>
+#include <dirent.h>
 
 #include "array.h"
 #include "set.h"
 #include "atom.h"
+#include "useflags.h"
 
 /* applet prototypes */
 typedef int (*APPLET)(int, char **);
@@ -50,10 +47,12 @@ DECLARE_APPLET(qcheck)
 DECLARE_APPLET(qdepends)
 DECLARE_APPLET(qfile)
 /*DECLARE_APPLET(qglsa) disable */
+DECLARE_APPLET(qgpkg_sign)
 DECLARE_APPLET(qgrep)
 DECLARE_APPLET(qkeyword)
 DECLARE_APPLET(qlist)
 DECLARE_APPLET(qlop)
+DECLARE_APPLET(qmaint)
 #ifdef ENABLE_QMANIFEST
 DECLARE_APPLET(qmanifest)
 #endif
@@ -85,6 +84,7 @@ static const struct applet_t {
 	/*
 	{"qglsa",     qglsa_main,     "<action> <list>", "check GLSAs against system"},
 	*/
+	{"qgpkg-sign", qgpkg_sign_main, "<gpkg file>",   "sign or re-sign a gpkg binary package (gpkg-sign port)"},
 	{"qgrep",     qgrep_main,     "<expr> [pkg ...]", "grep in ebuilds"},
 	{"qkeyword",  qkeyword_main,  "<action> <args>", "list packages based on keywords"},
 	{"qlist",     qlist_main,     "<pkgname>",       "list files owned by pkgname"},
@@ -92,6 +92,7 @@ static const struct applet_t {
 #ifdef ENABLE_QMANIFEST
 	{"qmanifest", qmanifest_main, "<misc args>",     "verify or generate thick Manifest files"},
 #endif
+	{"qmaint",    qmaint_main,    "<module> <action>", "perform package management housekeeping (emaint port)"},
 	{"qmerge",    qmerge_main,    "<pkgnames>",      "fetch and merge binary package"},
 	{"qnews",     qnews_main,     "<action>",        "read GLEP 42 news items"},
 	{"qetuto",    qetuto_main,    "",                "set up binpkg gpg keyring (getuto port)"},
@@ -175,23 +176,6 @@ static const struct applet_t {
 			  } break; \
 	default:  applet ## _usage(EXIT_FAILURE); break;
 
-typedef enum { _Q_BOOL, _Q_STR, _Q_ISTR, _Q_ISET } var_types;
-typedef struct {
-	const char     *name;
-	const size_t    name_len;
-	const var_types type;
-	union {
-		char      **s;
-		bool       *b;
-		set       **t;
-	}               value;
-	size_t          value_len;
-	const char     *default_value;
-	char           *src;
-	bool            fromenv;
-} env_vars;
-extern env_vars vars_to_read[];
-
 extern char *portarch;
 extern char *portroot;
 extern char *configroot;
@@ -200,6 +184,22 @@ extern int quiet;
 extern char pretend;
 extern char *config_protect;
 extern char *config_protect_mask;
+extern char *collision_ignore;
+extern char *qmerge_local_priority_conf;
+extern char *qmerge_lenient_conf;
+extern char *qmerge_keep_going_conf;
+extern char *qmerge_respect_use_conf;
+extern char *qmerge_rebuilt_conf;
+extern char *binpkg_gpg_verify_gpg_home;
+extern char *binpkg_tar_opts;
+extern char *accept_chosts;
+extern char *binpkg_gpg_signing_base_command;
+extern char *binpkg_gpg_signing_digest;
+extern char *binpkg_gpg_signing_gpg_home;
+extern char *binpkg_gpg_signing_key;
+struct tree_pkg_;
+extern int qpkg_backup(struct tree_pkg_ *pkg);
+extern bool qm_gpkg_verify(const char *gpkg_path);
 extern char *portvdb;
 extern char *portedb;
 extern char *portlogdir;
@@ -208,6 +208,8 @@ extern char *accept_license;
 extern char *binhost;
 extern char *qfetchcommand;
 extern char *qresumecommand;
+extern char *qfetchwrapper;
+extern char *fetchwrapper;
 extern char *chost;
 extern char *cbuild;
 extern char *accept_keywords;
@@ -225,13 +227,11 @@ extern set  *all_config_vars;
 extern set  *use_mask;
 extern set  *use_force;
 
-/* one line of a package.accept_keywords/package.license style file */
-typedef struct {
-	depend_atom *atom;
-	char        *vals;
-} pkgcfg_t;
 extern array *pkg_accept_keywords;
 extern array *pkg_license;
+extern array *pkg_use;
+extern array *pkg_use_force;
+extern array *pkg_use_mask;
 extern hash_t *package_masks;   /* cat/pn -> array of package.mask atoms */
 extern hash_t *package_unmasks;
 extern set  *license_groups;
@@ -239,11 +239,12 @@ extern char *pkgdir;
 extern char *port_tmpdir;
 extern set  *features;
 extern set  *ev_use;
-extern set  *accept_keywords;
-extern hash_t *package_masks;
-extern hash_t *use_masks;
+extern set  *ev_use_neg;
 extern char *install_mask;
 extern char *binpkg_format;
+extern char *binpkg_compress;
+extern char *binpkg_compress_flags;
+extern char *qgtree_compress;
 extern array *overlays;
 extern array *overlay_names;
 extern array *overlay_src;
@@ -258,6 +259,11 @@ extern bool qmerge_blockers;
 extern char *qetuto_keyservers_conf;
 extern char *qetuto_keys_conf;
 extern bool qmerge_prefetch;
+int qmerge_binhost_maint(bool fix);
+int qmerge_vdb_maint(bool fix, bool del_individual, bool remove_meta);
+int qmerge_moves_maint(bool fix);
+int qmerge_news_maint(bool fix);
+int qmerge_env_maint(bool fix, bool no_ldconfig);
 
 void version_barf(void);
 void usage(int status, const char *flags, struct option const opts[],

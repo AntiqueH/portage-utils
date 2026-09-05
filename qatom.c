@@ -113,6 +113,7 @@ int qatom_main(int argc, char **argv)
 				switch (r) {
 					case NEWER:     r = OLDER;     break;
 					case OLDER:     r = NEWER;     break;
+					default:                       break;
 				}
 			}
 

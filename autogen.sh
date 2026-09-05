@@ -15,7 +15,7 @@ if ! qlist -qI dev-build/autoconf-archive > /dev/null ; then
 fi
 
 # keep this list updated with non-generated M4 files
-keepm4=( ac_check_sendfile.m4 )
+keepm4=( ac_check_sendfile.m4 internal-libs.m4 )
 for keepf in "${keepm4[@]}" ; do
 	v mv "${m4dir}/${keepf}" "autotools/"
 done

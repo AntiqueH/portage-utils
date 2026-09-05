@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _XPAK_H
-#define _XPAK_H 1
+#ifndef XPAK_H
+#define XPAK_H 1
 
 typedef void (*xpak_callback_t)(void *, char *, int, int, int, char *);
 

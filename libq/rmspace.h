@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _RMSPACE_H
-#define _RMSPACE_H 1
+#ifndef RMSPACE_H
+#define RMSPACE_H 1
 
 #include <stdlib.h>
 

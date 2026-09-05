@@ -5,8 +5,8 @@
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _COLORS_H
-#define _COLORS_H 1
+#ifndef COLORS_H
+#define COLORS_H 1
 
 extern const char *BOLD;
 extern const char *NORM;
@@ -23,5 +23,7 @@ extern const char *WHITE;
 
 void color_remap(void);
 void color_clear(void);
+void color_suppress(void);
+void color_unsuppress(void);
 
 #endif

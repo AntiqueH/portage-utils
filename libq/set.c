@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
 #include <xalloc.h>
@@ -400,6 +399,8 @@ void clear_set
 }
 
 /* clear and free a set */
+void set_free_cb(void *q) { set_free(q); }
+
 void set_free(set_t *q)
 {
   if (q == NULL)

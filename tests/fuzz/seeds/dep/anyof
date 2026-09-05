@@ -1,0 +1,1 @@
+|| ( =dev-lang/perl-5.42* =dev-lang/perl-5.40* ) foo? ( app-misc/a[baz(+)] ) !block/me

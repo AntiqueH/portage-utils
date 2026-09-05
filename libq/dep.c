@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -21,6 +22,10 @@
 #include "dep.h"
 #include "set.h"
 #include "tree.h"
+
+#define DEP_MAX_NESTING 512
+
+static void dep_burn_tree_cb(void *p) { dep_burn_tree(p); }
 
 /* TODO
  * dep_resolve_tree: looks up atoms in the tree and populates pkg
@@ -206,6 +211,13 @@ dep_node_t *dep_grow_tree
     switch (curr_node->type)
     {
     case DEP_POPEN:
+      if (level >= DEP_MAX_NESTING)
+      {
+        warn("dependency groups nested deeper than %d levels (in %s)",
+             DEP_MAX_NESTING, depend);
+        ret = NULL;
+        goto dep_grow_tree_fail;
+      }
       ret = xzalloc(sizeof(*ret));
       ret->type    = DEP_ALL;
       ret->members = array_new();
@@ -337,10 +349,23 @@ dep_node_t *dep_grow_tree
       else
       {
         /* atom, WORD */
-        snprintf(buf, sizeof(buf), "%s%s%.*s",
-                 nots > 0 ? "!" : "",
-                 nots > 1 ? "!" : "",
-                 (int)curr_node->wordlen, curr_node->word);
+        if (curr_node->wordlen > sizeof(buf) - 3)
+        {
+          warn("dependency atom too long, rejecting (in %s)", depend);
+          goto dep_grow_tree_fail;
+        }
+        if (nots > 1)
+          snprintf(buf, sizeof(buf), "!!%.*s",
+                   (int)MIN(curr_node->wordlen, sizeof(buf) - 3),
+                   curr_node->word);
+        else if (nots > 0)
+          snprintf(buf, sizeof(buf), "!%.*s",
+                   (int)MIN(curr_node->wordlen, sizeof(buf) - 2),
+                   curr_node->word);
+        else
+          snprintf(buf, sizeof(buf), "%.*s",
+                   (int)MIN(curr_node->wordlen, sizeof(buf) - 1),
+                   curr_node->word);
 
         ret = xzalloc(sizeof(*ret));
         ret->type    = DEP_ATOM;
@@ -378,7 +403,12 @@ dep_node_t *dep_grow_tree
   ret = array_remove(res, 0);  /* pseudo top-level again */
 
 dep_grow_tree_fail:
-  array_deepfree(tokens, (array_free_cb *)dep_burn_tree);
+  array_deepfree(tokens, dep_burn_tree_cb);
+  /* on an error goto the partial tree is left rooted in res[0] and orphaned
+   * (the success path removes it into ret first). free it via its root.
+   * fuzzy gallore! we need more fuzziness */
+  if (ret == NULL && array_cnt(res) > 0)
+    dep_burn_tree(array_get(res, 0));
   array_free(res);
 
   if (ret != NULL &&
@@ -574,7 +604,7 @@ void dep_burn_tree
     return;
 
   if (root->members != NULL)
-    array_deepfree(root->members, (array_free_cb *)dep_burn_tree);
+    array_deepfree(root->members, dep_burn_tree_cb);
 
   if (root->atom)
     atom_implode(root->atom);
@@ -632,8 +662,8 @@ void dep_prune_use
  * blockers is a hash containing arrays to multiple masks or blockers
  * can be stored while still allowing to lookup per PN
  * accept_keywords a set of keywords of which one should match with the
- * one defined in KEYWORDS for the package
- */
+ * one defined in KEYWORDS for the package; NULL skips keyword checking
+ * (all existing callers rely on that) */
 dep_status_t dep_resolve_tree
 (
   dep_node_t *root,
@@ -663,12 +693,12 @@ dep_status_t dep_resolve_tree
           break;  /* ignore */
 
         atoms = hash_get(blockers,
-                         atom_format("%[CAT]%[PN]%[SLOT]", root->atom));
+                         atom_format("%{#}%[CAT]%[PN]%[SLOT]", root->atom));
         if (atoms == NULL)
         {
           atoms = array_new();
           hash_add(blockers,
-                   atom_format("%[CAT]%[PN]%[SLOT]", root->atom),
+                   atom_format("%{#}%[CAT]%[PN]%[SLOT]", root->atom),
                    atoms, NULL /* must be unset */);
         }
 
@@ -702,7 +732,7 @@ dep_status_t dep_resolve_tree
         bool          isunkeyw = false;
 
         blkatoms = hash_get(blockers,
-                            atom_format("%[CAT]%[PN]%[SLOT]", root->atom));
+                            atom_format("%{#}%[CAT]%[PN]%[SLOT]", root->atom));
         r = tree_match_atom(tree, root->atom,
                             (TREE_MATCH_DEFAULT |
                              TREE_MATCH_SORT));
@@ -743,22 +773,25 @@ dep_status_t dep_resolve_tree
           if (ismasked)
             continue;
 
-          /* check keywords */
-          kwstr = tree_pkg_meta(pkgw, Q_KEYWORDS);
-          if (kwstr == NULL)
+          /* check keywords, NULL = caller wants no keyword filtering */
+          if (accept_keywords != NULL)
           {
-            isunkeyw = true;
-            continue;
-          }
+            kwstr = tree_pkg_meta(pkgw, Q_KEYWORDS);
+            if (kwstr == NULL)
+            {
+              isunkeyw = true;
+              continue;
+            }
 
-          keywords = set_add_from_string(set_new(), kwstr);
-          if (!set_has_intersection(keywords, accept_keywords))
-          {
-            isunkeyw = true;
+            keywords = set_add_from_string(set_new(), kwstr);
+            if (!set_has_intersection(keywords, accept_keywords))
+            {
+              isunkeyw = true;
+              set_free(keywords);
+              continue;
+            }
             set_free(keywords);
-            continue;
           }
-          set_free(keywords);
 
           /* finally, assign */
           if (root->pkg == NULL)

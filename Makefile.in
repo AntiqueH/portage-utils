@@ -14,6 +14,7 @@
 
 @SET_MAKE@
 
+
 VPATH = @srcdir@
 am__is_gnu_make = { \
   if test -z '$(MAKELEVEL)'; then \
@@ -95,8 +96,7 @@ bin_PROGRAMS = q$(EXEEXT)
 @QMANIFEST_ENABLED_TRUE@am__append_2 = \
 @QMANIFEST_ENABLED_TRUE@	$(GPGME_CFLAGS)
 
-@QMANIFEST_ENABLED_TRUE@am__append_3 = man/qmanifest.1
-@QMANIFEST_ENABLED_TRUE@am__append_4 = qmanifest
+@QMANIFEST_ENABLED_TRUE@am__append_3 = qmanifest
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/autotools/m4/00gnulib.m4 \
@@ -157,6 +157,7 @@ am__aclocal_m4_deps = $(top_srcdir)/autotools/m4/00gnulib.m4 \
 	$(top_srcdir)/autotools/m4/gnulib-i18n.m4 \
 	$(top_srcdir)/autotools/m4/group-member.m4 \
 	$(top_srcdir)/autotools/m4/include_next.m4 \
+	$(top_srcdir)/autotools/m4/internal-libs.m4 \
 	$(top_srcdir)/autotools/m4/inttypes.m4 \
 	$(top_srcdir)/autotools/m4/largefile.m4 \
 	$(top_srcdir)/autotools/m4/limits-h.m4 \
@@ -244,34 +245,34 @@ am__aclocal_m4_deps = $(top_srcdir)/autotools/m4/00gnulib.m4 \
 am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
 	$(ACLOCAL_M4)
 DIST_COMMON = $(srcdir)/Makefile.am $(top_srcdir)/configure \
-	$(am__configure_deps) $(am__DIST_COMMON)
+	$(am__configure_deps) $(dist_sbin_SCRIPTS) $(am__DIST_COMMON)
 am__CONFIG_DISTCLEAN_FILES = config.status config.cache config.log \
  configure.lineno config.status.lineno
 mkinstalldirs = $(install_sh) -d
 CONFIG_HEADER = config.h
 CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
-am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(man1dir)"
+am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(sbindir)" \
+	"$(DESTDIR)$(man1dir)"
 PROGRAMS = $(bin_PROGRAMS)
 am__q_SOURCES_DIST = main.c q.c qatom.c qcheck.c qdepends.c qfile.c \
-	qgrep.c qkeyword.c qlist.c qlop.c qnews.c qetuto.c qmerge.c \
-	qpkg.c qsearch.c qsize.c qtbz2.c qtegrity.c quse.c qwhich.c \
-	qxpak.c qmanifest.c
+	qgpkg-sign.c qgrep.c qkeyword.c qlist.c qlop.c qmaint.c \
+	qnews.c qetuto.c qmerge.c qpkg.c qsearch.c qsize.c qtbz2.c \
+	qtegrity.c quse.c qwhich.c qxpak.c qmanifest.c
 @QMANIFEST_ENABLED_TRUE@am__objects_1 = q-qmanifest.$(OBJEXT)
 am_q_OBJECTS = q-main.$(OBJEXT) q-q.$(OBJEXT) q-qatom.$(OBJEXT) \
 	q-qcheck.$(OBJEXT) q-qdepends.$(OBJEXT) q-qfile.$(OBJEXT) \
-	q-qgrep.$(OBJEXT) q-qkeyword.$(OBJEXT) q-qlist.$(OBJEXT) \
-	q-qlop.$(OBJEXT) q-qnews.$(OBJEXT) q-qetuto.$(OBJEXT) \
-	q-qmerge.$(OBJEXT) q-qpkg.$(OBJEXT) q-qsearch.$(OBJEXT) \
-	q-qsize.$(OBJEXT) q-qtbz2.$(OBJEXT) q-qtegrity.$(OBJEXT) \
-	q-quse.$(OBJEXT) q-qwhich.$(OBJEXT) q-qxpak.$(OBJEXT) \
-	$(am__objects_1)
+	q-qgpkg-sign.$(OBJEXT) q-qgrep.$(OBJEXT) q-qkeyword.$(OBJEXT) \
+	q-qlist.$(OBJEXT) q-qlop.$(OBJEXT) q-qmaint.$(OBJEXT) \
+	q-qnews.$(OBJEXT) q-qetuto.$(OBJEXT) q-qmerge.$(OBJEXT) \
+	q-qpkg.$(OBJEXT) q-qsearch.$(OBJEXT) q-qsize.$(OBJEXT) \
+	q-qtbz2.$(OBJEXT) q-qtegrity.$(OBJEXT) q-quse.$(OBJEXT) \
+	q-qwhich.$(OBJEXT) q-qxpak.$(OBJEXT) $(am__objects_1)
 q_OBJECTS = $(am_q_OBJECTS)
 am__DEPENDENCIES_1 =
-@SYSTEM_LIBCURL_FALSE@am__DEPENDENCIES_2 =  \
-@SYSTEM_LIBCURL_FALSE@	$(top_builddir)/src/curl/libqcurl.a \
-@SYSTEM_LIBCURL_FALSE@	$(am__DEPENDENCIES_1)
-@SYSTEM_LIBCURL_TRUE@am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1)
+@INTERNAL_CURL_FALSE@am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1)
+@INTERNAL_CURL_TRUE@am__DEPENDENCIES_2 = $(INTERNAL_CURL_LIB) \
+@INTERNAL_CURL_TRUE@	$(am__DEPENDENCIES_1)
 q_DEPENDENCIES = $(top_builddir)/libq/libq.a \
 	$(top_builddir)/autotools/gnulib/libgnu.a \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
@@ -279,6 +280,33 @@ q_DEPENDENCIES = $(top_builddir)/libq/libq.a \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_2) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
+am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
+am__vpath_adj = case $$p in \
+    $(srcdir)/*) f=`echo "$$p" | sed "s|^$$srcdirstrip/||"`;; \
+    *) f=$$p;; \
+  esac;
+am__strip_dir = f=`echo $$p | sed -e 's|^.*/||'`;
+am__install_max = 40
+am__nobase_strip_setup = \
+  srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
+am__nobase_strip = \
+  for p in $$list; do echo "$$p"; done | sed -e "s|$$srcdirstrip/||"
+am__nobase_list = $(am__nobase_strip_setup); \
+  for p in $$list; do echo "$$p $$p"; done | \
+  sed "s| $$srcdirstrip/| |;"' / .*\//!s/ .*/ ./; s,\( .*\)/[^/]*$$,\1,' | \
+  $(AWK) 'BEGIN { files["."] = "" } { files[$$2] = files[$$2] " " $$1; \
+    if (++n[$$2] == $(am__install_max)) \
+      { print $$2, files[$$2]; n[$$2] = 0; files[$$2] = "" } } \
+    END { for (dir in files) print dir, files[dir] }'
+am__base_list = \
+  sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
+  sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
+am__uninstall_files_from_dir = { \
+  { test ! -d "$$dir" && test ! -f "$$dir" && test ! -r "$$dir"; } \
+  || { echo " ( cd '$$dir' && rm -f" $$files ")"; \
+       $(am__cd) "$$dir" && echo $$files | $(am__xargs_n) 40 $(am__rm_f); }; \
+  }
+SCRIPTS = $(dist_sbin_SCRIPTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -297,9 +325,10 @@ am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/q-main.Po ./$(DEPDIR)/q-q.Po \
 	./$(DEPDIR)/q-qatom.Po ./$(DEPDIR)/q-qcheck.Po \
 	./$(DEPDIR)/q-qdepends.Po ./$(DEPDIR)/q-qetuto.Po \
-	./$(DEPDIR)/q-qfile.Po ./$(DEPDIR)/q-qgrep.Po \
-	./$(DEPDIR)/q-qkeyword.Po ./$(DEPDIR)/q-qlist.Po \
-	./$(DEPDIR)/q-qlop.Po ./$(DEPDIR)/q-qmanifest.Po \
+	./$(DEPDIR)/q-qfile.Po ./$(DEPDIR)/q-qgpkg-sign.Po \
+	./$(DEPDIR)/q-qgrep.Po ./$(DEPDIR)/q-qkeyword.Po \
+	./$(DEPDIR)/q-qlist.Po ./$(DEPDIR)/q-qlop.Po \
+	./$(DEPDIR)/q-qmaint.Po ./$(DEPDIR)/q-qmanifest.Po \
 	./$(DEPDIR)/q-qmerge.Po ./$(DEPDIR)/q-qnews.Po \
 	./$(DEPDIR)/q-qpkg.Po ./$(DEPDIR)/q-qsearch.Po \
 	./$(DEPDIR)/q-qsize.Po ./$(DEPDIR)/q-qtbz2.Po \
@@ -337,35 +366,9 @@ am__can_run_installinfo = \
     n|no|NO) false;; \
     *) (install-info --version) >/dev/null 2>&1;; \
   esac
-am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
-am__vpath_adj = case $$p in \
-    $(srcdir)/*) f=`echo "$$p" | sed "s|^$$srcdirstrip/||"`;; \
-    *) f=$$p;; \
-  esac;
-am__strip_dir = f=`echo $$p | sed -e 's|^.*/||'`;
-am__install_max = 40
-am__nobase_strip_setup = \
-  srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
-am__nobase_strip = \
-  for p in $$list; do echo "$$p"; done | sed -e "s|$$srcdirstrip/||"
-am__nobase_list = $(am__nobase_strip_setup); \
-  for p in $$list; do echo "$$p $$p"; done | \
-  sed "s| $$srcdirstrip/| |;"' / .*\//!s/ .*/ ./; s,\( .*\)/[^/]*$$,\1,' | \
-  $(AWK) 'BEGIN { files["."] = "" } { files[$$2] = files[$$2] " " $$1; \
-    if (++n[$$2] == $(am__install_max)) \
-      { print $$2, files[$$2]; n[$$2] = 0; files[$$2] = "" } } \
-    END { for (dir in files) print dir, files[dir] }'
-am__base_list = \
-  sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
-  sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
-am__uninstall_files_from_dir = { \
-  { test ! -d "$$dir" && test ! -f "$$dir" && test ! -r "$$dir"; } \
-  || { echo " ( cd '$$dir' && rm -f" $$files ")"; \
-       $(am__cd) "$$dir" && echo $$files | $(am__xargs_n) 40 $(am__rm_f); }; \
-  }
 man1dir = $(mandir)/man1
 NROFF = nroff
-MANS = $(dist_man_MANS)
+MANS = $(dist_man1_MANS)
 RECURSIVE_CLEAN_TARGETS = mostlyclean-recursive clean-recursive	\
   distclean-recursive maintainer-clean-recursive
 am__recursive_targets = \
@@ -392,8 +395,8 @@ am__define_uniq_tagged_files = \
   unique=`for i in $$list; do \
     if test -f "$$i"; then echo $$i; else echo $(srcdir)/$$i; fi; \
   done | $(am__uniquify_input)`
-DIST_SUBDIRS = autotools/gnulib libq src/curl . tests
-am__DIST_COMMON = $(dist_man_MANS) $(srcdir)/Makefile.in \
+DIST_SUBDIRS = $(SUBDIRS)
+am__DIST_COMMON = $(dist_man1_MANS) $(srcdir)/Makefile.in \
 	$(srcdir)/config.h.in COPYING INSTALL README.md ar-lib compile \
 	config.guess config.sub depcomp install-sh ltmain.sh missing
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
@@ -868,6 +871,7 @@ GNULIB_LOCALEDIR = @GNULIB_LOCALEDIR@
 GNULIB_LOCALEDIR_c = @GNULIB_LOCALEDIR_c@
 GNULIB_LOCALEDIR_c_make = @GNULIB_LOCALEDIR_c_make@
 GPGME_CFLAGS = @GPGME_CFLAGS@
+GPGME_ENABLED = @GPGME_ENABLED@
 GPGME_LIBS = @GPGME_LIBS@
 GPKG_ENABLED = @GPKG_ENABLED@
 GTREE_ENABLED = @GTREE_ENABLED@
@@ -1155,6 +1159,10 @@ INSTALL_SCRIPT = @INSTALL_SCRIPT@
 INSTALL_STRIP_PROGRAM = @INSTALL_STRIP_PROGRAM@
 INT32_MAX_LT_INTMAX_MAX = @INT32_MAX_LT_INTMAX_MAX@
 INT64_MAX_EQ_LONG_MAX = @INT64_MAX_EQ_LONG_MAX@
+INTERNAL_CFLAGS = @INTERNAL_CFLAGS@
+INTERNAL_CPPFLAGS = @INTERNAL_CPPFLAGS@
+INTERNAL_CURL_LIBS = @INTERNAL_CURL_LIBS@
+INTERNAL_LDFLAGS = @INTERNAL_LDFLAGS@
 LDFLAGS = @LDFLAGS@
 LIBARCHIVE_CFLAGS = @LIBARCHIVE_CFLAGS@
 LIBARCHIVE_LIBS = @LIBARCHIVE_LIBS@
@@ -1481,6 +1489,8 @@ SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 SIG_ATOMIC_T_SUFFIX = @SIG_ATOMIC_T_SUFFIX@
 SIZE_T_SUFFIX = @SIZE_T_SUFFIX@
+STATICXML2_CFLAGS = @STATICXML2_CFLAGS@
+STATICXML2_LIBS = @STATICXML2_LIBS@
 STDCKDINT_H = @STDCKDINT_H@
 STDDEF_H = @STDDEF_H@
 STDDEF_NOT_IDEMPOTENT = @STDDEF_NOT_IDEMPOTENT@
@@ -1496,8 +1506,6 @@ UNISTD_H_DEFINES_STRUCT_TIMESPEC = @UNISTD_H_DEFINES_STRUCT_TIMESPEC@
 UNISTD_H_HAVE_SYS_RANDOM_H = @UNISTD_H_HAVE_SYS_RANDOM_H@
 UNISTD_H_HAVE_WINSOCK2_H = @UNISTD_H_HAVE_WINSOCK2_H@
 UNISTD_H_HAVE_WINSOCK2_H_AND_USE_SOCKETS = @UNISTD_H_HAVE_WINSOCK2_H_AND_USE_SOCKETS@
-VCURL_DEPS_CFLAGS = @VCURL_DEPS_CFLAGS@
-VCURL_DEPS_LIBS = @VCURL_DEPS_LIBS@
 VERSION = @VERSION@
 WCHAR_T_SUFFIX = @WCHAR_T_SUFFIX@
 WINDOWS_64_BIT_OFF_T = @WINDOWS_64_BIT_OFF_T@
@@ -1573,32 +1581,35 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 ACLOCAL_AMFLAGS = -I autotools/m4
-@SYSTEM_LIBCURL_FALSE@CURL_SUBDIR = src/curl
-@SYSTEM_LIBCURL_TRUE@CURL_SUBDIR = 
-@SYSTEM_LIBCURL_FALSE@CURL_CPPFLAGS = -I$(top_srcdir)/src/curl/include -DCURL_STATICLIB
-@SYSTEM_LIBCURL_TRUE@CURL_CPPFLAGS = $(LIBCURL_CFLAGS)
-@SYSTEM_LIBCURL_FALSE@CURL_LIBS = $(top_builddir)/src/curl/libqcurl.a $(VCURL_DEPS_LIBS)
-@SYSTEM_LIBCURL_TRUE@CURL_LIBS = $(LIBCURL_LIBS)
+@INTERNAL_CURL_FALSE@CURL_CPPFLAGS = $(LIBCURL_CFLAGS)
+@INTERNAL_CURL_TRUE@CURL_CPPFLAGS = -I$(top_srcdir)/src/curl/include -DCURL_STATICLIB
+@INTERNAL_CURL_TRUE@INTERNAL_CURL_BUILD = $(top_builddir)/internal-libs/curl
+@INTERNAL_CURL_TRUE@INTERNAL_CURL_LIB = $(INTERNAL_CURL_BUILD)/lib/.libs/libcurl.a
+@INTERNAL_CURL_FALSE@CURL_LIBS = $(LIBCURL_LIBS)
+@INTERNAL_CURL_TRUE@CURL_LIBS = $(INTERNAL_CURL_LIB) $(INTERNAL_CURL_LIBS)
+@INTERNAL_CURL_TRUE@BUILT_SOURCES = internal-curl
+@INTERNAL_CURL_FALSE@INTERNAL_CURL_CLEAN = :
+@INTERNAL_CURL_TRUE@INTERNAL_CURL_CLEAN = $(MAKE) $(AM_MAKEFLAGS) -C $(INTERNAL_CURL_BUILD)/lib clean
+@INTERNAL_CURL_FALSE@INTERNAL_CURL_DISTCLEAN = :
+@INTERNAL_CURL_TRUE@INTERNAL_CURL_DISTCLEAN = rm -rf $(top_builddir)/internal-libs
 SUBDIRS = \
 	autotools/gnulib \
 	libq \
-	$(CURL_SUBDIR) \
 	. \
 	tests \
 	$(NULL)
 
-APPLETS = q qatom qcheck qdepends qfile qgrep qkeyword qlist qlop \
-	qnews qetuto qmerge qpkg qsearch qsize qtbz2 qtegrity quse \
-	qwhich qxpak $(NULL) $(am__append_4)
-dist_man_MANS = man/q.1 man/qatom.1 man/qcheck.1 man/qdepends.1 \
-	man/qfile.1 man/qgrep.1 man/qkeyword.1 man/qlist.1 man/qlop.1 \
-	man/qmerge.1 man/qpkg.1 man/qsearch.1 man/qsize.1 man/qtbz2.1 \
-	man/qtegrity.1 man/quse.1 man/qwhich.1 man/qxpak.1 $(NULL) \
-	$(am__append_3)
-q_SOURCES = main.c q.c qatom.c qcheck.c qdepends.c qfile.c qgrep.c \
-	qkeyword.c qlist.c qlop.c qnews.c qetuto.c qmerge.c qpkg.c \
-	qsearch.c qsize.c qtbz2.c qtegrity.c quse.c qwhich.c qxpak.c \
-	$(NULL) $(am__append_1)
+APPLETS = q qatom qcheck qdepends qfile qgpkg-sign qgrep qkeyword \
+	qlist qlop qmaint qnews qetuto qmerge qpkg qsearch qsize qtbz2 \
+	qtegrity quse qwhich qxpak $(NULL) $(am__append_3)
+
+# man/*.1 are generated out-of-band by man/mkman.py and installed per applet
+dist_man1_MANS = $(APPLETS:%=man/%.1) man/qetc-update.1
+dist_sbin_SCRIPTS = qetc-update
+q_SOURCES = main.c q.c qatom.c qcheck.c qdepends.c qfile.c \
+	qgpkg-sign.c qgrep.c qkeyword.c qlist.c qlop.c qmaint.c \
+	qnews.c qetuto.c qmerge.c qpkg.c qsearch.c qsize.c qtbz2.c \
+	qtegrity.c quse.c qwhich.c qxpak.c $(NULL) $(am__append_1)
 q_CPPFLAGS = -I$(top_srcdir)/libq -I$(top_builddir)/autotools/gnulib \
 	-I$(top_srcdir)/autotools/gnulib $(OPENMP_CFLAGS) \
 	$(LIBBL2_CFLAGS) $(LIBZ_CFLAGS) $(LIBARCHIVE_CFLAGS) \
@@ -1624,7 +1635,7 @@ EXTRA_DIST = \
 	tests \
 	$(NULL)
 
-all: config.h
+all: $(BUILT_SOURCES) config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-recursive
 
 .SUFFIXES:
@@ -1723,6 +1734,41 @@ clean-binPROGRAMS:
 q$(EXEEXT): $(q_OBJECTS) $(q_DEPENDENCIES) $(EXTRA_q_DEPENDENCIES) 
 	@rm -f q$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(q_OBJECTS) $(q_LDADD) $(LIBS)
+install-dist_sbinSCRIPTS: $(dist_sbin_SCRIPTS)
+	@$(NORMAL_INSTALL)
+	@list='$(dist_sbin_SCRIPTS)'; test -n "$(sbindir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(sbindir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(sbindir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  if test -f "$$d$$p"; then echo "$$d$$p"; echo "$$p"; else :; fi; \
+	done | \
+	sed -e 'p;s,.*/,,;n' \
+	    -e 'h;s|.*|.|' \
+	    -e 'p;x;s,.*/,,;$(transform)' | sed 'N;N;N;s,\n, ,g' | \
+	$(AWK) 'BEGIN { files["."] = ""; dirs["."] = 1; } \
+	  { d=$$3; if (dirs[d] != 1) { print "d", d; dirs[d] = 1 } \
+	    if ($$2 == $$4) { files[d] = files[d] " " $$1; \
+	      if (++n[d] == $(am__install_max)) { \
+		print "f", d, files[d]; n[d] = 0; files[d] = "" } } \
+	    else { print "f", d "/" $$4, $$1 } } \
+	  END { for (d in files) print "f", d, files[d] }' | \
+	while read type dir files; do \
+	     if test "$$dir" = .; then dir=; else dir=/$$dir; fi; \
+	     test -z "$$files" || { \
+	       echo " $(INSTALL_SCRIPT) $$files '$(DESTDIR)$(sbindir)$$dir'"; \
+	       $(INSTALL_SCRIPT) $$files "$(DESTDIR)$(sbindir)$$dir" || exit $$?; \
+	     } \
+	; done
+
+uninstall-dist_sbinSCRIPTS:
+	@$(NORMAL_UNINSTALL)
+	@list='$(dist_sbin_SCRIPTS)'; test -n "$(sbindir)" || exit 0; \
+	files=`for p in $$list; do echo "$$p"; done | \
+	       sed -e 's,.*/,,;$(transform)'`; \
+	dir='$(DESTDIR)$(sbindir)'; $(am__uninstall_files_from_dir)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -1737,10 +1783,12 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qdepends.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qetuto.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qfile.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qgpkg-sign.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qgrep.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qkeyword.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qlist.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qlop.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qmaint.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qmanifest.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qmerge.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/q-qnews.Po@am__quote@ # am--include-marker
@@ -1857,6 +1905,20 @@ q-qfile.obj: qfile.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qfile.obj `if test -f 'qfile.c'; then $(CYGPATH_W) 'qfile.c'; else $(CYGPATH_W) '$(srcdir)/qfile.c'; fi`
 
+q-qgpkg-sign.o: qgpkg-sign.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qgpkg-sign.o -MD -MP -MF $(DEPDIR)/q-qgpkg-sign.Tpo -c -o q-qgpkg-sign.o `test -f 'qgpkg-sign.c' || echo '$(srcdir)/'`qgpkg-sign.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qgpkg-sign.Tpo $(DEPDIR)/q-qgpkg-sign.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qgpkg-sign.c' object='q-qgpkg-sign.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qgpkg-sign.o `test -f 'qgpkg-sign.c' || echo '$(srcdir)/'`qgpkg-sign.c
+
+q-qgpkg-sign.obj: qgpkg-sign.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qgpkg-sign.obj -MD -MP -MF $(DEPDIR)/q-qgpkg-sign.Tpo -c -o q-qgpkg-sign.obj `if test -f 'qgpkg-sign.c'; then $(CYGPATH_W) 'qgpkg-sign.c'; else $(CYGPATH_W) '$(srcdir)/qgpkg-sign.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qgpkg-sign.Tpo $(DEPDIR)/q-qgpkg-sign.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qgpkg-sign.c' object='q-qgpkg-sign.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qgpkg-sign.obj `if test -f 'qgpkg-sign.c'; then $(CYGPATH_W) 'qgpkg-sign.c'; else $(CYGPATH_W) '$(srcdir)/qgpkg-sign.c'; fi`
+
 q-qgrep.o: qgrep.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qgrep.o -MD -MP -MF $(DEPDIR)/q-qgrep.Tpo -c -o q-qgrep.o `test -f 'qgrep.c' || echo '$(srcdir)/'`qgrep.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qgrep.Tpo $(DEPDIR)/q-qgrep.Po
@@ -1912,6 +1974,20 @@ q-qlop.obj: qlop.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qlop.c' object='q-qlop.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qlop.obj `if test -f 'qlop.c'; then $(CYGPATH_W) 'qlop.c'; else $(CYGPATH_W) '$(srcdir)/qlop.c'; fi`
+
+q-qmaint.o: qmaint.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qmaint.o -MD -MP -MF $(DEPDIR)/q-qmaint.Tpo -c -o q-qmaint.o `test -f 'qmaint.c' || echo '$(srcdir)/'`qmaint.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qmaint.Tpo $(DEPDIR)/q-qmaint.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qmaint.c' object='q-qmaint.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qmaint.o `test -f 'qmaint.c' || echo '$(srcdir)/'`qmaint.c
+
+q-qmaint.obj: qmaint.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qmaint.obj -MD -MP -MF $(DEPDIR)/q-qmaint.Tpo -c -o q-qmaint.obj `if test -f 'qmaint.c'; then $(CYGPATH_W) 'qmaint.c'; else $(CYGPATH_W) '$(srcdir)/qmaint.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/q-qmaint.Tpo $(DEPDIR)/q-qmaint.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qmaint.c' object='q-qmaint.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qmaint.obj `if test -f 'qmaint.c'; then $(CYGPATH_W) 'qmaint.c'; else $(CYGPATH_W) '$(srcdir)/qmaint.c'; fi`
 
 q-qnews.o: qnews.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT q-qnews.o -MD -MP -MF $(DEPDIR)/q-qnews.Tpo -c -o q-qnews.o `test -f 'qnews.c' || echo '$(srcdir)/'`qnews.c
@@ -2080,10 +2156,10 @@ q-qmanifest.obj: qmanifest.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='qmanifest.c' object='q-qmanifest.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(q_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o q-qmanifest.obj `if test -f 'qmanifest.c'; then $(CYGPATH_W) 'qmanifest.c'; else $(CYGPATH_W) '$(srcdir)/qmanifest.c'; fi`
-install-man1: $(dist_man_MANS)
+install-man1: $(dist_man1_MANS)
 	@$(NORMAL_INSTALL)
-	@list1=''; \
-	list2='$(dist_man_MANS)'; \
+	@list1='$(dist_man1_MANS)'; \
+	list2=''; \
 	test -n "$(man1dir)" \
 	  && test -n "`echo $$list1$$list2`" \
 	  || exit 0; \
@@ -2116,10 +2192,8 @@ install-man1: $(dist_man_MANS)
 
 uninstall-man1:
 	@$(NORMAL_UNINSTALL)
-	@list=''; test -n "$(man1dir)" || exit 0; \
+	@list='$(dist_man1_MANS)'; test -n "$(man1dir)" || exit 0; \
 	files=`{ for i in $$list; do echo "$$i"; done; \
-	l2='$(dist_man_MANS)'; for i in $$l2; do echo "$$i"; done | \
-	  sed -n '/\.1[a-z]*$$/p'; \
 	} | sed -e 's,.*/,,;h;s,.*\.,,;s,^[^1][0-9a-z]*$$,1,;x' \
 	      -e 's,\.[0-9a-z]*$$,,;$(transform);G;s,\n,.,'`; \
 	dir='$(DESTDIR)$(man1dir)'; $(am__uninstall_files_from_dir)
@@ -2433,15 +2507,18 @@ distcleancheck: distclean
 	       $(distcleancheck_listfiles) ; \
 	       exit 1; } >&2
 check-am: all-am
-check: check-recursive
-all-am: Makefile $(PROGRAMS) $(MANS) config.h
+check: $(BUILT_SOURCES)
+	$(MAKE) $(AM_MAKEFLAGS) check-recursive
+all-am: Makefile $(PROGRAMS) $(SCRIPTS) $(MANS) config.h
 installdirs: installdirs-recursive
 installdirs-am:
-	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(man1dir)"; do \
+	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(sbindir)" "$(DESTDIR)$(man1dir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
-install: install-recursive
-install-exec: install-exec-recursive
+install: $(BUILT_SOURCES)
+	$(MAKE) $(AM_MAKEFLAGS) install-recursive
+install-exec: $(BUILT_SOURCES)
+	$(MAKE) $(AM_MAKEFLAGS) install-exec-recursive
 install-data: install-data-recursive
 uninstall: uninstall-recursive
 
@@ -2470,6 +2547,7 @@ distclean-generic:
 maintainer-clean-generic:
 	@echo "This command is intended for maintainers to use"
 	@echo "it deletes files that may require special tools to rebuild."
+	-$(am__rm_f) $(BUILT_SOURCES)
 clean: clean-recursive
 
 clean-am: clean-binPROGRAMS clean-generic clean-local mostlyclean-am
@@ -2483,10 +2561,12 @@ distclean: distclean-recursive
 	-rm -f ./$(DEPDIR)/q-qdepends.Po
 	-rm -f ./$(DEPDIR)/q-qetuto.Po
 	-rm -f ./$(DEPDIR)/q-qfile.Po
+	-rm -f ./$(DEPDIR)/q-qgpkg-sign.Po
 	-rm -f ./$(DEPDIR)/q-qgrep.Po
 	-rm -f ./$(DEPDIR)/q-qkeyword.Po
 	-rm -f ./$(DEPDIR)/q-qlist.Po
 	-rm -f ./$(DEPDIR)/q-qlop.Po
+	-rm -f ./$(DEPDIR)/q-qmaint.Po
 	-rm -f ./$(DEPDIR)/q-qmanifest.Po
 	-rm -f ./$(DEPDIR)/q-qmerge.Po
 	-rm -f ./$(DEPDIR)/q-qnews.Po
@@ -2500,7 +2580,7 @@ distclean: distclean-recursive
 	-rm -f ./$(DEPDIR)/q-qxpak.Po
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
-	distclean-hdr distclean-tags
+	distclean-hdr distclean-local distclean-tags
 
 dvi: dvi-recursive
 
@@ -2520,7 +2600,7 @@ install-dvi: install-dvi-recursive
 
 install-dvi-am:
 
-install-exec-am: install-binPROGRAMS
+install-exec-am: install-binPROGRAMS install-dist_sbinSCRIPTS
 	@$(NORMAL_INSTALL)
 	$(MAKE) $(AM_MAKEFLAGS) install-exec-hook
 install-html: install-html-recursive
@@ -2553,10 +2633,12 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f ./$(DEPDIR)/q-qdepends.Po
 	-rm -f ./$(DEPDIR)/q-qetuto.Po
 	-rm -f ./$(DEPDIR)/q-qfile.Po
+	-rm -f ./$(DEPDIR)/q-qgpkg-sign.Po
 	-rm -f ./$(DEPDIR)/q-qgrep.Po
 	-rm -f ./$(DEPDIR)/q-qkeyword.Po
 	-rm -f ./$(DEPDIR)/q-qlist.Po
 	-rm -f ./$(DEPDIR)/q-qlop.Po
+	-rm -f ./$(DEPDIR)/q-qmaint.Po
 	-rm -f ./$(DEPDIR)/q-qmanifest.Po
 	-rm -f ./$(DEPDIR)/q-qmerge.Po
 	-rm -f ./$(DEPDIR)/q-qnews.Po
@@ -2583,12 +2665,13 @@ ps: ps-recursive
 
 ps-am:
 
-uninstall-am: uninstall-binPROGRAMS uninstall-man
+uninstall-am: uninstall-binPROGRAMS uninstall-dist_sbinSCRIPTS \
+	uninstall-man
 
 uninstall-man: uninstall-man1
 
-.MAKE: $(am__recursive_targets) all install-am install-exec-am \
-	install-strip
+.MAKE: $(am__recursive_targets) all check install install-am \
+	install-exec install-exec-am install-strip
 
 .PHONY: $(am__recursive_targets) CTAGS GTAGS TAGS all all-am \
 	am--depfiles am--refresh check check-am clean \
@@ -2596,24 +2679,25 @@ uninstall-man: uninstall-man1
 	cscope cscopelist-am ctags ctags-am dist dist-all dist-bzip2 \
 	dist-bzip3 dist-gzip dist-lzip dist-shar dist-tarZ dist-xz \
 	dist-zip dist-zstd distcheck distclean distclean-compile \
-	distclean-generic distclean-hdr distclean-tags distcleancheck \
-	distdir distuninstallcheck dvi dvi-am html html-am info \
-	info-am install install-am install-binPROGRAMS install-data \
-	install-data-am install-dvi install-dvi-am install-exec \
-	install-exec-am install-exec-hook install-html install-html-am \
-	install-info install-info-am install-man install-man1 \
-	install-pdf install-pdf-am install-ps install-ps-am \
-	install-strip installcheck installcheck-am installdirs \
-	installdirs-am maintainer-clean maintainer-clean-generic \
-	mostlyclean mostlyclean-compile mostlyclean-generic pdf pdf-am \
-	ps ps-am tags tags-am uninstall uninstall-am \
-	uninstall-binPROGRAMS uninstall-man uninstall-man1
+	distclean-generic distclean-hdr distclean-local distclean-tags \
+	distcleancheck distdir distuninstallcheck dvi dvi-am html \
+	html-am info info-am install install-am install-binPROGRAMS \
+	install-data install-data-am install-dist_sbinSCRIPTS \
+	install-dvi install-dvi-am install-exec install-exec-am \
+	install-exec-hook install-html install-html-am install-info \
+	install-info-am install-man install-man1 install-pdf \
+	install-pdf-am install-ps install-ps-am install-strip \
+	installcheck installcheck-am installdirs installdirs-am \
+	maintainer-clean maintainer-clean-generic mostlyclean \
+	mostlyclean-compile mostlyclean-generic pdf pdf-am ps ps-am \
+	tags tags-am uninstall uninstall-am uninstall-binPROGRAMS \
+	uninstall-dist_sbinSCRIPTS uninstall-man uninstall-man1
 
 .PRECIOUS: Makefile
 
-
-man/%.1: %.c applets.h man/include/%.optdesc.yaml man/include/%.desc | q
-	man/mkman.py $@
+@INTERNAL_CURL_TRUE@internal-curl:
+@INTERNAL_CURL_TRUE@	$(MAKE) $(AM_MAKEFLAGS) -C $(INTERNAL_CURL_BUILD)/lib
+@INTERNAL_CURL_TRUE@.PHONY: internal-curl
 
 install-exec-hook:
 	cd $(DESTDIR)$(bindir); \
@@ -2623,6 +2707,10 @@ install-exec-hook:
 
 clean-local:
 	rm -f $(APPLETS)
+	-$(INTERNAL_CURL_CLEAN)
+
+distclean-local:
+	-$(INTERNAL_CURL_DISTCLEAN)
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

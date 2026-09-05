@@ -5,10 +5,11 @@
  * Copyright 2003-2007 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2004-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
-#ifndef _ARRAY_H
-#define _ARRAY_H 1
+#ifndef ARRAY_H
+#define ARRAY_H 1
 
 #include <string.h>  /* strlen in push_str */
 
@@ -33,13 +34,13 @@ void  *array_binsearch(array *arr, void *needle, array_compar_cb *func, size_t *
 
 #define array_for_each(arr, n, ele) \
   for (n = 0, ele = NULL; \
-       (n < array_cnt(arr) && \
+       ((size_t)(n) < array_cnt(arr) && \
         (ele = array_get(arr, n))); \
        n++)
 #define array_for_each_rev(arr, n, ele) \
   for (n = array_cnt(arr), ele = NULL; \
-       (n-- > 0 && \
-        (ele = array_get(arr, n))); \
+       (n > 0 && \
+        (ele = array_get(arr, n - 1), n--, ele != NULL)); \
        /*nothing*/)
 
 #endif

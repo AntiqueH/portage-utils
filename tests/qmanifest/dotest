@@ -12,6 +12,42 @@ export PORTAGE_CONFIGROOT=${as}/root
 
 mktmpdir
 
+# regression #3: a metadata/layout.conf larger than parse_layout_conf's
+# 8192-byte read buffer must be compacted between reads without reading
+# past that stack buffer.  Verifying the tree runs parse_layout_conf over
+# the >8192 fixture; the asan+ubsan gate is the enforcer (pre-fix this
+# aborts with a stack-buffer-overflow in parse_layout_conf).
+rm -rf bigtree
+cp -r "${as}/root/bigtree" bigtree
+out=$(qmanifest bigtree 2>&1 || :)
+if grep -qiE "AddressSanitizer|runtime error|buffer-overflow" <<< "${out}" ; then
+	rc=1
+else
+	rc=0
+fi
+tend $rc "layout.conf > 8192 parsed without OOB (parse_layout_conf)"
+
+# testing regression with manifest-hashes in a bigger than 8192 layout.conf
+# that has no '=' trailing. we somehow found this with asan tests via qmanifest.c
+rm -rf bigtree7
+mkdir -p bigtree7/metadata
+awk 'BEGIN {
+	n = 0;
+	while (n < 8100) {
+		line = "# aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		print line; n += length(line) + 1;
+	}
+	print "manifest-hashes";           # malformed: no "="
+	for (i = 0; i < 60; i++) print "bbbb";   # filler past 8192, no "="
+}' > bigtree7/metadata/layout.conf
+out=$(qmanifest bigtree7 2>&1 || :)
+if grep -qiE "AddressSanitizer|runtime error|buffer-overflow" <<< "${out}" ; then
+	rc=1
+else
+	rc=0
+fi
+tend $rc "malformed manifest-hashes in >8192 layout.conf parsed without OOB"
+
 test() {
 	local num=$1 exp=$2 ret=0
 	shift 2
@@ -50,6 +86,7 @@ test 05 1 "qmanifest -o notatree"
 rm -Rf testtree
 cp -r "${ROOT}/simpletree" testtree || echo try it anyway
 export HOME=${PWD}  # for gpgme/gnupg home
+export GNUPGHOME=${PWD}/.gnupg
 mkdir -p "${HOME}"/.gnupg
 # silence gpg warnings
 chmod -R og-rwx "${HOME}"/.gnupg
@@ -97,6 +134,26 @@ test 06 0 "qmanifest -g -s ${SIGNAS} -p testtree <<< ${KEYPASS}"
 rm -f gpgme.log
 test 07 0 "qmanifest testtree | sed -e '/Manifest timestamp/d' -e 's/made .* UTC by/made by/'"
 
+# regression time. a empty (0-byte) recorded file must be hashed and
+# verified like any other, not rejected as "cannot open file!"
+: > testtree/my-cat/mypackage/mypackage-3.ebuild
+rm -f gpgme.log
+qmanifest -g -s ${SIGNAS} -p testtree <<< ${KEYPASS} >/dev/null 2>&1 || :
+vret=0
+eout=$(qmanifest testtree 2>&1) || vret=$?
+if [[ ${vret} -eq 0 ]] && ! grep -q "cannot open file" <<< "${eout}" ; then
+	rc=0
+else
+	rc=1
+fi
+tend $rc "empty (0-byte) file verified, not 'cannot open file!'"
+
+else
+	if [[ -n ${Q_RUN_WITH_VALGRIND} ]] ; then
+		echo "${WARN}SKIPPED:${NORMAL} qmanifest gpg checks (valgrind active, gpgme incompatible)"
+	else
+		echo "${WARN}SKIPPED:${NORMAL} qmanifest gpg checks (gpg key import failed)"
+	fi
 fi  # gpgimport
 
 # shut down agents and whatnot

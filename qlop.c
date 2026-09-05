@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -110,11 +111,12 @@ parse_date(const char *sdate, time_t *t)
 	if (s) {
 		/* Handle custom format like "%Y|2012". */
 		size_t fmtlen = s - sdate;
-		char fmt[fmtlen + 1];
+		char *fmt = xmalloc(fmtlen + 1);
 		memcpy(fmt, sdate, fmtlen);
 		fmt[fmtlen] = '\0';
 		sdate = s + 1;
 		s = strptime(sdate, fmt, &tm);
+		free(fmt);
 		if (s == NULL || s[0] != '\0')
 			return false;
 	} else {
@@ -128,10 +130,14 @@ parse_date(const char *sdate, time_t *t)
 		size_t len = strspn(sdate, "0123456789-:T@");
 		if (sdate[len] == '\0') {
 			if (sdate[0] == '@') {
-				time_t d = (time_t)strtoll(&sdate[1], (char **)&s, 10);
+				char *e;
+				time_t d = (time_t)strtoll(&sdate[1], &e, 10);
+				s = e;
 				localtime_r(&d, &tm);
 			} else if (strchr(sdate, '-') == NULL) {
-				time_t d = (time_t)strtoll(sdate, (char **)&s, 10);
+				char *e;
+				time_t d = (time_t)strtoll(sdate, &e, 10);
+				s = e;
 				localtime_r(&d, &tm);
 			} else if ((s = strchr(sdate, 'T')) == NULL) {
 				s = strptime(sdate, "%Y-%m-%d", &tm);
@@ -148,28 +154,35 @@ parse_date(const char *sdate, time_t *t)
 			len = strlen(sdate) + 1;
 
 			unsigned long num;
-			char dur[len];
-			char ago[len];
+			char *dur = xmalloc(len * 2);
+			char *ago = dur + len;
 			int ret = sscanf(sdate, "%lu %s %s", &num, dur, ago);
 
 			if (ret < 2) {
 				if (strcmp(sdate, "today") == 0) {
 					num = 1;
-					snprintf(dur, len, "%s", "day");
+					strcpy(dur, "day");
 				} else if (strcmp(sdate, "yesterday") == 0) {
 					num = 2;
-					snprintf(dur, len, "%s", "day");
+					strcpy(dur, "day");
 				} else {
+					free(dur);
 					return false;
 				}
 			}
-			if (ret == 3 && strcmp(ago, "ago") != 0)
+			if (ret == 3 && strcmp(ago, "ago") != 0) {
+				free(dur);
 				return false;
+			}
 
-			if (time(t) == -1)
+			if (time(t) == -1) {
+				free(dur);
 				return false;
-			if (localtime_r(t, &tm) == NULL)
+			}
+			if (localtime_r(t, &tm) == NULL) {
+				free(dur);
 				return false;
+			}
 
 			/* Chop and trailing "s" sizes. */
 			len = strlen(dur);
@@ -196,10 +209,15 @@ parse_date(const char *sdate, time_t *t)
  days:
 				/* This is in seconds, so scale w/that.  */
 				*t -= (num * 24 * 60 * 60);
-				if (localtime_r(t, &tm) == NULL)
+				if (localtime_r(t, &tm) == NULL) {
+					free(dur);
 					return false;
-			} else
+				}
+			} else {
+				free(dur);
 				return false;
+			}
+			free(dur);
 		}
 	}
 
@@ -305,8 +323,8 @@ struct pkg_match {
 static int
 pkg_sort_cb(const void *l, const void *r)
 {
-	struct pkg_match *pl = *(struct pkg_match **)l;
-	struct pkg_match *pr = *(struct pkg_match **)r;
+	struct pkg_match *pl = *(struct pkg_match * const *)l;
+	struct pkg_match *pr = *(struct pkg_match * const *)r;
 	depend_atom *al = pl->atom;
 	depend_atom *ar = pr->atom;
 
@@ -520,25 +538,25 @@ static int do_emerge_log(
 				if (last_merge != tstart_emerge) {
 					array *vals = hash_values(atomset);
 
-					array_deepfree(vals, (array_free_cb *)atom_implode);
+					array_deepfree(vals, atom_implode_cb);
 
 					hash_clear(atomset);
 					last_merge = tstart_emerge;
 				}
 
 				/* hash_add REPLACES the stored value and hands back the
-				 * old one -- free the displaced atom, NOT the new one
-				 * the hash now owns (the old code freed the stored
-				 * atom, leaving a dangling pointer that blew up as a
-				 * double free in the final cleanup whenever a cat/pn
-				 * appeared twice within one emerge invocation) */
+				 * old one -> free the displaced atom, NOT the new one
+				 * the hash now owns.
+				 * if I see another clanker generated shit here, we're going to
+				 * have to restructure the whole project. */
 				atomset = hash_add(atomset, afmt, atom, (void **)&atomw);
 				if (atomw != NULL)
 					atom_implode(atomw);
 			}
 		}
 
-		rewind(fp);
+		if (fseek(fp, 0, SEEK_SET) != 0)
+			return -1;
 	}
 
 	if (flags->show_lastmerge) {
@@ -705,7 +723,7 @@ static int do_emerge_log(
 				if (p[2] == '*' &&
 					(q = strchr(p, '\n')) != NULL)
 				{
-					p = (char *)"sync";
+					p = q_deconst("sync");
 				} else {
 					p += 20;
 					if (strpfx(p, "for ") == 0) {
@@ -870,6 +888,8 @@ static int do_emerge_log(
 								break;
 							case OLDER:
 								printf("  %sU%sD%s ", BLUE, DKBLUE, NORM);
+								break;
+							default:
 								break;
 						}
 						printf("%s", atom_format("%[CAT]%[PF]", pkgw->atom));
@@ -1046,7 +1066,7 @@ static int do_emerge_log(
 		/* emerge.log can be interrupted, incorrect and hopelessly lost,
 		 * so to eliminate some unfinished crap from there, we just
 		 * ignore anything that's > cutofftime, 10 days for now. */
-		cutofftime = 10 * 24 * 60 * 60;  /* when we consider entries stale */
+		cutofftime = (time_t)10 * 24 * 60 * 60;  /* when we consider entries stale */
 		cutofftime = (tbegin > 0 ? tbegin : tstart) - cutofftime;
 
 		/* can't report endtime for non-finished operations */
@@ -1372,7 +1392,7 @@ static int do_emerge_log(
 	array_deepfree(unmerge_matches, NULL);
 	if (atomset != NULL) {
 		array *t = hash_values(atomset);
-		array_deepfree(t, (array_free_cb *)atom_implode);
+		array_deepfree(t, atom_implode_cb);
 		hash_free(atomset);
 	}
 	return 0;
@@ -1463,7 +1483,7 @@ static array *probe_proc(array *atoms)
 					rpath[rpathlen] = '\0';
 
 					/* in bug #745798, it seems Portage optionally
-					 * compresses the buildlog -- to make matching below
+					 * compresses the buildlog, to make matching below
 					 * here easier, strip such compression extension off
 					 * first here, leaving .log */
 					if ((size_t)rpathlen > sizeof(".log.gz") &&
@@ -1472,7 +1492,7 @@ static array *probe_proc(array *atoms)
 							strpfx(p - (sizeof(".log") - 1), ".log") == 0)
 					{
 						*p = '\0';
-						rpathlen -= rpath - p;
+						rpathlen = p - rpath;
 					}
 
 					/* check if this points to a portage build:
@@ -1522,7 +1542,7 @@ static array *probe_proc(array *atoms)
 	} else {
 		/* flag /proc doesn't exist */
 		warn("/proc doesn't exist, running merges are based on heuristics");
-		array_deepfree(ret_atoms, (array_free_cb *)atom_implode);
+		array_deepfree(ret_atoms, atom_implode_cb);
 		return NULL;
 	}
 
@@ -1534,7 +1554,7 @@ static array *probe_proc(array *atoms)
 		if (geteuid() != 0) {
 			warn("insufficient privileges for full /proc access, "
 					"running merges are based on heuristics");
-			array_deepfree(ret_atoms, (array_free_cb *)atom_implode);
+			array_deepfree(ret_atoms, atom_implode_cb);
 			return NULL;
 		}
 	}
@@ -1557,9 +1577,9 @@ static array *probe_proc(array *atoms)
 				}
 			}
 			if (found)
-				array_delete(ret_atoms, j, (array_free_cb *)atom_implode);
+				array_delete(ret_atoms, j, atom_implode_cb);
 			else
-				array_delete(atoms, i, (array_free_cb *)atom_implode);
+				array_delete(atoms, i, atom_implode_cb);
 		}
 	}
 
@@ -1817,7 +1837,7 @@ int qlop_main(int argc, char **argv)
 	if (start_time < LONG_MAX)
 		do_emerge_log(logfile, &m, atoms, start_time, end_time);
 
-	array_deepfree(atoms, (array_free_cb *)atom_implode);
+	array_deepfree(atoms, atom_implode_cb);
 	free(logfile);
 
 	return EXIT_SUCCESS;

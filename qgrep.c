@@ -662,7 +662,7 @@ int qgrep_main(int argc, char **argv)
 	if (args.do_regex && args.skip_pattern)
 		regfree(&args.skip_preg);
 	if (args.include_atoms != NULL)
-		array_deepfree(args.include_atoms, (array_free_cb *)atom_implode);
+		array_deepfree(args.include_atoms, atom_implode_cb);
 	qgrep_buf_list_free(args.buf_list);
 
 	return status;

@@ -32,6 +32,7 @@ export TZ='UTC 0'
 export QMANIFEST_ENABLED="@QMANIFEST_ENABLED@"
 export GPKG_ENABLED="@GPKG_ENABLED@"
 export GTREE_ENABLED="@GTREE_ENABLED@"
+export GPGME_ENABLED="@GPGME_ENABLED@"
 
 # create symlinks for applets
 q -i -q
@@ -83,8 +84,28 @@ end() {
 	exit ${tret}
 }
 
+_qshorttmp_exit() {
+	local rc=$1
+	[[ -n ${q_short_tmp} && -d ${q_short_tmp} ]] || return 0
+	cd /
+	if [[ ${rc} -eq 0 ]] ; then
+		rm -rf "${q_short_tmp}"
+	else
+		mkdir -p "${atb}/tests/r"
+		rm -rf "${atb}/tests/r/failed-${ab##*/}"
+		mv "${q_short_tmp}" "${atb}/tests/r/failed-${ab##*/}" && \
+			echo "scratch kept in tests/r/failed-${ab##*/}"
+	fi
+}
+
 mktmpdir() {
 	local d=${1:-${Q_TMPDIR:-${ab}}/q-tmp}
+	if [[ -n ${Q_SHORT_TMPDIR} && -z $1 ]] ; then
+		d=$(mktemp -d "${TMPDIR:-/tmp}/qts.XXXXXX") \
+			|| fail "could not make short tmp dir"
+		q_short_tmp=$d
+		trap '_qshorttmp_exit $?' EXIT
+	fi
 	rm -rf "$d" && \
 	mkdir -p "$d" && \
 	pushd "$d" >/dev/null \
@@ -93,6 +114,7 @@ mktmpdir() {
 _cleantmpdir() {
 	local cmd=$1; shift
 	local d=${1:-${Q_TMPDIR:-${ab}}/q-tmp}
+	[[ -n ${q_short_tmp} && $# -eq 0 ]] && d=${q_short_tmp}
 	popd >/dev/null
 	${cmd} "${d}" || fail "could not clean tmp dir '$d'"
 }
@@ -111,14 +133,10 @@ mkportdir() {
 
 	export PORTAGE_CONFIGROOT=${PWD}
 	mkdir -p etc/portage/
-	cat <<-EOF > etc/portage/repos.conf
-		[DEFAULT]
-		main-repo = utils-test
-		[utils-test]
-		location = ${PORTDIR}
-	EOF
-	cat <<-EOF > etc/portage/make.conf
-		# in absence of a valid profile
-		ACCEPT_KEYWORDS="~amd64"
+	cat <<-EOF >etc/portage/repos.conf
+	[DEFAULT]
+	main-repo = utils-test
+	[utils-test]
+	location = ${PORTDIR}
 	EOF
 }

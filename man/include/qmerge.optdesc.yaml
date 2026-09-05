@@ -1,0 +1,235 @@
+fetch: |
+    Fetches the index update (without arguments). The \fIPackages\fR
+    index of every configured binhost is fetched, together with the
+    package moves and news it publishes, which are applied. With
+    arguments: download the named packages and their dependencies into
+    \fIPKGDIR\fR without merging them, like \fBemerge\ \-f\fR. See
+    \fB\-\-index\fR for rebuilding the local index from the packages on
+    disk.
+force: |
+    Force\-install the named target only: select the newest available
+    binary package regardless of \fBSLOT\fR, bypassing the mask,
+    keyword, license, \fB\-\-binpkg\-respect\-use\fR and
+    \fB\-\-usepkg\-exclude\fR checks, and re\-fetch and re\-index it.
+    Collision protection remains enforced.  Only the explicitly named
+    atom is affected; dependency selection is unchanged.
+search: |
+    Search all the binhost indexes for packages whose name matches the
+    given regular expression.  With \fB\-v\fR, entries that cannot be
+    installed on the current system are listed as well, other
+    repositories' candidates are shown with the reason they were not
+    selected, and a match count is printed. With \fB\-vv\fR the raw
+    search (full details) is shown : every version and every build instance
+    in every repository with its per\-instance USE, plus instance
+    counts, regardless of installability.
+install: |
+    Install (merge) the matched binary package(s) onto the system and
+    register them in the VDB.  This is the default consuming action,
+    analogous to \fBemerge\ \-K\fR.
+unmerge: |
+    Unmerge the named package(s) from the system, running the
+    shared\-file ownership scan so that files still owned by another
+    installed package are preserved. The removal, pkg_prerm and
+    pkg_postrm included, runs under portage's vdb lock
+    (\fIvar/db/.pkg.portage_lockfile\fR under \fBROOT\fR), the one
+    \fBemerge\fR takes for its own merges and unmerges, so the two
+    wait for each other. The lock is released and its file removed
+    when the last named package is gone and the world file updated.
+erase: |
+    Like \fB\-\-unmerge\fR but skip the shared\-file ownership scan:
+    every recorded file is removed except those under
+    \fBCONFIG_PROTECT\fR.  Use with care.
+deselect: |
+    Remove the given atoms and \fB@sets\fR from the world favorites
+    file without touching the installed packages, like
+    \fBemerge\ \-\-deselect\fR.  Unmerge actions (\fB\-U\fR,
+    \fB\-e\fR) imply this for the packages they remove; pass
+    \fB\-\-deselect=n\fR to keep the world entries across an
+    unmerge.  World entries still satisfied by another installed
+    version or slot are kept.
+pretend: |
+    Show what would be done without making any change to the system,
+    the VDB or \fIPKGDIR\fR.
+keepwork: |
+    Do not remove the unpacked binary packages from the \fIqmerge\fR
+    temporary directory after merging.  Useful for inspection and
+    debugging.
+update: |
+    Only consider packages that are actually newer than the installed
+    version, analogous to \fBemerge\ \-u\fR.
+deep: |
+    Consider the whole dependency tree when selecting updates rather
+    than just the named packages.  Combined with \fB\-u\fR this is
+    equivalent to \fBemerge\ \-uD\fR.
+newuse: |
+    Reinstall binary packages whose built \fBUSE\fR flags (including
+    \fB*_TARGETS\fR expansions) differ from the currently installed
+    configuration, analogous to \fBemerge\ \-N\fR.
+noreplace: |
+    Skip named targets that an installed package already satisfies
+    instead of reinstalling them, like \fBemerge\ \-n\fR.  The
+    skipped targets are still recorded in the world favorites file,
+    so this selects installed packages into \fB@world\fR without
+    merging anything.
+rebuilt-binaries: |
+    Reinstall a binary package of the \fIsame\fR version when the
+    binhost advertises a newer rebuild of it.  Accepts an optional
+    \fIy\fR/\fIn\fR argument and is enabled automatically together with
+    \fB\-D\fR.
+rebuilt-binaries-timestamp: |
+    Restrict \fB\-\-rebuilt\-binaries\fR to rebuilds whose
+    \fBBUILD_TIME\fR is greater than or equal to \fI<arg>\fR (a Unix
+    epoch), so older rebuilds are ignored.
+yes: |
+    Assume yes to prompts; do not ask for confirmation before
+    overwriting or merging.
+oneshot: |
+    Do not add the named package(s) to the \fIworld\fR favourites set,
+    analogous to \fBemerge\ \-\-oneshot\fR.
+nodeps: |
+    Merge only the named package(s); do not pull in or merge their
+    dependencies.
+index: |
+    Rebuild the local \fIPKGDIR/Packages\fR index from the binary
+    packages currently on disk, then exit.  The rebuild is incremental
+    (unchanged entries are kept verbatim) and atomic; \fB\-F\fR forces a
+    full rebuild.  The compressed \fIPackages.gz\fR sibling is updated
+    when the \fIcompress\-index\fR feature is enabled.
+fetchonly: |
+    Alias for \fB\-f\fR.
+show-phases: |
+    Print the \fBpkg_*\fR phase functions a binary package would run at
+    merge time, then exit without merging.
+no-phases: |
+    Bootstrapping. Merge files and record packages in the VDB without
+    executing any \fBpkg_*\fR phase function, so no shell is required
+    on the target. Every skipped phase is announced and recorded in
+    \fIvar/lib/portage/.qmerge\-skipped\-phases\fR under \fBROOT\fR for
+    a later replay once a shell is available. Intended for
+    bootstrapping minimal chroots (or containers). user/group creation and
+    cache\-update work normally done by phases does not happen while
+    this is active. \fIQMERGE_NO_PHASES=y\fR in make.conf or the
+    environment enables the same behaviour. If you don't have
+    \fIbin/bash\fR and \fI/bin/sh\fR , qmerge warns that
+    the pkg_* phases cannot run.
+backtrack: |
+    Number of conflict\-repair rounds allowed during dependency
+    resolution (default 20). A value of 0 disables backtracking.
+    This  covers both strand repair (pulling rebuilt revdep
+    binary packages) and same\-slot unification. When a resolution would
+    install two versions of one package in the same \fBSLOT\fR, the
+    losing version is masked and resolution restarts, the way portage
+    backtracks on slot conflicts. A user\-named target is never the
+    side masked away. \fIQMERGE_SLOT_UNIFY=0\fR in make.conf or the
+    environment disables the unification rounds, restoring the old
+    refuse\-on\-first\-collision behaviour.
+jobs: |
+    Number of parallel download jobs: an integer \fIN\fR, \fI0\fR for
+    one per CPU, \fIy\fR for the maximum, or \fIn\fR for serial
+    downloads (default 4). Affects fetching only, not merging.
+usepkg-exclude: |
+    Never satisfy the given atoms from a binary package.  Unlike
+    \fB\-\-exclude\fR there is no source fallback: if only a binary
+    package could satisfy the atom, \fIqmerge\fR refuses rather than
+    building from source.
+exclude: |
+    Hold the given atoms at their currently installed version and drop
+    them from the merge without raising an error, analogous to
+    \fBemerge\ \-\-exclude\fR.
+usepkg-exclude-live: |
+    Reject binary packages that were built from a live ebuild
+    (\fBPROPERTIES=live\fR).
+binpkg-respect-use: |
+    Control the \fBUSE\fR check applied to candidate binary packages.
+    \fIy\fR requires a full \fBUSE\fR match across all repositories;
+    \fIn\fR disables the check.  The default is a weak check applied to
+    foreign repositories only.
+getbinpkg-exclude: |
+    Never take the given atoms from any binhost (name and slot atoms
+    only).  Adds to the per\-repository \fIgetbinpkg\-exclude\fR set
+    from \fIbinrepos.conf\fR.
+getbinpkg-include: |
+    Only ever take the given atoms from a binhost (a whitelist; name and
+    slot atoms only).
+repos: |
+    List the configured binhost repositories in priority order, then
+    exit.
+list-set: |
+    Print the expanded members of the given set(s) (\fI@world\fR,
+    \fI@system\fR, \fI@selected\fR, \fI@profile\fR, custom sets from
+    \fIetc/portage/sets\fR under \fBPORTAGE_CONFIGROOT\fR ,
+    including nested set references), one atom per line sorted, then
+    exit.
+info: |
+    Show aprox precise how the matched package was compiled: identity
+    (\fBSLOT\fR, repository, \fBBUILD_ID\fR, \fBBUILD_TIME\fR), the
+    recorded build environment (\fBCHOST\fR, \fBCFLAGS\fR,
+    \fBFEATURES\fR, \fBUSE\fR against \fBIUSE\fR), every dependency
+    class with its slot-operator bindings frozen at build time
+    (\fIdev-libs/openssl:0/3=\fR), and the soname layer
+    (\fBREQUIRES\fR/\fBPROVIDES\fR). Reports the installed package by
+    default: \fIpkg@binrepo\fR reports the binhost catalog entry, and
+    an uninstalled atom falls back to the best binhost candidate with
+    a notice. With \fB\-v\fR each dependency class is additionally
+    resolved against the VDB under the package's own recorded
+    \fBUSE\fR, and the per\-object \fBNEEDED.ELF.2\fR records are
+    printed. Similar in spirit to \fBemerge\ \-\-info\ <atom>\fR but
+    covers the dependency and soname layers too.
+depclean: |
+    Remove installed packages that nothing in \fI@world\fR needs, like
+    \fBemerge\ \-\-depclean\fR, with the same algorithm. The keep graph
+    is resolved over the installed packages alone, \fB||\fR alternatives
+    are decided the way portage's dep_zapdeps decides them, and the
+    removal order unmerges each package before its dependencies. With
+    atoms, only the matching packages are considered and a package
+    something else still needs is left alone (\fB\-v\fR names who needs
+    it); the named packages are also deselected from the world file
+    unless \fB\-\-deselect=n\fR is given. Nothign is removed when a
+    runtime dependency of a kept package cannot be resolved, or when
+    \fI@world\fR is empty or refers to a set that does not exist.
+    \fB\-p\fR prints portage's listing without removing anything.
+    Like emerge, the built\-in sets (\fI@world\fR, \fI@system\fR,
+    \fI@selected\fR, \fI@profile\fR) are refused as arguments. Only
+    file sets from \fIetc/portage/sets\fR and \fI@preserved\-rebuild\fR
+    are accepted. \fIQMERGE_PROTOCOL_OMEGA=1\fR (make.conf or the
+    environment) removes the restriction: the built\-in set stops
+    protecting its atoms, which become the only removal candidates
+    (everything else stays, orphaned dependencies are left for a
+    following plain \fB\-\-depclean\fR). In every depclean run, Omega or
+    not, the packages owning the running qmerge, the installed \fIq\fR
+    and \fI/bin/sh\fR, the packages providing the libraries those
+    binaries link against (per the recorded \fBNEEDED.ELF.2\fR data)
+    and their dependency closure are kept always, shown by \fB\-v\fR as
+    required by \fI@____qmerge_imasurvivor____\fR;; an Omega run refuses
+    when no installed package owns them. The Protocol Omega precedes
+    the listing and the prompts. The calculation holds portage's vdb
+    lock while the installed packages are read, and the removal holds
+    it from the first unmerge to the world file update, like
+    \fB\-\-unmerge\fR. A failed unmerge stops the whole run with its
+    status.
+prune: |
+    Removes all but the highest installed version of a package from your
+    system. Use \fB\-\-prune\fR together with \fB\-\-verbose\fR to show
+    reverse dependencies or with \fB\-\-nodeps\fR to ignore all dependencies.
+    \fBWARNING: This action can remove packages from your world file! Check
+    the emerge output of the next \-\-depclean run carefully! Use
+    \-\-depclean to avoid this issue.\fR
+with-bdeps: |
+    With \fB\-\-depclean\fR: \fIy\fR (the default, portage's
+    \fIauto\fR) also follows the \fBDEPEND\fR and \fBBDEPEND\fR of
+    installed packages when computing what is needed; \fIn\fR follows
+    only the runtime classes, so packages needed at build time alone
+    become removable.  \fIQMERGE_WITH_BDEPS\fR in make.conf or the
+    environment sets the same.
+depclean-lib-check: |
+    With \fB\-\-depclean\fR: \fIy\fR (the default) keeps a package whose
+    library another kept package still links against, according to the
+    recorded \fBNEEDED.ELF.2\fR data, reporting portage's "link level
+    dependencies" notice; \fIn\fR skips that check. Like portage the
+    check is not run when \fBFEATURES=preserve\-libs\fR is active, since
+    the preserved\-libs registry keeps such libraries instead.
+    \fIQMERGE_DEPCLEAN_LIB_CHECK\fR in make.conf or the environment sets
+    the same.
+debug: |
+    Run the ebuild phase shell functions with \fBset\ \-x\fR for
+    tracing.

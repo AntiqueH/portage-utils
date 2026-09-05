@@ -5,6 +5,7 @@
  * Copyright 2005-2008 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -15,7 +16,7 @@
 #include <ctype.h>
 #include <xalloc.h>
 
-#if defined(ENABLE_GPKG) || defined(ENABLE_GTREE)
+#if defined(ENABLE_GPKG) || defined(ENABLE_GTREE) || defined(HAVE_LIBARCHIVE)
 # include <archive.h>
 # include <archive_entry.h>
 #endif
@@ -27,14 +28,51 @@
 #include "scandirat.h"
 #include "set.h"
 #include "tree.h"
+
+static int
+tree_open_regfile(int rootfd, const char *path)
+{
+  struct stat st;
+  int         fd = openat(rootfd, path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+  int         flags;
+
+  if (fd < 0)
+    return -1;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    close(fd);
+    return -1;
+  }
+  flags = fcntl(fd, F_GETFL);
+  if (flags >= 0)
+    (void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+  return fd;
+}
+
+#if defined(ENABLE_GPKG) || defined(ENABLE_GTREE) || defined(HAVE_LIBARCHIVE)
+void
+qarchive_read_filters(struct archive *a)
+{
+  archive_read_support_filter_gzip(a);
+  archive_read_support_filter_bzip2(a);
+  archive_read_support_filter_xz(a);
+  archive_read_support_filter_lzma(a);
+  archive_read_support_filter_lz4(a);
+  archive_read_support_filter_zstd(a);
+  archive_read_support_filter_lzip(a);
+  archive_read_support_filter_lzop(a);
+}
+
+void
+qarchive_read_taronly(struct archive *a)
+{
+  archive_read_support_format_tar(a);
+  qarchive_read_filters(a);
+}
+#endif
 #include "xpak.h"
 
 /* 2026 rewrite
- * After releases 0.98 and 0.99 it became clear tree had become too much
- * loaded with functionality that broke things in many ways.  In
- * particular inconsistent behaviour, as well as crashes and leaks due
- * to seemingly random return of pointers or copies to be freed or not
- * based on the calling scenario.
+* Stick with what we have to do, detailed bellow.
  *
  * With the amount of tree types and the cost of traversals, combined
  * with the need to do selective versus full scans, caching what we read
@@ -53,21 +91,8 @@
  *     is available anywya
  *   * sorting is performed as necessary like for categories
  *
- * Functionality from free is all shielded behind functions, code
- * outside of tree should not be able to poke in the internal state
- * structs, nor have the need for that.  Functions return pointers that
- * should not be freed, everything remains cached until the tree is
- * closed.  Exception to this is the matching interface which returns an
- * array that must be freed by the caller.  Callers should not modify
- * what they get returned, if they have to, they have to clone elements,
- * e.g. using atom_clone().
- *
- * Each tree keeps portroot filedescriptor open for as long as it is
- * around.  Other descriptors are only kept open for as long as the
- * operation to read or consume the data takes, in order to reduce the
- * potentially open descriptors.  The path elements of pkg and tree
- * structures point to the object relative to the portroot_fd and do not
- * include the leading '/' for that reason.
+ * < I would prefer if we would not stick with philosophy,
+ * and actually explain what the guidance here is all about >
  *
  * The main two ways of interacting with trees (constructed via
  * tree_new) are:
@@ -100,8 +125,11 @@ struct tree_ {
 struct tree_cat_ {
   tree_ctx      *tree;
   char          *name;
-  array         *pkgs;         /* list of tree_pkg_ctx pointers */
+  /* list of tree_pkg_ctx pointers */
+  array         *pkgs;
   bool           pkgs_complete:1;
+  /* pkgs is in tree_pkg_compar order */
+  bool           pkgs_sorted:1;
 };
 
 struct tree_pkg_ {
@@ -114,7 +142,18 @@ struct tree_pkg_ {
   bool           meta_complete:1;
   bool           cache_invalid:1;
   bool           binpkg_gpkg:1;
+  bool           vdbmeta_tried:1;
 };
+
+static void tree_cat_add_pkg
+(
+  tree_cat_ctx *cat,
+  tree_pkg_ctx *pkg
+)
+{
+  array_append(cat->pkgs, pkg);
+  cat->pkgs_sorted = false;
+}
 
 #ifdef ENABLE_GTREE
 static tree_ctx *tree_new_gtree
@@ -137,7 +176,7 @@ static tree_ctx *tree_new_gtree
   }
 
   gt = archive_read_new();
-  archive_read_support_format_all(gt);
+  archive_read_support_format_tar(gt);
   if (archive_read_open_fd(gt, fd, BUFSIZ) != ARCHIVE_OK ||
       archive_read_next_header(gt, &entry) != ARCHIVE_OK)
   {
@@ -220,8 +259,8 @@ static int tree_foreach_pkg_gtree
   tree_cat_ctx             *cat         = NULL;
   tree_pkg_ctx             *pkg         = NULL;
   atom_ctx                 *atom        = NULL;
-  struct archive           *outer;
-  struct archive           *inner;
+  struct archive           *outer       = NULL;
+  struct archive           *inner       = NULL;
   struct archive_entry     *entry;
   char                     *p;
   char                     *rbuf        = NULL;
@@ -230,20 +269,21 @@ static int tree_foreach_pkg_gtree
   size_t                    len;
   size_t                    rlen        = 0;
   int                       ret         = 0;
-  int                       fd;
+  int                       r           = ARCHIVE_EOF;
+  int                       fd          = -1;
 
   fd = openat(tree->portroot_fd, tree->path, O_RDONLY | O_CLOEXEC);
   if (fd < 0)
     return 1;
 
   outer = archive_read_new();
-  archive_read_support_format_all(outer);  /* don't see why not */
+  archive_read_support_format_tar(outer);  /* don't see why not */
   if (archive_read_open_fd(outer, fd, BUFSIZ) != ARCHIVE_OK)
   {
     warn("unable to read gtree container: %s",
          archive_error_string(outer));
-    archive_read_free(outer);
-    return 1;
+    ret = 1;
+    goto done;
   }
 
   while (archive_read_next_header(outer, &entry) == ARCHIVE_OK)
@@ -258,8 +298,8 @@ static int tree_foreach_pkg_gtree
     entry = NULL;
   }
   if (entry == NULL) {
-    archive_read_free(outer);
-    return 1;
+    ret = 1;
+    goto done;
   }
 
   /* must be empty, we always read all cats */
@@ -267,17 +307,19 @@ static int tree_foreach_pkg_gtree
 
   /* use wrapper to read straight from this archive */
   inner = archive_read_new();
-  archive_read_support_format_all(inner);
-  archive_read_support_filter_all(inner);
+  qarchive_read_taronly(inner);
   VAL_CLEAR(cb_ctx);
   cb_ctx.archive = outer;
   if (archive_read_open(inner, &cb_ctx, NULL,
                         tree_gtree_read_cb,
-                        tree_gtree_close_cb) != ARCHIVE_OK)
+                        tree_gtree_close_cb) != ARCHIVE_OK) {
     warn("unable to read gtree data %s: %s", archive_entry_pathname(entry),
          archive_error_string(inner));
+    ret = 1;
+    goto done;
+  }
 
-  while (archive_read_next_header(inner, &entry) == ARCHIVE_OK)
+  while ((r = archive_read_next_header(inner, &entry)) == ARCHIVE_OK)
   {
     const char *fname = archive_entry_pathname(entry);
 
@@ -288,10 +330,16 @@ static int tree_foreach_pkg_gtree
         strcmp(fname, "repository") == 0)
     {
       /* fill in repo, so it can be used when requested */
-      len = archive_entry_size(entry);
-      tree->repo = xmalloc(len + 1);
-      archive_read_data(inner, tree->repo, len);
-      tree->repo[len] = '\0';
+      la_int64_t asize = archive_entry_size(entry);
+      if (asize >= 0 && asize <= (la_int64_t)256 * 1024 * 1024) {
+        len = (size_t)asize;
+        tree->repo = xmalloc(len + 1);
+        if (archive_read_data(inner, tree->repo, len) != (la_ssize_t)len) {
+          free(tree->repo);
+          tree->repo = NULL;
+        } else
+          tree->repo[len] = '\0';
+      }
     }
     else if (strncmp(fname, "caches/", sizeof("caches/") - 1) == 0)
     {
@@ -323,17 +371,21 @@ static int tree_foreach_pkg_gtree
       pkg->path = xstrdup(buf);
       pkg->atom = atom;
       pkg->cat  = cat;
-      array_append(cat->pkgs, pkg);
+      tree_cat_add_pkg(cat, pkg);
 
       /* ok, we're in business */
-      len = archive_entry_size(entry);
+      la_int64_t asize = archive_entry_size(entry);
+      if (asize < 0 || asize > (la_int64_t)256 * 1024 * 1024)
+        continue;
+      len = (size_t)asize;
       if (len + 1 > rlen)
       {
         rlen = len + 1;
         rbuf = xrealloc(rbuf, rlen);
       }
       rbuf[len] = '\0';
-      archive_read_data(inner, rbuf, len);
+      if (archive_read_data(inner, rbuf, len) != (la_ssize_t)len)
+        continue;
 
       /* entries are strictly single line, starting with KEY= (no
        * whitespace) */
@@ -422,9 +474,20 @@ static int tree_foreach_pkg_gtree
     }
   }
 
-  free(rbuf);
+  if (r < ARCHIVE_OK) {
+    warn("unable to read gtree data: %s", archive_error_string(inner));
+    ret = 1;
+  }
 
-  tree->cats_complete = true;
+  if (ret == 0)
+    tree->cats_complete = true;
+
+ done:
+  archive_read_free(inner);
+  archive_read_free(outer);
+  if (fd >= 0)
+    close(fd);
+  free(rbuf);
 
   return ret;
 }
@@ -640,6 +703,8 @@ static void tree_pkg_close
   free(pkg);
 }
 
+static void tree_pkg_close_cb(void *p) { tree_pkg_close(p); }
+
 /* helper to free up resources held by a category */
 static void tree_cat_close
 (
@@ -649,14 +714,18 @@ static void tree_cat_close
   if (cat == NULL)
     return;
 
-  array_deepfree(cat->pkgs, (array_free_cb *)tree_pkg_close);
+  array_deepfree(cat->pkgs, tree_pkg_close_cb);
 
   free(cat->name);
   free(cat);
 }
 
+static void tree_cat_close_cb(void *p) { tree_cat_close(p); }
+
 /* close and free up resources held by this tree context and its
  * subtrees, if any */
+void tree_close_cb(void *tree) { tree_close(tree); }
+
 void tree_close
 (
   tree_ctx *tree
@@ -665,7 +734,7 @@ void tree_close
   if (tree == NULL)
     return;
 
-  array_deepfree(tree->cats, (array_free_cb *)tree_cat_close);
+  array_deepfree(tree->cats, tree_cat_close_cb);
 
   free(tree->path);
   free(tree->repo);
@@ -700,6 +769,388 @@ static bool tree_pkg_vdb_eat
 
   close(fd);
   return ret;
+}
+
+static const char *tree_meta_key_name[TREE_META_MAX_KEYS];
+
+/* portage >= 3.0.82 consolidated VDB "metadata" file, from
+ * lib/portage/dbapi/vartree.py:
+ *   "The exact set of fields the consolidated metadata file carries,
+ *   and the set vardbapi caches. [...] Line-oriented fields (CONTENTS,
+ *   NEEDED, NEEDED.ELF.2) are absent, which the one-line-per-field
+ *   format requires anyway."
+ * and:
+ *   "A returned dict is treated as a *complete* snapshot: every field
+ *   accepted by _in_metadata_file() that existed when the file was
+ *   written is present, so a field missing from it is served as empty
+ *   rather than falling back to a per-field read."
+ *   "the '#format=' header must match _METADATA_FILE_FORMAT_VERSION"
+ *   "The package directory must not have changed since the file was
+ *   written, so the recorded '#dir_mtime=' must match the directory's
+ *   st_mtime_ns."
+ * Read here as fallback when a per-field file is absent (emaint vdb
+ * --delete-individual-files worlds). */
+static const char * const tree_vdbmeta_fields[] = {
+  "BDEPEND", "BUILD_ID", "BUILD_TIME", "CHOST", "COUNTER",
+  "DEFINED_PHASES", "DEPEND", "DESCRIPTION", "EAPI", "HOMEPAGE",
+  "IDEPEND", "IUSE", "KEYWORDS", "LICENSE", "PDEPEND", "PROPERTIES",
+  "PROVIDES", "RDEPEND", "REQUIRES", "RESTRICT", "SLOT", "USE",
+  "repository", NULL
+};
+
+static bool tree_vdbmeta_field(const char *name)
+{
+  size_t i;
+
+  for (i = 0; tree_vdbmeta_fields[i] != NULL; i++)
+    if (strcmp(name, tree_vdbmeta_fields[i]) == 0)
+      return true;
+  return false;
+}
+
+static char *tree_vdbmeta_norm(const char *v)
+{
+  char  *out = xmalloc(strlen(v) + 1);
+  char  *o   = out;
+  bool   sp  = false;
+
+  while (*v != '\0')
+  {
+    if (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r' ||
+        *v == '\v' || *v == '\f')
+    {
+      sp = o != out;
+    }
+    else
+    {
+      if (sp)
+        *o++ = ' ';
+      *o++ = *v;
+      sp = false;
+    }
+    v++;
+  }
+  *o = '\0';
+  return out;
+}
+
+/* portage vartree.py _stamp_metadata_file, our implementation from:
+ *   "Append the '#dir_mtime=' line the reader validates against.
+ *   Kept separate from writing the body because it has to happen after
+ *   the last change to dbdir's contents [...] Appending does not create
+ *   or remove a directory entry, so it leaves dbdir's mtime alone and
+ *   the recorded value stays true." */
+void tree_vdbmeta_stamp(const char *dbdir)
+{
+  char        path[_Q_PATH_MAX];
+  struct stat st;
+  FILE       *f;
+
+  if (stat(dbdir, &st) != 0)
+    return;
+  snprintf(path, sizeof(path), "%s/metadata", dbdir);
+  f = fopen(path, "a");
+  if (f == NULL)
+    return;
+  fprintf(f, "#dir_mtime=%lld\n",
+          (long long)st.st_mtim.tv_sec * 1000000000LL +
+          (long long)st.st_mtim.tv_nsec);
+  fclose(f);
+}
+
+/* portage vartree.py _write_metadata_file + _consolidate_to_metadata_file:
+ *   "The one-line-per-field format cannot represent an embedded newline,
+ *   so values are whitespace-normalized here [...]"
+ *   "Reads every file in dbdir that _in_metadata_file() accepts and
+ *   writes them to the metadata file. By default individual files are
+ *   kept for backward compatibility with tools that read the VDB
+ *   directly. Pass delete_individual=True to remove them after writing.
+ *   The deletions change dbdir, so the metadata file is stamped after
+ *   them rather than as part of writing it [...] The body is written
+ *   before the unlinks so no field is ever absent from disk."
+ * stamp=false is portage's stamp=False: the caller still has to change
+ * dbdir and must call tree_vdbmeta_stamp() itself afterwards. */
+bool tree_vdbmeta_consolidate(const char *dbdir, bool del_individual,
+                              bool stamp)
+{
+  char    path[_Q_PATH_MAX];
+  char    tmpp[_Q_PATH_MAX + 16];
+  FILE   *out;
+  size_t  i;
+  bool    ok = true;
+
+  snprintf(path, sizeof(path), "%s/metadata", dbdir);
+  snprintf(tmpp, sizeof(tmpp), "%s/.metadata.tmp", dbdir);
+  out = fopen(tmpp, "w");
+  if (out == NULL)
+    return false;
+  if (fprintf(out, "#format=1\n") < 0)
+    ok = false;
+  for (i = 0; ok && tree_vdbmeta_fields[i] != NULL; i++)
+  {
+    char    fpath[_Q_PATH_MAX + 32];
+    char   *data = NULL;
+    size_t  len  = 0;
+
+    snprintf(fpath, sizeof(fpath), "%s/%s", dbdir,
+             tree_vdbmeta_fields[i]);
+    if (eat_file(fpath, &data, &len) && data != NULL)
+    {
+      char *norm = tree_vdbmeta_norm(data);
+
+      if (fprintf(out, "%s=%s\n", tree_vdbmeta_fields[i], norm) < 0)
+        ok = false;
+      free(norm);
+    }
+    free(data);
+  }
+  if (fflush(out) != 0)
+    ok = false;
+  if (fclose(out) != 0)
+    ok = false;
+  if (!ok || rename(tmpp, path) != 0)
+  {
+    unlink(tmpp);
+    return false;
+  }
+  if (del_individual)
+    for (i = 0; tree_vdbmeta_fields[i] != NULL; i++)
+    {
+      char fpath[_Q_PATH_MAX + 32];
+
+      snprintf(fpath, sizeof(fpath), "%s/%s", dbdir,
+               tree_vdbmeta_fields[i]);
+      unlink(fpath);
+    }
+  if (stamp)
+    tree_vdbmeta_stamp(dbdir);
+  return true;
+}
+
+bool tree_vdbmeta_usable(const char *dbdir)
+{
+  char        path[_Q_PATH_MAX];
+  struct stat st;
+  long long   dirns;
+  long long   mtns    = -1;
+  long        version = -1;
+  char       *data    = NULL;
+  size_t      len     = 0;
+  char       *line;
+  char       *nextl   = NULL;
+
+  if (stat(dbdir, &st) != 0)
+    return false;
+  dirns = (long long)st.st_mtim.tv_sec * 1000000000LL +
+          (long long)st.st_mtim.tv_nsec;
+  snprintf(path, sizeof(path), "%s/metadata", dbdir);
+  if (!eat_file(path, &data, &len) || data == NULL)
+  {
+    free(data);
+    return false;
+  }
+  for (line = strtok_r(data, "\n", &nextl);
+       line != NULL;
+       line = strtok_r(NULL, "\n", &nextl))
+  {
+    if (strncmp(line, "#format=", sizeof("#format=") - 1) == 0)
+      version = atol(line + sizeof("#format=") - 1);
+    else if (strncmp(line, "#dir_mtime=", sizeof("#dir_mtime=") - 1) == 0)
+      mtns = atoll(line + sizeof("#dir_mtime=") - 1);
+  }
+  free(data);
+  return version == 1 && mtns == dirns;
+}
+
+/* portage vartree.py _explode_metadata_file:
+ *   "Remove the metadata file, restoring any field it alone still holds.
+ *   The inverse of _consolidate_to_metadata_file(). Normally the
+ *   individual files are still there and this just unlinks the metadata
+ *   file, but after a delete_individual=True run the metadata file is
+ *   the only copy of the fields it carries, so those are written back
+ *   to their own files first.
+ *   Restoring before unlinking means a field is never absent from disk."
+ *   "Refuses to unlink a metadata file that is the only copy of some
+ *   field but is not a snapshot this portage version can trust, since
+ *   deleting it would destroy that field and restoring from it could
+ *   write a stale value."
+ * Returns the number of individual files restored, -1 on refusal. */
+int tree_vdbmeta_explode(const char *dbdir)
+{
+  char    path[_Q_PATH_MAX];
+  char   *data     = NULL;
+  size_t  len      = 0;
+  char   *line;
+  char   *nextl    = NULL;
+  int     restored = 0;
+  bool    usable   = tree_vdbmeta_usable(dbdir);
+
+  snprintf(path, sizeof(path), "%s/metadata", dbdir);
+  if (!eat_file(path, &data, &len) || data == NULL)
+  {
+    free(data);
+    return 0;
+  }
+  if (!usable)
+  {
+    bool only_copy = false;
+
+    for (line = strtok_r(data, "\n", &nextl);
+         line != NULL;
+         line = strtok_r(NULL, "\n", &nextl))
+    {
+      char        fpath[_Q_PATH_MAX + 32];
+      char       *val;
+      struct stat st;
+
+      if (line[0] == '#')
+        continue;
+      val = strchr(line, '=');
+      if (val == NULL)
+        continue;
+      *val = '\0';
+      if (!tree_vdbmeta_field(line))
+        continue;
+      snprintf(fpath, sizeof(fpath), "%s/%s", dbdir, line);
+      if (stat(fpath, &st) != 0)
+      {
+        only_copy = true;
+        break;
+      }
+    }
+    free(data);
+    if (only_copy)
+      return -1;
+    unlink(path);
+    return 0;
+  }
+  nextl = NULL;
+  for (line = strtok_r(data, "\n", &nextl);
+       line != NULL;
+       line = strtok_r(NULL, "\n", &nextl))
+  {
+    char        fpath[_Q_PATH_MAX + 32];
+    char       *val;
+    struct stat st;
+    FILE       *f;
+
+    if (line[0] == '#')
+      continue;
+    val = strchr(line, '=');
+    if (val == NULL)
+      continue;
+    *val++ = '\0';
+    if (!tree_vdbmeta_field(line))
+      continue;
+    snprintf(fpath, sizeof(fpath), "%s/%s", dbdir, line);
+    if (stat(fpath, &st) == 0)
+      continue;
+    f = fopen(fpath, "w");
+    if (f == NULL)
+      continue;
+    if (fprintf(f, "%s\n", val) >= 0)
+      restored++;
+    fclose(f);
+  }
+  free(data);
+  unlink(path);
+  return restored;
+}
+
+static void tree_pkg_vdb_meta_fallback(tree_pkg_ctx *pkg)
+{
+  char         buf[_Q_PATH_MAX];
+  struct stat  st;
+  long long    dirns;
+  long long    mtns    = -1;
+  long         version = -1;
+  int          fd;
+  char        *data    = NULL;
+  size_t       len     = 0;
+  char        *line;
+  char        *nextl   = NULL;
+  size_t       k;
+
+  if (pkg->vdbmeta_tried)
+    return;
+  pkg->vdbmeta_tried = true;
+
+  if (fstatat(pkg->cat->tree->portroot_fd, pkg->path, &st, 0) != 0)
+    return;
+  dirns = (long long)st.st_mtim.tv_sec * 1000000000LL +
+          (long long)st.st_mtim.tv_nsec;
+
+  snprintf(buf, sizeof(buf), "%s/metadata", pkg->path);
+  fd = openat(pkg->cat->tree->portroot_fd, buf, O_RDONLY, 0);
+  if (fd < 0)
+    return;
+  if (!eat_file_fd(fd, &data, &len))
+  {
+    close(fd);
+    free(data);
+    return;
+  }
+  close(fd);
+
+  for (line = strtok_r(data, "\n", &nextl);
+       line != NULL;
+       line = strtok_r(NULL, "\n", &nextl))
+  {
+    if (strncmp(line, "#format=", sizeof("#format=") - 1) == 0)
+      version = atol(line + sizeof("#format=") - 1);
+    else if (strncmp(line, "#dir_mtime=", sizeof("#dir_mtime=") - 1) == 0)
+      mtns = atoll(line + sizeof("#dir_mtime=") - 1);
+  }
+
+  if (version != 1 || mtns != dirns)
+  {
+    free(data);
+    return;
+  }
+
+  free(data);
+  data  = NULL;
+  len   = 0;
+  fd = openat(pkg->cat->tree->portroot_fd, buf, O_RDONLY, 0);
+  if (fd < 0)
+    return;
+  if (!eat_file_fd(fd, &data, &len))
+  {
+    close(fd);
+    free(data);
+    return;
+  }
+  close(fd);
+
+  nextl = NULL;
+  for (line = strtok_r(data, "\n", &nextl);
+       line != NULL;
+       line = strtok_r(NULL, "\n", &nextl))
+  {
+    char *val;
+
+    if (line[0] == '#')
+      continue;
+    val = strchr(line, '=');
+    if (val == NULL)
+      continue;
+    *val++ = '\0';
+    for (k = Q_UNKNOWN + 1; k < TREE_META_MAX_KEYS; k++)
+    {
+      if (strcmp(line, tree_meta_key_name[k]) == 0)
+      {
+        if (pkg->meta[k] == NULL)
+          pkg->meta[k] = xstrdup(val);
+        break;
+      }
+    }
+  }
+  free(data);
+
+  for (k = Q_UNKNOWN + 1; k < TREE_META_MAX_KEYS; k++)
+    if (pkg->meta[k] == NULL &&
+        tree_vdbmeta_field(tree_meta_key_name[k]))
+      pkg->meta[k] = xstrdup("");
 }
 
 /* read full md5-cache entry into pkgs' meta */
@@ -825,6 +1276,7 @@ static bool tree_pkg_ebuild_read
 )
 {
   char       *p;
+  char       *pbase;
   char       *q;
   char       *w;
   char      **key;
@@ -834,16 +1286,19 @@ static bool tree_pkg_ebuild_read
   bool        findnl;
   bool        ret;
 
-  if ((fd = openat(pkg->cat->tree->portroot_fd, pkg->path, O_RDONLY, 0)) < 0)
+  if ((fd = tree_open_regfile(pkg->cat->tree->portroot_fd, pkg->path)) < 0)
     return false;
 
   p   = NULL;
   len = 0;
   ret = eat_file_fd(fd, &p, &len);
   close(fd);
+  pbase = p;
 
-  if (!ret)
+  if (!ret) {
+    free(pbase);
     return false;
+  }
 
   do
   {
@@ -990,6 +1445,7 @@ static bool tree_pkg_ebuild_read
   while (p != NULL &&
          *p != '\0');
 
+  free(pbase);
   return true;
 }
 
@@ -1005,7 +1461,7 @@ static void tree_pkg_xpak_read_cb
   tree_pkg_ctx  *pkg = ctx;
   char         **key = NULL;
 
-  if (pathname_len < 3)
+  if (pathname_len < 2)
     return;
 
   switch (pathname[0])
@@ -1022,6 +1478,7 @@ static void tree_pkg_xpak_read_cb
     keycmp(pathname, BUILD_TIME);
     break;
   case 'C':
+    keycmp(pathname, CATEGORY);
     keycmp(pathname, CDEPEND);
     keycmp(pathname, CHOST);
     keycmp(pathname, CONTENTS);
@@ -1051,6 +1508,7 @@ static void tree_pkg_xpak_read_cb
     break;
   case 'P':
     keycmp(pathname, PDEPEND);
+    keycmp(pathname, PF);
     keycmp(pathname, PROPERTIES);
     keycmp(pathname, PROVIDE);
     keycmp(pathname, PROVIDES);
@@ -1072,6 +1530,8 @@ static void tree_pkg_xpak_read_cb
   case 'U':
     keycmp(pathname, USE);
     break;
+  default:
+    break;
 #undef keycmp
   }
 
@@ -1085,8 +1545,9 @@ static void tree_pkg_xpak_read_cb
          isspace((int)data[data_offset + data_len - 1]))
     data_len--;
 
-  /* copy the entry into the meta */
-  *key = xmemdup(data + data_offset, data_len + 1);
+  /* copy the entry into the meta.*/
+  *key = xmalloc(data_len + 1);
+  memcpy(*key, data + data_offset, data_len);
   (*key)[data_len] = '\0';
 }
 
@@ -1115,8 +1576,7 @@ tree_binpkg_sniff_gpkg(int rootfd, const char *path)
   }
   lseek(fd, 0, SEEK_SET);
   a = archive_read_new();
-  archive_read_support_format_tar(a);
-  archive_read_support_filter_all(a);
+  qarchive_read_taronly(a);
   if (archive_read_open_fd(a, fd, BUFSIZ) == ARCHIVE_OK)
   {
     while (n++ < 8 && archive_read_next_header(a, &entry) == ARCHIVE_OK)
@@ -1158,20 +1618,22 @@ static bool tree_pkg_binpkg_read
   if (pkg->binpkg_gpkg)
   {
 #ifdef ENABLE_GPKG
-    struct archive       *a     = archive_read_new();
+    struct archive       *a;
     struct archive_entry *entry;
     size_t                len   = 0;
     char                 *buf   = NULL;
 
-    archive_read_support_format_all(a);
-    archive_read_support_filter_all(a);
 
-    fd = openat(pkg->cat->tree->portroot_fd, pkg->path, O_RDONLY);
+    fd = tree_open_regfile(pkg->cat->tree->portroot_fd, pkg->path);
     if (fd < 0)
       return false;
 
+    a = archive_read_new();
+    qarchive_read_taronly(a);
+
     if (archive_read_open_fd(a, fd, BUFSIZ) != ARCHIVE_OK)
     {
+      archive_read_free(a);
       close(fd);
       return false;
     }
@@ -1186,9 +1648,15 @@ static bool tree_pkg_binpkg_read
       {
         /* read this nested tar, it contains the VDB entries
          * otherwise stored in xpak */
-        len = archive_entry_size(entry);
+        la_int64_t asize = archive_entry_size(entry);
+        if (asize < 0 || asize > (la_int64_t)256 * 1024 * 1024)
+          break;
+        len = (size_t)asize;
         buf = xmalloc(len);
-        archive_read_data(a, buf, len);
+        if (archive_read_data(a, buf, len) != (la_ssize_t)len) {
+          free(buf);
+          buf = NULL;
+        }
         break;
       }
     }
@@ -1202,26 +1670,28 @@ static bool tree_pkg_binpkg_read
       size_t data_len  = 0;
 
       a = archive_read_new();
-      archive_read_support_format_all(a);
-      archive_read_support_filter_all(a);
+      qarchive_read_taronly(a);
       archive_read_open_memory(a, buf, len);
 
       while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
         const char *pathname = archive_entry_pathname(entry);
-        char       *fname    = (char *)strchr(pathname, '/');
+        char       *fname    = q_deconst(strchr(pathname, '/'));
         if (fname == NULL)
           continue;
         fname++;
 
-        data_len = archive_entry_size(entry);
-        if (data_len == 0)
-          continue;
+        {
+          la_int64_t asize = archive_entry_size(entry);
+          if (asize <= 0 || asize > (la_int64_t)256 * 1024 * 1024)
+            continue;
+          data_len = (size_t)asize;
+        }
 
         if (data_len > data_size) {
           data_size = data_len;
           data      = xrealloc(data, data_size);
         }
-        if (archive_read_data(a, data, data_len) < 0)
+        if (archive_read_data(a, data, data_len) != (la_ssize_t)data_len)
           continue;
         tree_pkg_xpak_read_cb(pkg, fname, (int)strlen(fname),
                               0, data_len, data);
@@ -1236,7 +1706,7 @@ static bool tree_pkg_binpkg_read
   }
   else
   {
-    fd = openat(pkg->cat->tree->portroot_fd, pkg->path, O_RDONLY);
+    fd = tree_open_regfile(pkg->cat->tree->portroot_fd, pkg->path);
     if (fd < 0)
       return false;
     xpak_process_fd(fd, true, pkg, tree_pkg_xpak_read_cb);
@@ -1252,7 +1722,7 @@ static bool tree_pkg_binpkg_read
     char   sha1[SHA1_DIGEST_LENGTH + 1];
     size_t flen;
 
-    fd = openat(pkg->cat->tree->portroot_fd, pkg->path, O_RDONLY);
+    fd = tree_open_regfile(pkg->cat->tree->portroot_fd, pkg->path);
     if (fd < 0)
       return false;
 
@@ -1373,13 +1843,17 @@ char *tree_pkg_meta
     case TREE_VDB: /* {{{ */
       {
         size_t len;
-        tree_pkg_vdb_eat(pkg, tree_meta_key_name[key], &pkg->meta[key], &len);
+
+        if (!tree_pkg_vdb_eat(pkg, tree_meta_key_name[key],
+                              &pkg->meta[key], &len))
+          tree_pkg_vdb_meta_fallback(pkg);
       }
       break; /* }}} */
     case TREE_BINPKGS:
     case TREE_PACKAGES:
-      if (tree_pkg_binpkg_read(pkg))
-        pkg->meta_complete = true;
+
+      tree_pkg_binpkg_read(pkg);
+      pkg->meta_complete = true;
       break;
     default:
       break;
@@ -1476,8 +1950,8 @@ static int tree_cat_compar
   const void *r
 )
 {
-  tree_cat_ctx *left  = *(tree_cat_ctx **)l;
-  tree_cat_ctx *right = *(tree_cat_ctx **)r;
+  tree_cat_ctx *left  = *(tree_cat_ctx * const *)l;
+  tree_cat_ctx *right = *(tree_cat_ctx * const *)r;
 
   if (left == NULL &&
       right == NULL)
@@ -1502,8 +1976,8 @@ static int tree_pkg_compar
   const void *q
 )
 {
-  tree_pkg_ctx *data  = *(tree_pkg_ctx **)d;
-  tree_pkg_ctx *query = *(tree_pkg_ctx **)q;
+  tree_pkg_ctx *data  = *(tree_pkg_ctx * const *)d;
+  tree_pkg_ctx *query = *(tree_pkg_ctx * const *)q;
 
   if (data == NULL &&
       query == NULL)
@@ -1631,6 +2105,30 @@ static int tree_filter_pkg
   return i;
 }
 
+/* We finally started to think about hostile binhosts Package index PATH fields.
+ * They must not get out of the openat(pkg->path) of PKGDIR.
+ * So we need a mechanism to reject the escaping of slahes.
+ * (We copied this idea from Arch ALPM file validation)*/
+static bool
+tree_binpkg_path_ok(const char *path)
+{
+	const char *p;
+
+	if (path == NULL || path[0] == '\0' || path[0] == '/')
+		return false;
+	if (strchr(path, '\\') != NULL)
+		return false;
+	for (p = path; p != NULL; ) {
+		const char *slash = strchr(p, '/');
+		size_t      seg   = slash != NULL ? (size_t)(slash - p) : strlen(p);
+
+		if (seg == 2 && p[0] == '.' && p[1] == '.')
+			return false;
+		p = slash != NULL ? slash + 1 : NULL;
+	}
+	return true;
+}
+
 /* iterates over the given category in its tree, invoking the callback
  * function for packages matching the query */
 static int tree_cat_foreach_pkg
@@ -1663,6 +2161,17 @@ static int tree_cat_foreach_pkg
   {
     size_t       elem;
 
+    /* binsearch requires tree_pkg_compar order, but the cache arrives
+     * in source order (Packages file order: same-name entries version
+     * and BUILD_ID ascending; VDB: readdir order), so sort first or
+     * the search lands on an arbitrary member and the newest instance
+     * is silently skipped */
+    if (!cat->pkgs_sorted)
+    {
+      array_sort(cat->pkgs, tree_pkg_compar);
+      cat->pkgs_sorted = true;
+    }
+
     needle.name = query->PN;
     needle.path = query->PN;
     needle.cat  = cat;
@@ -1675,8 +2184,23 @@ static int tree_cat_foreach_pkg
       atom_implode(needle.atom);
     if (pkg != NULL)
     {
+      /* a name-only needle compares EQUAL against every version of
+       * the package, so binsearch stops anywhere inside the run of
+       * same-name entries: rewind to its first (newest) member or the
+       * forward scan below misses everything before the landing spot */
+      while (elem > 0)
+      {
+        tree_pkg_ctx *prev = array_get(cat->pkgs, elem - 1);
+
+        if (prev == NULL ||
+            strcmp(prev->name, pkg->name) != 0)
+          break;
+        elem--;
+        pkg = prev;
+      }
+
       /* now use the original atom to refine the query */
-      needle.atom = (atom_ctx *)query;
+      needle.atom = q_deconst_p(query);
 
       do
       {
@@ -1702,8 +2226,12 @@ static int tree_cat_foreach_pkg
   {
     size_t n;
 
-    if (sorted)
+    if (sorted &&
+        !cat->pkgs_sorted)
+    {
       array_sort(cat->pkgs, tree_pkg_compar);
+      cat->pkgs_sorted = true;
+    }
 
     array_for_each(cat->pkgs, n, pkg)
       ret |= callback(pkg, priv);
@@ -1714,7 +2242,7 @@ static int tree_cat_foreach_pkg
   if (filterpn)
   {
     needle.name = query->PN;
-    needle.atom = (atom_ctx *)query;
+    needle.atom = q_deconst_p(query);
   }
 
   switch (tree->type)
@@ -1742,7 +2270,8 @@ static int tree_cat_foreach_pkg
       else
       {
         snprintf(buf, sizeof(buf), "%s/%s", tree->path, cat->name);
-        if ((catfd = openat(tree->portroot_fd, buf, O_RDONLY | O_CLOEXEC)) < 0)
+        if ((catfd = openat(tree->portroot_fd, buf,
+                          O_RDONLY | O_CLOEXEC | O_NONBLOCK)) < 0)
           return 0;
         if ((catdir = fdopendir(catfd)) == NULL)
         {
@@ -1786,7 +2315,9 @@ static int tree_cat_foreach_pkg
 
         len = snprintf(buf, sizeof(buf), "%s/%s/%s",
                        tree->path, cat->name, pn);
-        if ((fd = openat(tree->portroot_fd, buf, O_RDONLY | O_CLOEXEC)) < 0)
+        fd = openat(tree->portroot_fd, buf,
+                    O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0)
           continue;
         if ((dir = fdopendir(fd)) == NULL)
         {
@@ -1808,7 +2339,7 @@ static int tree_cat_foreach_pkg
             continue;
 
           snprintf(buf + len, sizeof(buf) - len, "/%.*s",
-                   (int)nlen, de->d_name);
+                   (int)MIN(nlen, sizeof(buf) - 2), de->d_name);
           if (fstatat(tree->portroot_fd, buf, &sb, 0) < 0 ||
               !S_ISREG(sb.st_mode))
             continue;
@@ -1820,7 +2351,7 @@ static int tree_cat_foreach_pkg
 
           if (cat->pkgs == NULL)
             cat->pkgs = array_new();
-          array_append(cat->pkgs, pkg);
+          tree_cat_add_pkg(cat, pkg);
           mfound = true;
 
           if (!sorted &&
@@ -1866,7 +2397,8 @@ static int tree_cat_foreach_pkg
        * coherent */
 
       len = snprintf(buf, sizeof(buf), "%s/%s", tree->path, cat->name);
-      if ((catfd = openat(tree->portroot_fd, buf, O_RDONLY | O_CLOEXEC)) < 0)
+      if ((catfd = openat(tree->portroot_fd, buf,
+                          O_RDONLY | O_CLOEXEC | O_NONBLOCK)) < 0)
         return 0;
       if ((catdir = fdopendir(catfd)) == NULL)
       {
@@ -1878,7 +2410,7 @@ static int tree_cat_foreach_pkg
       {
         VAL_CLEAR(needle);
         needle.name = query->PN;
-        needle.atom = (atom_ctx *)query;
+        needle.atom = q_deconst_p(query);
       }
 
       if (cat->pkgs == NULL)
@@ -1900,9 +2432,16 @@ static int tree_cat_foreach_pkg
           continue;
 
         pnlen = snprintf(buf + len, sizeof(buf) - len, "/%s", de->d_name);
-        if ((fd = openat(tree->portroot_fd, buf, O_RDONLY | O_CLOEXEC)) < 0 ||
-            fstat(fd, &sb) < 0)
+        fd = openat(tree->portroot_fd, buf,
+                    O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0)
           continue;
+        if (fstat(fd, &sb) != 0 ||
+            !(S_ISDIR(sb.st_mode) || S_ISREG(sb.st_mode)))
+        {
+          close(fd);
+          continue;
+        }
 
         if (S_ISDIR(sb.st_mode))
         {
@@ -1940,7 +2479,7 @@ static int tree_cat_foreach_pkg
               pkg->path = xstrdup(buf);
               pkg->cat  = cat;
 
-              array_append(cat->pkgs, pkg);
+              tree_cat_add_pkg(cat, pkg);
 
               if (!sorted &&
                   (!filterpn ||
@@ -1958,7 +2497,7 @@ static int tree_cat_foreach_pkg
               pkg->cat         = cat;
               pkg->binpkg_gpkg = true;
 
-              array_append(cat->pkgs, pkg);
+              tree_cat_add_pkg(cat, pkg);
 
               if (!sorted &&
                   (!filterpn ||
@@ -1982,7 +2521,7 @@ static int tree_cat_foreach_pkg
             pkg->path = xstrdup(buf);
             pkg->cat  = cat;
 
-            array_append(cat->pkgs, pkg);
+            tree_cat_add_pkg(cat, pkg);
 
             if (!sorted &&
                 (!filterpn ||
@@ -2000,7 +2539,7 @@ static int tree_cat_foreach_pkg
             pkg->cat         = cat;
             pkg->binpkg_gpkg = true;
 
-            array_append(cat->pkgs, pkg);
+            tree_cat_add_pkg(cat, pkg);
 
             if (!sorted &&
                 (!filterpn ||
@@ -2037,7 +2576,8 @@ static int tree_cat_foreach_pkg
       /* this has dirs with name PF, so we can easily populate all pkgs
        * with a single directory traversal */
       len = snprintf(buf, sizeof(buf), "%s/%s", tree->path, cat->name);
-      if ((catfd = openat(tree->portroot_fd, buf, O_RDONLY | O_CLOEXEC)) < 0)
+      if ((catfd = openat(tree->portroot_fd, buf,
+                          O_RDONLY | O_CLOEXEC | O_NONBLOCK)) < 0)
         return 0;
       if ((catdir = fdopendir(catfd)) == NULL)
       {
@@ -2049,7 +2589,7 @@ static int tree_cat_foreach_pkg
       {
         VAL_CLEAR(needle);
         needle.name = query->PN;
-        needle.atom = (atom_ctx *)query;
+        needle.atom = q_deconst_p(query);
       }
 
       if (cat->pkgs == NULL)
@@ -2077,7 +2617,7 @@ static int tree_cat_foreach_pkg
         pkg->path = xstrdup(buf);
         pkg->cat  = cat;
 
-        array_append(cat->pkgs, pkg);
+        tree_cat_add_pkg(cat, pkg);
 
         if (!sorted &&
             (!filterpn ||
@@ -2162,7 +2702,7 @@ int tree_foreach_pkg
     return ret;
   }
 
-  /* call the tree walker to populate the categories */
+  /* run the tree enumeration to populate the categories */
   switch (tree->type)
   {
   case TREE_EBUILD:
@@ -2280,7 +2820,27 @@ int tree_foreach_pkg
       close(fd);
 
       if (!eret)
+      /* this one's funny. I did not see this coming. */
+      {
+        free(buf);
         return 1;
+      }
+
+      /*  normalise the Packages tail */
+      {
+        size_t blen = strlen(buf);
+
+        if (blen < 2 ||
+            buf[blen - 1] != '\n' ||
+            buf[blen - 2] != '\n')
+        {
+          buf = xrealloc(buf, blen + 3);
+          if (blen > 0 && buf[blen - 1] != '\n')
+            buf[blen++] = '\n';
+          buf[blen++] = '\n';
+          buf[blen]   = '\0';
+        }
+      }
 
       k = strrchr(tree->path, '/');
       if (k != NULL)
@@ -2398,6 +2958,15 @@ int tree_foreach_pkg
               char *pn     = strrchr(pkg->meta[Q_PATH], '/');
               char *catend = strchr(pkg->meta[Q_PATH], '/');
 
+              /* a hostile binhost PATH must not escape PKGDIR. */
+              if (!tree_binpkg_path_ok(pkg->meta[Q_PATH]))
+              {
+                tree_pkg_close(pkg);
+                cpv = NULL;
+                pkg = xzalloc(sizeof(*pkg));
+                continue;
+              }
+
               if (pn == NULL) /* implies catend == NULL */
               {
                 /* have no version or anything, skip this */
@@ -2407,13 +2976,16 @@ int tree_foreach_pkg
                 continue;
               }
 
-              /* construct full path */
+              /* construct full path (snprintf bounds it to pth) */
               snprintf(pth, sizeof(pth), "%.*s/%s",
-                       (int)rootlen, tree->path, pkg->meta[Q_PATH]);
+                       (int)MIN(rootlen, sizeof(pth) - 2),
+                       tree->path, pkg->meta[Q_PATH]);
               pkg->path = xstrdup(pth);
 
               snprintf(pth, sizeof(pth), "%.*s",
-                       (int)(catend - pkg->meta[Q_PATH]), pkg->meta[Q_PATH]);
+                       (int)MIN((size_t)(catend - pkg->meta[Q_PATH]),
+                                sizeof(pth) - 1),
+                       pkg->meta[Q_PATH]);
               pkg->atom = atom_explode_cat(pn + 1, pth);
 
               len = strlen(pkg->meta[Q_PATH]);
@@ -2427,13 +2999,27 @@ int tree_foreach_pkg
               /* this might be an old repo or something, so compute the
                * path assuming it's from the base in PN/PF.tbz2 */
               snprintf(pth, sizeof(pth), "%.*s/%s.tbz2",
-                       (int)rootlen, tree->path, cpv);
+                       (int)MIN(rootlen, sizeof(pth) - 7),
+                       tree->path, cpv);
               pkg->path = xstrdup(pth);
               pkg->atom = atom_explode(cpv);
             }
             else
             {
               /* have no version or anything, skip this */
+              tree_pkg_close(pkg);
+              cpv = NULL;
+              pkg = xzalloc(sizeof(*pkg));
+              continue;
+            }
+            /* malformed CPV, missing category or name, skip this.
+             * we caught this issue with the fuzzies, and indeed
+             * a malformed CPV can provoke a very hard crash later
+             * on, because the CPV might yield a NULL category. */
+            if (pkg->atom == NULL ||
+                pkg->atom->CATEGORY == NULL ||
+                pkg->atom->PN == NULL)
+            {
               tree_pkg_close(pkg);
               cpv = NULL;
               pkg = xzalloc(sizeof(*pkg));
@@ -2461,7 +3047,7 @@ int tree_foreach_pkg
               cat->pkgs = array_new();
 
             pkg->cat = cat;
-            array_append(cat->pkgs, pkg);
+            tree_cat_add_pkg(cat, pkg);
           }
 
           /* prepare new package */
@@ -2470,7 +3056,8 @@ int tree_foreach_pkg
         }
       }
 
-      free(pkg);
+      /* hah, gotcha you damn sh$$t */
+      tree_pkg_close(pkg);
       free(buf);
 
       array_for_each(tree->cats, len, cat)
@@ -2481,8 +3068,8 @@ int tree_foreach_pkg
       /* ok, now do it for real */
       return tree_foreach_pkg(tree, callback, priv, sorted, query);
     }
-    break; /* }}} */
-  case TREE_GTREE: /* {{{ */
+    break;
+  case TREE_GTREE:
 #ifdef ENABLE_GTREE
     /* we don't optimise anything because reading a single file is fast
      * enough, it just takes some memory, but any retrieval afterwards

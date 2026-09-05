@@ -1,0 +1,12 @@
+\fIqetuto\fR sets up and maintains the GnuPG keyring used to verify
+signatures on binary packages, under \fI${ROOT}/etc/portage/gnupg\fR.
+It is a C reimplementation of \fBapp\-portage/getuto\fR and drives
+\fBgpg\fR(1) and \fBgpgconf\fR(1) directly, so it needs no installed
+\fBgetuto\fR.
+.P
+On each run it imports the Gentoo release keys, refreshes them from the
+Gentoo keyserver and Web Key Directory, and sets the appropriate owner
+trust, so that \fBqmerge\fR(1) (and Portage) can verify GLEP\ 78 signed
+\fBgpkg\fR packages. The operation is idempotent: an already\-current
+keyring is left untouched, and the keyring is rebuilt through a staging
+directory so an interrupted run cannot leave it half\-written.

@@ -5,8 +5,8 @@
  * Copyright 2025-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _FILE_MAGIC_H
-#define _FILE_MAGIC_H 1
+#ifndef FILE_MAGIC_H
+#define FILE_MAGIC_H 1
 
 typedef enum _file_magic_type {
 	FMAGIC_UNKNOWN = 0,

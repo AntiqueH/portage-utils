@@ -5,8 +5,8 @@
  * Copyright 2011-2016 Mike Frysinger  - <vapier@gentoo.org>
  */
 
-#ifndef _COPY_FILE_H
-#define _COPY_FILE_H 1
+#ifndef COPY_FILE_H
+#define COPY_FILE_H 1
 
 #include <stdio.h>
 

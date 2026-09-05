@@ -1,6 +1,6 @@
 /* some hax defines to help import busybox */
-#ifndef _BUSYBOX_H
-#define _BUSYBOX_H
+#ifndef BUSYBOX_H
+#define BUSYBOX_H
 
 #define CONFIG_MD5SUM
 #define CONFIG_SHA1SUM
@@ -10,4 +10,4 @@
 
 #define bb_full_read(fd, buf, count) read(fd, buf, count)
 
-#endif /* _BUSYBOX_H */
+#endif /* BUSYBOX_H */

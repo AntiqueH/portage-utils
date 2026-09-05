@@ -47,4 +47,12 @@ tenv 1 NOCOLOR 1
 # this validates pathological vars
 tenv 1 PKGDIR " "
 
+export PORTAGE_CONFIGROOT=${as}/profilecycle
+out=$(timeout 20 q -e ARCH 2>&1); rc=$?
+if [[ ${rc} -eq 0 ]] && grep -qi "cycle detected" <<< "${out}" ; then
+	tend 0 "profile parent cycle is refused, not infinite"
+else
+	tend 1 "profile parent cycle (rc=${rc}) ${out}"
+fi
+
 end

@@ -6,8 +6,8 @@
  * Copyright 2017-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _XMKDIR_H
-#define _XMKDIR_H 1
+#ifndef XMKDIR_H
+#define XMKDIR_H 1
 
 int mkdir_p_at(int dfd, const char *path, mode_t mode);
 int mkdir_p(const char *path, mode_t mode);

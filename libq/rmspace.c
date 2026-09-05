@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -20,11 +21,13 @@
 char *rmspace_len(char *s, size_t len)
 {
 	char *p;
+	if (len == 0)
+		return s;
 	/* find the start of trailing space and set it to \0 */
-	for (p = s + len - 1; (p >= s && isspace(*p)); --p)
+	for (p = s + len; (p > s && isspace(p[-1])); --p)
 		continue;
-	p[1] = '\0';
-	len = (p - s) + 1;
+	p[0] = '\0';
+	len = p - s;
 	/* find the end of leading space and set p to it */
 	for (p = s; (isspace(*p) && *p); ++p)
 		continue;

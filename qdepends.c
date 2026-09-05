@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -88,6 +89,23 @@ const char *depend_files[] = {  /* keep *DEPEND aligned with above defines */
   /* 4 */ "IDEPEND",
   /* 5 */ NULL
 };
+
+/* ACCEPT_KEYWORDS as a set for dep_resolve_tree; NULL when unset so
+ * resolving stays keyword-unfiltered like before */
+static set_t *
+qdepends_accept_kw(void)
+{
+	static set_t *kw      = NULL;
+	static bool   kw_init = false;
+
+	if (!kw_init)
+	{
+		kw_init = true;
+		if (accept_keywords != NULL && accept_keywords[0] != '\0')
+			kw = set_add_from_string(set_new(), accept_keywords);
+	}
+	return kw;
+}
 
 static bool qdepends_print_depend
 (
@@ -216,7 +234,7 @@ qdepends_results_cb
         }
         dep_resolve_tree(dep_tree, state->vdb, use,
                          NULL /*TODO masks*/,
-                         accept_keywords);
+                         qdepends_accept_kw());
         array_free(ma);
         set_free(use);
       }
@@ -270,7 +288,7 @@ qdepends_results_cb
         if (state->resolve)
           dep_resolve_tree(dep_tree, state->vdb, ev_use,
                            NULL /*TODO masks*/,
-                           accept_keywords);
+                           qdepends_accept_kw());
 
         printf("\n%s=\"\n", *dfile);
         dep_print_tree(stdout, dep_tree, 1, deps,
@@ -461,7 +479,7 @@ int qdepends_main(int argc, char **argv)
     if (state.vdb == NULL)
     {
       free_set(state.udeps);
-      array_deepfree(state.atoms, (array_free_cb *)atom_implode);
+      array_deepfree(state.atoms, atom_implode_cb);
       err("failed to open VDB at %s", portvdb);
     }
   }
@@ -518,7 +536,7 @@ int qdepends_main(int argc, char **argv)
   if (state.depend != NULL)
     free(state.depend);
 
-  array_deepfree(state.atoms, (array_free_cb *)atom_implode);
+  array_deepfree(state.atoms, atom_implode_cb);
   free_set(state.udeps);
 
   if (!ret)

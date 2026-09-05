@@ -5,8 +5,8 @@
  * Copyright 2010-2014 Mike Frysinger  - <vapier@gentoo.org>
  */
 
-#ifndef _BASENAME_H
-#define _BASENAME_H 1
+#ifndef BASENAME_H
+#define BASENAME_H 1
 
 #include <libgen.h>
 

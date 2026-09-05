@@ -225,3 +225,36 @@ color_clear(void)
 	for (i = 0; i < ARRAY_SIZE(colour_pairs); i++)
 		*(colour_pairs[i].var) = "";
 }
+
+static const char *colour_saved[ARRAY_SIZE(colour_pairs)];
+static bool colour_suppressed = false;
+
+void
+color_suppress(void)
+{
+	unsigned int i;
+
+	if (colour_suppressed)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(colour_pairs); i++) {
+		colour_saved[i] = *(colour_pairs[i].var);
+		*(colour_pairs[i].var) = "";
+	}
+
+	colour_suppressed = true;
+}
+
+void
+color_unsuppress(void)
+{
+	unsigned int i;
+
+	if (!colour_suppressed)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(colour_pairs); i++)
+		*(colour_pairs[i].var) = colour_saved[i];
+
+	colour_suppressed = false;
+}
