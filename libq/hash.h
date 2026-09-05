@@ -5,8 +5,8 @@
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _HASH_H
-#define _HASH_H 1
+#ifndef HASH_H
+#define HASH_H 1
 
 /* for AT_FDCWD */
 #include <sys/types.h>
@@ -65,9 +65,6 @@ char *hash_file_at_cb(int pfd, const char *filename, int hash_algo, hash_cb_t cb
 #define hash_file_at(fd, f, h) hash_file_at_cb(fd, f, h, NULL)
 char *hash_string(const char *buf, ssize_t buflen, int hash);
 
-/* streaming variant: data is pulled via the caller's read callback (which
- * returns 0 at EOF), so arbitrarily large streams are hashed without being
- * buffered in memory.  flen must be non-NULL. */
 typedef size_t (*hash_read_cb) (char *dest, size_t destlen, void *ctx);
 int hash_multiple_cb(hash_read_cb rcb, void *ctx,
 		char *md5, char *sha1, char *sha256, char *sha512,

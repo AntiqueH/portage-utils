@@ -59,6 +59,7 @@
 #include "useflags.h"
 #include "envd.h"
 #include "tree.h"
+#include "elfneeded.h"
 #include "linkage.h"
 #include "preserved.h"
 #include "xasprintf.h"
@@ -175,7 +176,7 @@
 /* #define BUSYBOX "/bin/busybox" */
 #define BUSYBOX ""
 
-#define QMERGE_FLAGS "fFsKUepuDNnWy1Oij:" COMMON_FLAGS
+#define QMERGE_FLAGS "fFsKUecpuDNnWy1OiPj:" COMMON_FLAGS
 static struct option const qmerge_long_opts[] = {
 	{"fetch",   no_argument, NULL, 'f'},
 	{"force",   no_argument, NULL, 'F'},
@@ -212,6 +213,10 @@ static struct option const qmerge_long_opts[] = {
 	{"info",    no_argument, NULL, 145},
 	{"exact",   no_argument, NULL, 146},
 	{"keep-going", opt_argument, NULL, 147},
+	{"depclean", no_argument, NULL, 'c'},
+	{"prune",   no_argument, NULL, 'P'},
+	{"with-bdeps", a_argument, NULL, 148},
+	{"depclean-lib-check", a_argument, NULL, 149},
 	{"debug",   no_argument, NULL, 128},
 	COMMON_LONG_OPTS
 };
@@ -251,6 +256,10 @@ static const char * const qmerge_opts_help[] = {
 	"Show precisely how a package was compiled (identity, build env, dep bindings, sonames). VDB default, pkg@repo targets a binhost entry",
 	"With -s: match plain keys as whole names, not substrings",
 	"Continue past a failed package like emerge --keep-going: hide from the list, re-resolve, drop dependents that lost their provider, merge the rest (y/n, default n)",
+	"Remove packages not required by @world (emerge --depclean); with atoms: only those, if nothing needs them",
+	"Remove all but the highest installed version of a package if nothing needs the others (emerge --prune); with -O ignoring dependencies",
+	"With --depclean: y/n follow DEPEND/BDEPEND of installed packages (default y)",
+	"With --depclean: y/n keep packages whose libraries other packages still link against (default y)",
 	"Run shell funcs with `set -x`",
 	COMMON_OPTS_HELP
 };
@@ -369,6 +378,7 @@ static set *qm_unmerged_cps;
  * NULL/empty when the feature is off or nothing to drop. */
 static set *qm_soft_unmerge = NULL;
 static int pkg_unmerge(tree_pkg_ctx *, depend_atom *, set *, int, char **, int, char **);
+static int binpkg_index_regen(void);
 
 static bool
 qmerge_prompt(const char *p)
@@ -897,7 +907,7 @@ binpkg_keywords_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 		return true;
 	}
 
-	/* global ACCEPT_KEYWORDS, incremental semantics in order: an
+	/* global ACCEPT_KEYWORDS, incremental semantics:: an
 	 * empty result falls back to ARCH so a sparse config does not
 	 * mask the whole world */
 	tmp = xstrdup(accept_keywords != NULL &&
@@ -991,9 +1001,81 @@ binpkg_keywords_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 	return ok;
 }
 
+/* ACCEPT_CHOSTS masking */
+static bool
+binpkg_chost_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
+{
+	static regex_t chost_re;
+	static int     chost_mode;
+	const char    *src;
+	char          *pc;
+
+	if (chost_mode == 0) {
+		src = accept_chosts != NULL && accept_chosts[0] != '\0' ?
+			accept_chosts : chost;
+		if (src == NULL || src[0] == '\0') {
+			chost_mode = 2;
+		} else {
+			char *pat = xmalloc(strlen(src) + 8);
+			char *w   = pat;
+			char *tmp = xstrdup(src);
+			char *sp;
+			char *tok;
+			bool  first = true;
+
+			w += sprintf(w, "^(");
+			for (tok = strtok_r(tmp, " \t\n", &sp);
+				 tok != NULL;
+				 tok = strtok_r(NULL, " \t\n", &sp))
+			{
+				if (!first)
+					*w++ = '|';
+				w += sprintf(w, "%s", tok);
+				first = false;
+			}
+			sprintf(w, ")$");
+			free(tmp);
+			if (regcomp(&chost_re, pat, REG_EXTENDED | REG_NOSUB) != 0) {
+				warn("!!! Invalid ACCEPT_CHOSTS value: '%s'", src);
+				chost_mode = 3;
+			} else {
+				chost_mode = 1;
+			}
+			free(pat);
+		}
+	}
+
+	pc = tree_pkg_meta(pkg, Q_CHOST);
+	if (pc == NULL || pc[0] == '\0' || chost_mode == 2)
+		return true;
+	if (chost_mode == 1 && regexec(&chost_re, pc, 0, NULL, 0) == 0)
+		return true;
+
+	if (!silent)
+		warn("%s is masked: CHOST is not accepted "
+			 "(CHOST=\"%s\" vs ACCEPT_CHOSTS=\"%s\")",
+			 atom_to_string(patom), pc,
+			 accept_chosts != NULL && accept_chosts[0] != '\0' ?
+				accept_chosts : (chost != NULL ? chost : ""));
+	return false;
+}
+
 /* --getbinpkg-exclude/--getbinpkg-include  */
 static array *qm_gb_excl_cli = NULL;
 static array *qm_gb_incl_cli = NULL;
+
+static void
+qm_gb_atoms_free(array *lst)
+{
+	size_t       i;
+	depend_atom *a;
+
+	if (lst == NULL)
+		return;
+	array_for_each(lst, i, a)
+		atom_implode(a);
+	array_free(lst);
+}
 
 static void
 qm_parse_gb_atoms(array **lst, const char *arg, const char *src)
@@ -1118,7 +1200,7 @@ qm_gb_list_match(array *lst, const depend_atom *pa)
 	return false;
 }
 
-/* -------- multi-binhost support (portage binrepos.conf parity) -----
+/* multi-binhost support (portage binrepos.conf parity)
  * repos come from /usr/share/portage/config/binrepos.conf, then
  * ${PORTAGE_CONFIGROOT}/etc/portage/binrepos.conf ([name] sections
  * with sync-uri = and optional priority =), and PORTAGE_BINHOST
@@ -1139,8 +1221,11 @@ struct qm_binrepo {
 	/* getbinpkg-exclude/-include = atom lists, NULL when unset */
 	array *gb_excl;
 	array *gb_incl;
+	/* openpgp-key-package */
+	char *key_pkg;
 	/* xpak-skip warning shown once per repo */
 	bool  xpak_warned;
+	bool  index_dead;
 };
 static struct qm_binrepo *qm_binrepos  = NULL;
 static size_t             qm_nbinrepos = 0;
@@ -1155,7 +1240,8 @@ static size_t            *qm_walk_order = NULL;
 
 static void
 binrepos_add(const char *name, const char *uri, const char *loc, int priority,
-			 int verify_sig, int frozen, const char *gbex, const char *gbin)
+			 int verify_sig, int frozen, const char *gbex, const char *gbin,
+			 const char *keypkg)
 {
 	size_t i;
 	size_t len;
@@ -1196,7 +1282,10 @@ binrepos_add(const char *name, const char *uri, const char *loc, int priority,
 	qm_binrepos[qm_nbinrepos].frozen  = frozen;
 	qm_binrepos[qm_nbinrepos].gb_excl = NULL;
 	qm_binrepos[qm_nbinrepos].gb_incl = NULL;
+	qm_binrepos[qm_nbinrepos].key_pkg =
+		keypkg != NULL && *keypkg != '\0' ? xstrdup(keypkg) : NULL;
 	qm_binrepos[qm_nbinrepos].xpak_warned = false;
+	qm_binrepos[qm_nbinrepos].index_dead  = false;
 	if (gbex != NULL && *gbex != '\0') {
 		char src[192];
 
@@ -1236,7 +1325,8 @@ qm_repo_loc(size_t i, char *buf, size_t buflen)
 static void
 qm_binrepos_flush(void *ctx, const char *name, const char *uri,
 				  const char *loc, int priority, int verify_sig,
-				  int frozen, const char *gbex, const char *gbin)
+				  int frozen, const char *gbex, const char *gbin,
+				  const char *keypkg)
 {
 	(void)ctx;
 	if (strcmp(name, "DEFAULT") == 0)
@@ -1245,7 +1335,8 @@ qm_binrepos_flush(void *ctx, const char *name, const char *uri,
 		warn("binrepo %s has no sync-uri, ignored", name);
 		return;
 	}
-	binrepos_add(name, uri, loc, priority, verify_sig, frozen, gbex, gbin);
+	binrepos_add(name, uri, loc, priority, verify_sig, frozen, gbex, gbin,
+				 keypkg);
 }
 
 static void
@@ -1337,7 +1428,8 @@ binrepos_load(void)
 		while (n-- > 0) {
 			char iname[64];
 			snprintf(iname, sizeof(iname), "binhost%d", ++prio);
-			binrepos_add(iname, uris[n], NULL, prio, -1, 0, NULL, NULL);
+			binrepos_add(iname, uris[n], NULL, prio, -1, 0, NULL, NULL,
+						 NULL);
 		}
 		free(uris);
 	}
@@ -1395,7 +1487,9 @@ binrepos_load(void)
 		qm_binrepos[0].frozen     = 0;
 		qm_binrepos[0].gb_excl    = NULL;
 		qm_binrepos[0].gb_incl    = NULL;
+		qm_binrepos[0].key_pkg    = NULL;
 		qm_binrepos[0].xpak_warned = false;
+		qm_binrepos[0].index_dead  = false;
 		qm_nbinrepos++;
 
 		{
@@ -1438,7 +1532,7 @@ binrepos_load(void)
 }
 
 /* signatures are mandatory somewhere this run. FEATURES
- * binpkg-request-signature, or any binrepo with verify-signature=true;
+ * binpkg-request-signature, or any binrepo with verify-signature=true.
  * binpkg-ignore-signature has prio over everything. */
 static bool
 qm_sigs_mandatory(void)
@@ -1464,7 +1558,7 @@ qm_sigs_mandatory(void)
 	return false;
 }
 
-/* the FEATURES-only variant checks and limits the local store */
+/* the FEATURES-only variant checks and limits the local signs list */
 static bool
 qm_sigs_requested(void)
 {
@@ -1481,8 +1575,8 @@ qm_path_is_gpkg(const char *path)
 	return l >= 9 && strcmp(path + l - 9, ".gpkg.tar") == 0;
 }
 
-/* under mandatory signatures only gpkg can satisfy: xpak has no
- * signature slot at all.. */
+/* under mandatory signatures only gpkg can work.
+ * xpak has (and had) no signature slot at all.. */
 static void
 qm_xpak_skip_warn(ssize_t ri)
 {
@@ -1510,6 +1604,8 @@ qm_repo_pkg_allowed(size_t ri, const depend_atom *pa)
 
 	if (qm_nbinrepos == 0 || ri == 0)
 		return true;
+	if (qm_binrepos[ri].index_dead)
+		return false;
 	if (qm_gb_list_match(qm_binrepos[ri].gb_excl, pa) ||
 			qm_gb_list_match(qm_gb_excl_cli, pa))
 		return false;
@@ -1525,7 +1621,7 @@ qm_repo_pkg_allowed(size_t ri, const depend_atom *pa)
 
 /* the Moves history is the remote maintainer's sole responsibility
  * and must be append-only.
- * we must flag a fetched file that lost directives the cached copy still
+ * we must flag a fetched file that lost instructions the cached copy still
  * carries.
  * (behaviour is unchanged, the fetched file still replaces the cache) */
 static void
@@ -1572,8 +1668,8 @@ qm_moves_shrink_warn(const char *fetched, const char *sdir, const char *rname)
 	free(cur);
 
 	if (shrunk > 0)
-		warn("binhost %s: fetched Moves lost %zu directive%s still "
-			 "present in the cached copy; Moves history is append-only "
+		warn("binhost %s: fetched Moves lost %zu instruction%s still "
+			 "present in the cached copy. Moves history is append-only "
 			 "and must never be pruned on the binhost",
 			 rname, shrunk, shrunk == 1 ? "" : "s");
 
@@ -1581,6 +1677,140 @@ qm_moves_shrink_warn(const char *fetched, const char *sdir, const char *rname)
 	free(fbuf);
 	free(cbuf);
 	free(dst);
+}
+
+static char *
+qm_fetch_varexpand(const char *tmpl, const char *dd, const char *uri,
+				   const char *file)
+{
+	FILE       *m;
+	char       *out  = NULL;
+	size_t      olen = 0;
+	const char *p    = tmpl;
+
+	m = open_memstream(&out, &olen);
+	if (m == NULL)
+		return xstrdup(tmpl);
+	while (*p != '\0') {
+		if (*p == '$') {
+			const char *ns = p + 1;
+			bool        br = *ns == '{';
+			const char *ne;
+			size_t      nl;
+			const char *val = NULL;
+
+			if (br)
+				ns++;
+			ne = ns;
+			while (isalnum((unsigned char)*ne) || *ne == '_')
+				ne++;
+			nl = (size_t)(ne - ns);
+			if ((!br || *ne == '}') && nl > 0) {
+				if (nl == 7 && strncmp(ns, "DISTDIR", 7) == 0)
+					val = dd;
+				else if (nl == 3 && strncmp(ns, "URI", 3) == 0)
+					val = uri;
+				else if (nl == 4 && strncmp(ns, "FILE", 4) == 0)
+					val = file;
+				else if (nl == 16 &&
+						 strncmp(ns, "PORTAGE_SSH_OPTS", 16) == 0)
+					val = getenv("PORTAGE_SSH_OPTS");
+			}
+			if (val != NULL) {
+				fputs(val, m);
+				p = br ? ne + 1 : ne;
+				continue;
+			}
+		}
+		fputc(*p, m);
+		p++;
+	}
+	fclose(m);
+	return out;
+}
+
+static array *
+qm_shlex_split(const char *s)
+{
+	array      *ret = array_new();
+	const char *p   = s;
+
+	while (*p != '\0') {
+		char  *tok;
+		size_t len  = 0;
+		bool   have = false;
+
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+			p++;
+		if (*p == '\0')
+			break;
+		tok = xmalloc(strlen(p) + 1);
+		while (*p != '\0' && *p != ' ' && *p != '\t' &&
+				*p != '\n' && *p != '\r') {
+			if (*p == '\'') {
+				p++;
+				while (*p != '\0' && *p != '\'')
+					tok[len++] = *p++;
+				if (*p == '\'')
+					p++;
+				have = true;
+			} else if (*p == '"') {
+				p++;
+				while (*p != '\0' && *p != '"') {
+					if (*p == '\\' && (p[1] == '"' || p[1] == '\\' ||
+							p[1] == '$' || p[1] == '`'))
+						p++;
+					tok[len++] = *p++;
+				}
+				if (*p == '"')
+					p++;
+				have = true;
+			} else if (*p == '\\' && p[1] != '\0') {
+				p++;
+				tok[len++] = *p++;
+			} else {
+				tok[len++] = *p++;
+			}
+		}
+		tok[len] = '\0';
+		if (len > 0 || have)
+			array_append(ret, tok);
+		else
+			free(tok);
+	}
+	return ret;
+}
+
+/* Python shlex.quote: bare when every char is in [\w@%+=:,./-], else
+ * single-quoted with embedded quotes as '"'"' */
+static char *
+qm_shlex_quote(const char *s)
+{
+	const char *p;
+	char       *out;
+	char       *w;
+	bool        safe = *s != '\0';
+
+	for (p = s; safe && *p != '\0'; p++)
+		if (!isalnum((unsigned char)*p) &&
+				strchr("_@%+=:,./-", *p) == NULL)
+			safe = false;
+	if (safe)
+		return xstrdup(s);
+	out = xmalloc(strlen(s) * 5 + 3);
+	w = out;
+	*w++ = '\'';
+	for (p = s; *p != '\0'; p++) {
+		if (*p == '\'') {
+			memcpy(w, "'\"'\"'", 5);
+			w += 5;
+		} else {
+			*w++ = *p;
+		}
+	}
+	*w++ = '\'';
+	*w = '\0';
+	return out;
 }
 
 /* undo make.globals-style backslash escaping (\$ \" \\) so the
@@ -1700,7 +1930,7 @@ fetch_curl(const char *repo_uri, const char *destdir, const char *src)
 	curl_easy_cleanup(curl);
 	fclose(out);
 	/* Moves, News.tar and Packages.gz are optional files: a binhost
-	 * without them is normal, so their fetch failures stay silent */
+	 * without them is fine, so their fetch failures stay silent */
 	if (res != CURLE_OK && !qm_fetch_notmod &&
 			strcmp(src, "Moves") != 0 && strcmp(src, "News.tar") != 0 &&
 			strcmp(src, "Packages.gz") != 0)
@@ -1761,12 +1991,14 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 		/* qmerge-specific fetcher: when QFETCHCOMMAND is set in
 		 * make.conf/env, spawn it (same portage template grammar:
 		 * ${DISTDIR} ${URI} ${FILE}), exporting the vars it refers
-		 * to; failures are tolerated so the next repo can be tried.
+		 * to;; failures are tolerated so the next repo can be tried.
 		 * Empty (the default) -> built-in libcurl.
 		 * Deliberately NOT portage's FETCHCOMMAND,
 		 * so make.globals' wget default does not drag wget in. */
-		char *cmd;
-		char *script;
+		char       *cmd;
+		char       *script;
+		const char *wraw = qfetchwrapper[0] != '\0' ? qfetchwrapper :
+						   fetchwrapper;
 
 		if (qresumecommand[0] != '\0' &&
 				stat(dest, &st) == 0 && st.st_size > 0)
@@ -1774,22 +2006,65 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 		else
 			cmd = unescape_fetchcommand(qfetchcommand);
 
-		/* shell-quote the exported values correction */
-		char *e_dd   = shell_squote(destdir);
-		char *e_uri  = shell_squote(uri);
-		char *e_src  = shell_squote(src);
-		char *e_base = shell_squote(base);
+		if (wraw[0] != '\0') {
+			/* portage fetch.py cloned FETCH_WRAPPER: the fetch command is
+			 * expanded, split, and re-joined with each argument
+			 * individually shell-quoted, then passed as a single
+			 * string argument to the wrapper */
+			char  *w    = unescape_fetchcommand(wraw);
+			char  *uri2;
+			char  *wexp;
+			char  *cexp;
+			char  *join;
+			char  *e_join;
+			array *args;
+			char  *ja;
+			size_t ji;
+			FILE  *jm;
+			size_t jlen = 0;
 
-		xasprintf(&script,
-				"(export DISTDIR='%s' URI='%s/%s' FILE='%s'; %s%s) || :",
-				e_dd, e_uri, e_src, e_base,
-				pretend ? "echo " : "", cmd);
-		xsystem(script, AT_FDCWD);
-		free(e_dd);
-		free(e_uri);
-		free(e_src);
-		free(e_base);
-		free(script);
+			xasprintf(&uri2, "%s/%s", uri, src);
+			wexp = qm_fetch_varexpand(w, destdir, uri2, base);
+			cexp = qm_fetch_varexpand(cmd, destdir, uri2, base);
+			args = qm_shlex_split(cexp);
+			jm   = open_memstream(&join, &jlen);
+			array_for_each(args, ji, ja) {
+				char *qa = qm_shlex_quote(ja);
+
+				fprintf(jm, "%s%s", ji > 0 ? " " : "", qa);
+				free(qa);
+			}
+			fclose(jm);
+			e_join = shell_squote(join);
+			xasprintf(&script, "(%s%s '%s') || :",
+					  pretend ? "echo " : "", wexp, e_join);
+			xsystem(script, AT_FDCWD);
+			array_deepfree(args, free);
+			free(e_join);
+			free(join);
+			free(cexp);
+			free(wexp);
+			free(uri2);
+			free(w);
+			free(script);
+		} else {
+			/* shell-quote the exported values correction */
+			char *e_dd   = shell_squote(destdir);
+			char *e_uri  = shell_squote(uri);
+			char *e_src  = shell_squote(src);
+			char *e_base = shell_squote(base);
+
+			xasprintf(&script,
+					"(export DISTDIR='%s' URI='%s/%s' FILE='%s'; %s%s) || :",
+					e_dd, e_uri, e_src, e_base,
+					pretend ? "echo " : "", cmd);
+			xsystem(script, AT_FDCWD);
+			free(e_dd);
+			free(e_uri);
+			free(e_src);
+			free(e_base);
+			free(script);
+		}
 		free(cmd);
 	} else {
 		/* no external fetch tool configured: built-in libcurl */
@@ -1852,12 +2127,12 @@ fetch(const char *destdir, const char *src)
 	}
 }
 
-/* QMERGE_MOVES policy (make.conf/env): which move-directive source
+/* QMERGE_MOVES policy (make.conf/env): which move-instruction source
  * applies when both a repo checkout and fetched Moves files exist.
- * repo (default) = repo profiles/updates win, fetched Moves fallback
- * binhost        = fetched Moves win, repo fallback
- * repo-only / binhost-only = that single source, no fallback
- * none           = moves machinery off entirely */
+ * repo (default) 					= repo profiles/updates win, fetched Moves fallback
+ * binhost        					= fetched Moves win, repo fallback
+ * repo-only / binhost-only 		= that single source, no fallback
+ * none           					= moves machinery off entirely */
 enum qm_mvpol {
 	QM_MV_REPO,
 	QM_MV_BINHOST,
@@ -1891,39 +2166,165 @@ qm_moves_policy(void)
  * effect right there */
 static bool qm_index_force = false;
 
-/* a cached index younger than its own TTL header needs no refetch;
+/* a cached index younger than its own TTL header needs no refetch
  * QMERGE_IGNORE_TTL=1 forces (portage bintree TTL semantics, with
  * the store file's mtime as the download timestamp) */
+static bool
+qm_index_hdr_val(const char *path, const char *key, char *val, size_t vlen)
+{
+	FILE   *f;
+	char   *line = NULL;
+	size_t  cap  = 0;
+	size_t  klen = strlen(key);
+	bool    ret  = false;
+
+	f = fopen(path, "r");
+	if (f == NULL)
+		return false;
+	while (getline(&line, &cap, f) != -1) {
+		if (line[0] == '\n')
+			break;
+		if (strncmp(line, key, klen) == 0 &&
+				line[klen] == ':' && line[klen + 1] == ' ') {
+			size_t n = strlen(line + klen + 2);
+
+			while (n > 0 && (line[klen + 2 + n - 1] == '\n' ||
+							 line[klen + 2 + n - 1] == '\r'))
+				n--;
+			if (n >= vlen)
+				n = vlen - 1;
+			memcpy(val, line + klen + 2, n);
+			val[n] = '\0';
+			ret = true;
+			break;
+		}
+	}
+	free(line);
+	fclose(f);
+	return ret;
+}
+
+static void
+qm_uri_host(const char *uri, char *buf, size_t buflen)
+{
+	const char *p = strstr(uri, "://");
+	const char *e;
+	const char *at;
+	size_t      n;
+
+	p = p != NULL ? p + 3 : uri;
+	e = strchr(p, '/');
+	if (e == NULL)
+		e = p + strlen(p);
+	at = memchr(p, '@', (size_t)(e - p));
+	if (at != NULL)
+		p = at + 1;
+	n = (size_t)(e - p);
+	if (n >= buflen)
+		n = buflen - 1;
+	memcpy(buf, p, n);
+	buf[n] = '\0';
+}
+
+static void
+qm_iso_time(time_t ts, char *buf, size_t buflen)
+{
+	struct tm tmv;
+	size_t    n;
+
+	localtime_r(&ts, &tmv);
+	n = strftime(buf, buflen, "%Y-%m-%dT%H:%M:%S%z", &tmv);
+	if (n >= 5 && n + 2 <= buflen) {
+		memmove(buf + n - 1, buf + n - 2, 2);
+		buf[n - 2] = ':';
+	}
+}
+
+static bool
+qm_store_index(const char *src, const char *pdir)
+{
+	char    tmpp[_Q_PATH_MAX + 32];
+	char    finp[_Q_PATH_MAX + 32];
+	FILE   *in;
+	FILE   *out;
+	char   *line = NULL;
+	size_t  cap  = 0;
+	bool    put  = false;
+	bool    ok   = true;
+	char    buf[BUFSIZ];
+	size_t  rn;
+
+	snprintf(finp, sizeof(finp), "%.4000s/%s", pdir, Packages);
+	snprintf(tmpp, sizeof(tmpp), "%.4000s/.%s.fetch-tmp", pdir, Packages);
+	in  = fopen(src, "r");
+	out = in != NULL ? fopen(tmpp, "w") : NULL;
+	if (out == NULL) {
+		if (in != NULL)
+			fclose(in);
+		return false;
+	}
+	while (getline(&line, &cap, in) != -1) {
+		if (strncmp(line, "DOWNLOAD_TIMESTAMP: ",
+					sizeof("DOWNLOAD_TIMESTAMP: ") - 1) == 0)
+			continue;
+		if (!put && (line[0] == '\n' ||
+					 strncmp(line, "DOWNLOAD_TIMESTAMP",
+							 sizeof("DOWNLOAD_TIMESTAMP") - 1) > 0)) {
+			fprintf(out, "DOWNLOAD_TIMESTAMP: %lld\n",
+					(long long)time(NULL));
+			put = true;
+		}
+		if (fputs(line, out) == EOF)
+			ok = false;
+		if (line[0] == '\n')
+			break;
+	}
+	free(line);
+	while (ok && (rn = fread(buf, 1, sizeof(buf), in)) > 0)
+		if (fwrite(buf, 1, rn, out) != rn)
+			ok = false;
+	if (ferror(in))
+		ok = false;
+	fclose(in);
+	if (fflush(out) != 0)
+		ok = false;
+	if (fclose(out) != 0)
+		ok = false;
+	if (ok) {
+		binpkg_perms(tmpp, false);
+		if (rename(tmpp, finp) != 0)
+			ok = false;
+	}
+	if (!ok)
+		unlink(tmpp);
+	return ok;
+}
+
 static bool
 qm_index_fresh(const char *loc)
 {
 	char        path[_Q_PATH_MAX + 16];
 	struct stat st;
-	FILE       *f;
-	char        line[256];
-	long        ttl = 0;
+	char        v[64];
+	long        ttl;
+	long long   dlts;
 
 	if (getenv("QMERGE_IGNORE_TTL") != NULL)
 		return false;
 	snprintf(path, sizeof(path), "%s%s/%s", portroot, loc, Packages);
 	if (stat(path, &st) != 0 || st.st_size == 0)
 		return false;
-	f = fopen(path, "r");
-	if (f == NULL)
+	if (!qm_index_hdr_val(path, "TTL", v, sizeof(v)))
 		return false;
-	/* the header block ends at the first blank line */
-	while (fgets(line, sizeof(line), f) != NULL) {
-		if (line[0] == '\n')
-			break;
-		if (strncmp(line, "TTL: ", 5) == 0) {
-			ttl = atol(line + 5);
-			break;
-		}
-	}
-	fclose(f);
+	ttl = atol(v);
 	if (ttl <= 0)
 		return false;
-	return time(NULL) < st.st_mtime + ttl;
+	if (!qm_index_hdr_val(path, "DOWNLOAD_TIMESTAMP", v, sizeof(v)))
+		return false;
+	dlts = atoll(v);
+	if (dlts <= 0)
+		return false;
+	return time(NULL) < (time_t)(dlts + ttl);
 }
 
 static bool
@@ -1958,8 +2359,13 @@ qmerge_initialize(void)
 		if (access(BUSYBOX, X_OK) != 0)
 			err(BUSYBOX " must be installed");
 
-	if (access("/bin/sh", X_OK) != 0)
-		err("/bin/sh must be installed");
+	if (!no_phases &&
+			access(CONFIG_EPREFIX "bin/bash", X_OK) != 0 &&
+			access("/bin/sh", X_OK) != 0)
+		warn("no shell found (%sbin/bash, /bin/sh): pkg_* phases, a fetch "
+			 "command and the trust helper cannot run. Merge with "
+			 "--no-phases (QMERGE_NO_PHASES=y) to skip the phases",
+			 CONFIG_EPREFIX);
 
 	if (pkgdir[0] != '/')
 		errf("PKGDIR='%s' does not appear to be valid", pkgdir);
@@ -2028,13 +2434,19 @@ qmerge_initialize(void)
 				printf(">>> Fetching Packages index from %s\n",
 					   qm_binrepos[i].name);
 
-			/* If-Modified-Since from the cached copy's fetch time.
+			/* If-Modified-Since from the cached copy's TIMESTAMP header.
 			 * a forced refresh sends none, a 304 from a new sync-uri
 			 * must not preserve the old catalog */
 			snprintf(spath, sizeof(spath), "%s%s/%s",
 					 portroot, loc, Packages);
-			qm_fetch_ims = !qm_index_force && stat(spath, &sst) == 0
-					? sst.st_mtime : 0;
+			qm_fetch_ims = 0;
+			if (!qm_index_force) {
+				char lts[64];
+
+				if (qm_index_hdr_val(spath, "TIMESTAMP",
+									 lts, sizeof(lts)))
+					qm_fetch_ims = (time_t)atoll(lts);
+			}
 
 			/* compressed index preferred (portage tries .gz first) */
 			if (fetch_repo(i, buf, "Packages.gz") == 0) {
@@ -2071,37 +2483,77 @@ qmerge_initialize(void)
 			 * box resolves against an empty (or stale) index.
 			 * dropping !pretend */
 			if (stat(Packages, &st) == 0 && st.st_size > 0) {
-				char *pdir;
-				int   sfd;
-				int   dfd;
+				char      rts[64];
+				char      rver[64];
+				char      lts[64];
+				bool      ver_ok = false;
+				bool      keep   = false;
+				long long rtsv;
+				long long ltsv   = 0;
 
-				xasprintf(&pdir, "%s%s", portroot, loc);
-				if (mkdir_p(pdir, 0755) != 0 ||
-						(dfd = open(pdir, O_RDONLY | O_CLOEXEC)) < 0)
-				{
-					warnp("cannot open %s, keeping previous Packages index",
-						  pdir);
+				if (!qm_index_hdr_val(Packages, "TIMESTAMP",
+									  rts, sizeof(rts))) {
+					fprintf(stderr, "\n\n!!! [%s] Binhost package index "
+							" has no TIMESTAMP field.\n",
+							qm_binrepos[i].name);
+					qm_binrepos[i].index_dead = true;
+					continue;
 				}
-				else
-				{
-					sfd = open(buf, O_RDONLY | O_CLOEXEC);
-					if (sfd < 0 ||
-							move_file(sfd, Packages, dfd, Packages,
-									  NULL) != 0) {
-						warnp("failed to move fresh Packages index into %s",
-							  pdir);
-					} else {
-						char ppath[_Q_PATH_MAX + 16];
+				if (qm_index_hdr_val(Packages, "VERSION",
+									 rver, sizeof(rver))) {
+					char *end;
+					long  vv = strtol(rver, &end, 10);
 
-						snprintf(ppath, sizeof(ppath), "%s/%s",
-								 pdir, Packages);
-						binpkg_perms(ppath, false);
+					if (end != rver && *end == '\0' && vv <= 0)
+						ver_ok = true;
+				} else
+					snprintf(rver, sizeof(rver), "None");
+				if (!ver_ok) {
+					fprintf(stderr, "\n\n!!! [%s] Binhost package index"
+							" version is not supported: '%s'\n",
+							qm_binrepos[i].name, rver);
+					qm_binrepos[i].index_dead = true;
+					continue;
+				}
+				rtsv = atoll(rts);
+				if (qm_index_hdr_val(spath, "TIMESTAMP",
+									 lts, sizeof(lts))) {
+					ltsv = atoll(lts);
+					keep = ltsv >= rtsv;
+				}
+				if (keep && rtsv < ltsv) {
+					char host[256];
+					char lb[64] = "";
+					char rb[64] = "";
+
+					qm_uri_host(qm_binrepos[i].uri, host, sizeof(host));
+					if (verbose) {
+						qm_iso_time((time_t)ltsv, lb, sizeof(lb));
+						qm_iso_time((time_t)rtsv, rb, sizeof(rb));
 					}
-					if (sfd >= 0)
-						close(sfd);
-					close(dfd);
+					fprintf(stderr, "%s[%s] WARNING: Service %s did not "
+							"respect If-Modified-Since. Consider asking "
+							"the service operator to enable support for "
+							"If-Modified-Since or using another service"
+							"%s%s%s%s%s.%s\n",
+							YELLOW, qm_binrepos[i].name, host,
+							verbose ? " (local: " : "",
+							lb, verbose ? ", remote: " : "", rb,
+							verbose ? ")" : "", NORM);
 				}
-				free(pdir);
+				if (!keep) {
+					char *pdir;
+
+					xasprintf(&pdir, "%s%s", portroot, loc);
+					if (mkdir_p(pdir, 0755) != 0) {
+						warnp("cannot open %s, keeping previous "
+							  "Packages index", pdir);
+					} else if (!qm_store_index(Packages, pdir)) {
+						warnp("failed to move fresh Packages index "
+							  "into %s", pdir);
+					}
+					free(pdir);
+				}
 			}
 
 			/* optional news transport: News.tar next to Packages;
@@ -2189,8 +2641,8 @@ qmerge_initialize(void)
 
 static tree_ctx *qmerge_vdb_tree    = NULL;
 /* one binpkg tree per binrepo store (parallel to qm_binrepos, or a
- * single PKGDIR tree when no repos are configured); repos sharing a
- * store share the ctx pointer */
+ * single PKGDIR tree when no repos are configured)
+ * repos sharing a store share the ctx pointer */
 static tree_ctx **qm_bintrees  = NULL;
 static size_t     qm_nbintrees = 0;
 
@@ -2206,52 +2658,7 @@ qm_bintree_cnt(void)
  * `qmerge -i' still overwrites it if invoked manually, same
  * as portage does */
 static void
-qm_local_index_freshness(const char *loc)
-{
-	static bool    done = false;
-	char           path[_Q_PATH_MAX + 16];
-	struct stat    ist;
-	struct stat    dst;
-	DIR           *d;
-	struct dirent *de;
-	size_t         i;
-	bool           stale = false;
-
-	if (done)
-		return;
-	done = true;
-
-	for (i = 1; i < qm_nbinrepos; i++) {
-		char        lb[_Q_PATH_MAX];
-		const char *l = qm_repo_loc(i, lb, sizeof(lb));
-
-		if (strcmp(l, loc) == 0)
-			return;
-	}
-
-	snprintf(path, sizeof(path), "%s%s/%s", portroot, loc, Packages);
-	if (stat(path, &ist) != 0)
-		return;
-
-	snprintf(path, sizeof(path), "%s%s", portroot, loc);
-	if (stat(path, &dst) == 0 && dst.st_mtime > ist.st_mtime)
-		stale = true;
-	if (!stale && (d = opendir(path)) != NULL) {
-		while (!stale && (de = readdir(d)) != NULL) {
-			char sub[_Q_PATH_MAX + 300];
-
-			if (de->d_name[0] == '.')
-				continue;
-			snprintf(sub, sizeof(sub), "%.4095s/%s", path, de->d_name);
-			if (stat(sub, &dst) == 0 && S_ISDIR(dst.st_mode) &&
-					dst.st_mtime > ist.st_mtime)
-				stale = true;
-		}
-		closedir(d);
-	}
-	if (stale)
-		warn("local binpkg index may be stale; run `qmerge -i'");
-}
+qm_local_index_populate(const char *loc);
 
 static tree_ctx *
 qm_bintree(size_t i)
@@ -2284,7 +2691,7 @@ qm_bintree(size_t i)
 	}
 
 	if (i == 0)
-		qm_local_index_freshness(loc);
+		qm_local_index_populate(loc);
 	qm_bintrees[i] = tree_new(portroot, loc, TREETYPE_BINPKG, true);
 	return qm_bintrees[i];
 }
@@ -2381,6 +2788,9 @@ qm_print_repos(void)
 					array_cnt(qm_binrepos[w].gb_incl) > 0)
 				printf("  %-16s getbinpkg-include: %zu atom(s)\n", "",
 					   array_cnt(qm_binrepos[w].gb_incl));
+			if (qm_binrepos[w].key_pkg != NULL)
+				printf("  %-16s openpgp-key-package: %s\n", "",
+					   qm_binrepos[w].key_pkg);
 		}
 	}
 	return EXIT_SUCCESS;
@@ -2472,10 +2882,10 @@ qm_atom_is_target(const depend_atom *pa, set *todo)
 #define BV_VDB       (1<<1)
 #define BV_BINPKG    (1<<2)
 
-/* is this cpv package.mask'd?  package_masks (profile cascade + /etc/portage)
+/* is this cpv package.mask'd? package_masks (profile cascade + /etc/portage)
  * is keyed by the raw mask-atom STRING, so index it once into cat/pn -> atoms
  * (like qkeyword does) and match the cpv against that pkg's mask atoms.
- * Empty(e.g. no profile on a pure binhost box) = never masked.
+ * Empty(e.g. no profile on a pure binhost machine ) = never masked.
  * (package.unmask) override not yet parsed, deferred.)
  * cat/pn -> array of mask/unmask atoms; lazy */
 static hash_t *binpkg_pmasks   = NULL;
@@ -2501,7 +2911,7 @@ binpkg_mask_index(hash_t *src)
 			continue;
 		b = array_new();
 		array_append(b, a);
-		hash_add(idx, atom_format("%[CAT]%[PN]", a), b, (void **)&eb);
+		hash_add(idx, atom_format("%{#}%[CAT]%[PN]", a), b, (void **)&eb);
 		/* hash_add REPLACES the stored value and returns the previous
 		 * one: the hash now holds b, so merge the old bucket into it */
 		if (eb != NULL) {
@@ -2533,7 +2943,7 @@ binpkg_masked(const depend_atom *patom)
 	if (binpkg_punmasks == NULL)
 		binpkg_punmasks = binpkg_mask_index(package_unmasks);
 
-	bucket = hash_get(binpkg_pmasks, atom_format("%[CAT]%[PN]", patom));
+	bucket = hash_get(binpkg_pmasks, atom_format("%{#}%[CAT]%[PN]", patom));
 	if (bucket == NULL)
 		return false;
 	array_for_each(bucket, n, m)
@@ -2546,7 +2956,7 @@ binpkg_masked(const depend_atom *patom)
 
 	/* package.unmask overrides a matching mask; qmerge pools profile
 	 * and /etc/portage masks, so unmask overrides both */
-	bucket = hash_get(binpkg_punmasks, atom_format("%[CAT]%[PN]", patom));
+	bucket = hash_get(binpkg_punmasks, atom_format("%{#}%[CAT]%[PN]", patom));
 	if (bucket != NULL)
 		array_for_each(bucket, n, m)
 			if (atom_compare(patom, m) == EQUAL)
@@ -2744,11 +3154,11 @@ qm_excl_hint(const depend_atom *atom)
 	return "";
 }
 
-/* package moves: portage profiles/updates directives, fetched from the
+/* package moves: portage profiles/updates instructions, fetched from the
  * binhost as <store>/Moves (the repo-less transport, published next to
  * Packages).
  * Applied to VDB + world during -f; the applied content is
- * kept in <store>/.moves-applied so a directive set runs once.
+ * kept in <store>/.moves-applied so a instruction set runs once.
  * a1 = move old cat/pn, or slotmove atom
  * a2 = move new cat/pn, or slotmove old slot
  * a3 = slotmove new slot */
@@ -3026,6 +3436,7 @@ qm_move_vdb_deps(const char *oldcp, const char *newcp)
 		}
 		while ((pe = readdir(pd)) != NULL) {
 			size_t di;
+			char  *mp;
 
 			if (pe->d_name[0] == '.' || pe->d_name[0] == '-')
 				continue;
@@ -3037,6 +3448,15 @@ qm_move_vdb_deps(const char *oldcp, const char *newcp)
 				(void)qm_move_rewrite_file(fp, oldcp, newcp);
 				free(fp);
 			}
+			xasprintf(&mp, "%s/%s/metadata", pdir, pe->d_name);
+			if (access(mp, F_OK) == 0) {
+				char *pkgd;
+
+				xasprintf(&pkgd, "%s/%s", pdir, pe->d_name);
+				(void)tree_vdbmeta_consolidate(pkgd, false, true);
+				free(pkgd);
+			}
+			free(mp);
 		}
 		closedir(pd);
 		free(pdir);
@@ -3166,10 +3586,8 @@ qm_bin_has_cp(const char *cp)
 	return found;
 }
 
-/* apply one directive stream; content snapshot in apath makes it
- * one-shot; 
- * trusted = local repo data, exempt from the signature
- * posture that gates the fetched transport.
+/* apply one instruction ongoing, and content snapshot in apath makes it one-shot 
+ * trusted = local repo data, exempt from the signature posture that stops & checks the fetched transport.
  * Returns -1 when skipped (unchanged/refused), else the number of VDB mutations. */
 static int
 qm_apply_moves_buf(const char *mbuf, const char *rname, const char *apath,
@@ -3329,7 +3747,7 @@ qm_apply_moves_all(void)
 	free(repoupd);
 }
 
-/* move-directive map for resolve-time diagnostics: repo updates when
+/* move-instruction map for resolve-time diagnostics: repo updates when
  * present, else the fetched Moves files */
 static array *qm_moves_map        = NULL;
 static bool   qm_moves_map_loaded = false;
@@ -3435,8 +3853,8 @@ qm_move_fail_hint(const depend_atom *atom)
 /* GLEP 42 news transport: the binhost publishes the repo's
  * metadata/news as <PKGDIR>/News.tar (members <repoid>/<item>/<file>),
  * the repo-less client fetches it with the index, filters relevance
- * and does the unread/skip bookkeeping; bodies for relevant items are
- * cached under /var/lib/gentoo/news/items/<repoid>/<item>/ where the
+ * and does the unread/skip bookkeeping. The bodies for relevant items are
+ * burried under /var/lib/gentoo/news/items/<repoid>/<item>/ where the
  * qnews applet reads them */
 static void
 qm_emit_news(int dfd, const char *pdir)
@@ -3570,7 +3988,7 @@ qm_emit_news(int dfd, const char *pdir)
 }
 
 /* GLEP 42 relevance: OR within a Display-If type, AND across types;
- * absent type = no constraint; no headers at all = relevant */
+ * absent type = no constraint, and no headers at all = relevant */
 static bool
 qm_news_relevant(const char *hdrs)
 {
@@ -3756,10 +4174,9 @@ qm_apply_news_one(const char *loc, const char *rname)
 		return;
 	}
 
-	/* pass 1: relevance from each item's <id>.en.txt headers */
+	/* pass 1: read every item's English text and keep the ids whose Display-If-* headers match this system */
 	ar = archive_read_new();
-	archive_read_support_format_tar(ar);
-	archive_read_support_filter_all(ar);
+	qarchive_read_taronly(ar);
 	if (archive_read_open_filename(ar, tpath, 65536) != ARCHIVE_OK) {
 		archive_read_free(ar);
 		return;
@@ -3803,13 +4220,13 @@ qm_apply_news_one(const char *loc, const char *rname)
 	}
 	archive_read_free(ar);
 
-	/* pass 2: cache bodies + unread/skip bookkeeping */
+	/* pass 2: store the matching items and list them as unread,
+	 * the way portage records a fresh news item */
 	bool apply_ok = true;
 	snprintf(ndir, sizeof(ndir), "%svar/lib/gentoo/news", portroot);
 	mkdir_p(ndir, 0755);
 	ar = archive_read_new();
-	archive_read_support_format_tar(ar);
-	archive_read_support_filter_all(ar);
+	qarchive_read_taronly(ar);
 	if (archive_read_open_filename(ar, tpath, 65536) == ARCHIVE_OK) {
 		int r;
 
@@ -3914,7 +4331,7 @@ qm_apply_news_all(void)
 	}
 }
 
-/* server side: publish the main repo's move directives as
+/* server side: publish the main repo's move instructions as
  * <PKGDIR>/Moves next to Packages for repo-less eaters */
 static void
 qm_emit_moves(int dfd, const char *pdir)
@@ -3943,7 +4360,7 @@ qm_emit_moves(int dfd, const char *pdir)
 	free(content);
 }
 
-/* USE check rejections collected during resolution, keyed per pkgs
+/* USE check rejections collected during resolution, key'd per pkgs
  * (cat/pn:slot -> reject lines), printed as aa portage-style "ignored
  * due to non matching USE" block with the merge list. Only packages where
  * NO instance survived the checks are shown, a accepted duplicate makes
@@ -4139,7 +4556,7 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 #define binpkg_use_ok(P,A,R,S) binpkg_use_ok_r(P, A, R, S, NULL, 0)
 
 /* the USE/IUSE consacrated in libq/useflags.c (fuzzable in
- * isolation); qm_uc() hands them this run's config state.  qm_use_drift
+ * isolation). qm_uc() hands them this run's config state. qm_use_drift
  * is pure and needs no ctx. */
 #define qm_use_drift(B, I) uc_use_drift(B, I)
 
@@ -4163,12 +4580,13 @@ qm_notice(const char *key, const char *detail)
 	add_set_unique(detail, d, NULL);
 }
 
-/* did the binpkg's built USE (over its IUSE) change vs the installed
- * copy?  PYTHON_TARGETS/RUBY_TARGETS/... are plain USE flags here, so a
+/* chek whether the binpkg's built USE (over its IUSE) change vs the installed
+ * copy. PYTHON_TARGETS/RUBY_TARGETS/... are plain USE flags here, so a
  * remote rebuild with different targets registers as changed */
-/* was the binpkg rebuilt vs the installed copy?  Same version,
+/* check wether binpkg was rebuilt vs the installed copy. Same version,
  * BUILD_TIME differs, emerge --rebuilt-binaries detection
- * (depgraph.py rebuilt_binaries branch). */
+ * (depgraph.py rebuilt_binaries branch).
+ * need more proper docs */
 static bool
 qm_rebuilt_newer(tree_pkg_ctx *bin, tree_pkg_ctx *inst)
 {
@@ -4207,9 +4625,10 @@ qm_use_changed(tree_pkg_ctx *bin, tree_pkg_ctx *inst)
 }
 
 /* the USE/IUSE evaluators (qm_expand_group/qm_pkg_flag_override/
- * qm_use_wanted/qm_use_mismatch) propelled in libq/useflags.c; qmerge calls
+ * qm_use_wanted/qm_use_mismatch) propelled in libq/useflags.c. qmerge calls
  * them through qm_uc(), which points a shared use_ctx at this run's
- * config globals. */
+ * config globals.
+ * need more proper docs */
 static struct use_ctx qm_uctx;
 
 static struct use_ctx *
@@ -4241,6 +4660,7 @@ qm_uc(void)
  * Users upgrade/bump/install via @preserved-rebuild (this would be remote binhost re-merges).
  * A (our) GC after merge/unmerge drops entries whose last NEEDing package left. */
 static preserved_reg *qm_preserved_reg = NULL;
+static bool           qm_preserved_ro  = false;
 
 static bool
 qm_preserve_active(void)
@@ -4251,12 +4671,17 @@ qm_preserve_active(void)
 static preserved_reg *
 qm_preserved_get(void)
 {
+	if (qm_preserved_reg != NULL && qm_preserved_ro && !pretend) {
+		preserved_close(qm_preserved_reg);
+		qm_preserved_reg = NULL;
+	}
 	if (qm_preserved_reg == NULL) {
 		char *f;
 
 		xasprintf(&f, "%svar/lib/portage/preserved_libs_registry",
 				  portroot);
-		qm_preserved_reg = preserved_open(f);
+		qm_preserved_reg = pretend ? preserved_open_ro(f) : preserved_open(f);
+		qm_preserved_ro  = pretend != 0;
 		free(f);
 		preserved_prune(qm_preserved_reg, portroot);
 	}
@@ -4308,7 +4733,8 @@ qm_linkage_build(void)
 	return map;
 }
 
-/* GLEP 74 REQUIRES/PROVIDES blobs, "arch: soname soname ..." lines */
+/* GLEP 74 REQUIRES/PROVIDES blobs, "arch: soname soname ..." lines
+ * need more proper docs */
 static bool
 qm_soname_in(const char *blob, const char *cat, const char *soname)
 {
@@ -4358,13 +4784,88 @@ qm_preserve_add(array *out, set *keep, const char *path)
 		printf("%s>>>%s needed    %s\n", GREEN, NORM, path);
 }
 
+static bool
+qm_plib_arch_ok(const char *a, const char *b)
+{
+	if (a == NULL || *a == '\0' || b == NULL || *b == '\0')
+		return true;
+	return strcasecmp(a, b) == 0;
+}
+
+static bool
+qm_plib_name_in(array *names, const char *name)
+{
+	size_t  i;
+	char   *s;
+
+	array_for_each(names, i, s)
+		if (strcmp(s, name) == 0)
+			return true;
+	return false;
+}
+
+static void
+qm_preserve_encb(void *p)
+{
+	elf_needed_free(p);
+}
+
+/* portage feeds preserved libraries themselves through scanelf into
+ * the LinkageMap */
+static array *
+qm_preserve_plib_cons(array *members, set *keep)
+{
+	array           *ret = array_new();
+	preserved_entry *pe;
+	size_t           i;
+	size_t           n;
+	char            *pt;
+
+	array_for_each(preserved_entries(qm_preserved_get()), i, pe) {
+		size_t        si;
+		tree_pkg_ctx *sm;
+		bool          isrepl = false;
+
+		array_for_each(members, si, sm) {
+			atom_ctx *sa = tree_pkg_atom(sm, false);
+			char      scpv[512];
+
+			if (sa == NULL)
+				continue;
+			snprintf(scpv, sizeof(scpv), "%s/%s",
+					 sa->CATEGORY ? : "", sa->PF ? : "");
+			if (strcmp(scpv, pe->cpv) == 0) {
+				isrepl = true;
+				break;
+			}
+		}
+		if (isrepl)
+			continue;
+		array_for_each(pe->paths, n, pt) {
+			char       *abs;
+			elf_needed *en;
+
+			if (keep != NULL && contains_set(pt, keep) != NULL)
+				continue;
+			xasprintf(&abs, "%s%s", portroot,
+					  pt[0] == '/' ? pt + 1 : pt);
+			en = elf_needed_read(abs);
+			free(abs);
+			if (en != NULL)
+				array_append(ret, en);
+		}
+	}
+	return ret;
+}
+
 /* soname still NEEDed by a package that is neither replaced nor the
  * replacement, and the incoming package does not provide it.
  * The soname symlink is preserved along with the real file. */
 static array *
 qm_preserve_compute(array *members, tree_pkg_ctx *newpkg, set *keep)
 {
-	array        *out = array_new();
+	array        *out   = array_new();
+	array        *pcons = NULL;
 	linkage_map  *map;
 	char         *nprov;
 	size_t        mi;
@@ -4469,6 +4970,21 @@ qm_preserve_compute(array *members, tree_pkg_ctx *newpkg, set *keep)
 				}
 			}
 			array_deepfree(cons, free);
+			if (!ext) {
+				size_t      pi;
+				elf_needed *pen;
+
+				if (pcons == NULL)
+					pcons = qm_preserve_plib_cons(members, keep);
+				array_for_each(pcons, pi, pen) {
+					if (!qm_plib_arch_ok(pen->arch, lo->cat))
+						continue;
+					if (qm_plib_name_in(pen->needed, lo->soname)) {
+						ext = true;
+						break;
+					}
+				}
+			}
 			if (!ext)
 				continue;
 			if (syms == NULL) {
@@ -4510,6 +5026,8 @@ qm_preserve_compute(array *members, tree_pkg_ctx *newpkg, set *keep)
 		if (syms != NULL)
 			free_set(syms);
 	}
+	if (pcons != NULL)
+		array_deepfree(pcons, qm_preserve_encb);
 	linkage_free(map);
 	if (array_cnt(out) == 0) {
 		array_free(out);
@@ -4518,14 +5036,69 @@ qm_preserve_compute(array *members, tree_pkg_ctx *newpkg, set *keep)
 	return out;
 }
 
-/* drop registry entries whose sonames no installed package NEEDs any
- * more, removing the preserved files themselves */
+typedef struct qm_plib_node_ {
+	char       *key;
+	array      *paths;
+	array      *sonames;
+	elf_needed *en;
+	bool        needed;
+} qm_plib_node;
+
+static int
+qm_plib_path_cmp(const void *l, const void *r)
+{
+	return strcmp(*(char * const *)l, *(char * const *)r);
+}
+
+static void
+qm_plib_node_free(void *p)
+{
+	qm_plib_node *nd = p;
+
+	if (nd == NULL)
+		return;
+	free(nd->key);
+	array_deepfree(nd->paths, free);
+	array_deepfree(nd->sonames, free);
+	elf_needed_free(nd->en);
+	free(nd);
+}
+
+typedef struct qm_plib_upd_ {
+	char  *cpv;
+	char  *slot;
+	char  *counter;
+	array *paths;
+} qm_plib_upd;
+
+/* cloned and adapted from portage's vartree.py : "A preserved
+ * library is needed if it has a usage which is not itself a
+ * preserved library, or if it has a usage which is a preserved
+ * library that is needed. Anything else is unneeded, including a group
+ * of preserved libraries which consume each other in a cycle but which
+ * nothing outside of the group consumes (bug 652382)." Usage edges
+ * from installed packages are dropped when "An alternative provider
+ * seems to be installed" (a non-preserved library with the same
+ * soname).
+ * We best to copy paste whatever we implement as clone. It's easier. */
 static void
 qm_preserved_gc(void)
 {
-	preserved_reg *reg;
-	linkage_map   *map;
-	size_t         i;
+	preserved_reg   *reg;
+	linkage_map     *map;
+	array           *nodes;
+	array           *work;
+	array           *remove;
+	array           *upds;
+	set             *plibpaths;
+	set             *removed;
+	preserved_entry *pe;
+	qm_plib_node    *nd;
+	qm_plib_upd     *u;
+	size_t           i;
+	size_t           n;
+	size_t           w;
+	char            *pt;
 
 	if (pretend)
 		return;
@@ -4533,46 +5106,188 @@ qm_preserved_gc(void)
 	if (preserved_count(reg) == 0)
 		return;
 	map = qm_linkage_build();
-	i = 0;
-	while (i < preserved_count(reg)) {
-		preserved_entry *pe     = array_get(preserved_entries(reg), i);
-		bool             needed = false;
-		size_t           n;
-		char            *pt;
 
+	nodes     = array_new();
+	plibpaths = create_set();
+	array_for_each(preserved_entries(reg), i, pe) {
 		array_for_each(pe->paths, n, pt) {
-			const char *bn = strrchr(pt, '/');
-			array      *cons;
+			char         *abs;
+			char         *rp;
+			const char   *key;
+			qm_plib_node *node = NULL;
+			size_t        j;
 
-			bn   = bn != NULL ? bn + 1 : pt;
-			cons = linkage_revdeps(map, NULL, bn, NULL);
-			needed = array_cnt(cons) > 0;
-			array_deepfree(cons, free);
-			if (needed)
-				break;
-		}
-		if (needed) {
-			i++;
-			continue;
-		}
-		array_for_each(pe->paths, n, pt) {
-			char *abs;
-
+			add_set(pt, plibpaths);
 			xasprintf(&abs, "%s%s", portroot,
 					  pt[0] == '/' ? pt + 1 : pt);
-			if (unlink(abs) == 0)
-				qprintf("%s<<<%s %s (preserved, no longer NEEDed)\n",
-						GREEN, NORM, pt);
+			rp  = realpath(abs, NULL);
+			key = rp != NULL ? rp : abs;
+			for (j = 0; j < array_cnt(nodes); j++) {
+				qm_plib_node *cand = array_get(nodes, j);
+
+				if (strcmp(cand->key, key) == 0) {
+					node = cand;
+					break;
+				}
+			}
+			if (node == NULL) {
+				node = xzalloc(sizeof(*node));
+				node->key     = xstrdup(key);
+				node->paths   = array_new();
+				node->sonames = array_new();
+				node->en      = elf_needed_read(key);
+				if (node->en != NULL && node->en->soname != NULL)
+					array_append(node->sonames,
+								 xstrdup(node->en->soname));
+				array_append(nodes, node);
+			}
+			if (!qm_plib_name_in(node->paths, pt))
+				array_append(node->paths, xstrdup(pt));
+			free(rp);
 			free(abs);
+		}
+	}
+	array_for_each(nodes, i, nd) {
+		if (array_cnt(nd->sonames) > 0)
+			continue;
+		array_for_each(nd->paths, n, pt) {
+			const char *bn = strrchr(pt, '/');
+
+			bn = bn != NULL ? bn + 1 : pt;
+			if (!qm_plib_name_in(nd->sonames, bn))
+				array_append(nd->sonames, xstrdup(bn));
+		}
+	}
+
+	work = array_new();
+	array_for_each(nodes, i, nd) {
+		const char  *arch = nd->en != NULL ? nd->en->arch : NULL;
+		bool         cons = false;
+		bool         altp = false;
+		size_t       s;
+		size_t       a;
+		size_t       b;
+		size_t       c;
+		char        *sn;
+		linkage_pkg *lp;
+		linkage_obj *lo;
+
+		array_for_each(nd->sonames, s, sn) {
+			array_for_each(linkage_pkgs(map), a, lp) {
+				array_for_each(lp->objs, b, lo) {
+					char *ndd;
+
+					if (!qm_plib_arch_ok(arch, lo->cat))
+						continue;
+					if (lo->soname[0] != '\0' &&
+							strcmp(lo->soname, sn) == 0 &&
+							contains_set(lo->path, plibpaths) == NULL)
+						altp = true;
+					if (!cons) {
+						array_for_each(lo->needed, c, ndd) {
+							if (strcmp(ndd, sn) == 0) {
+								cons = true;
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+		if (cons && !altp) {
+			nd->needed = true;
+			array_append(work, nd);
+		}
+	}
+	for (w = 0; w < array_cnt(work); w++) {
+		qm_plib_node *x = array_get(work, w);
+
+		if (x->en == NULL)
+			continue;
+		array_for_each(x->en->needed, n, pt) {
+			size_t j;
+
+			for (j = 0; j < array_cnt(nodes); j++) {
+				qm_plib_node *cand = array_get(nodes, j);
+
+				if (cand->needed)
+					continue;
+				if (!qm_plib_arch_ok(x->en->arch,
+						cand->en != NULL ? cand->en->arch : NULL))
+					continue;
+				if (qm_plib_name_in(cand->sonames, pt)) {
+					cand->needed = true;
+					array_append(work, cand);
+				}
+			}
+		}
+	}
+	array_free(work);
+
+	remove  = array_new();
+	removed = create_set();
+	array_for_each(nodes, i, nd) {
+		if (nd->needed)
+			continue;
+		array_for_each(nd->paths, n, pt) {
+			if (contains_set(pt, removed) == NULL) {
+				add_set(pt, removed);
+				array_append(remove, xstrdup(pt));
+			}
+		}
+	}
+	array_sort(remove, qm_plib_path_cmp);
+	array_for_each(remove, i, pt) {
+		char *abs;
+
+		xasprintf(&abs, "%s%s", portroot,
+				  pt[0] == '/' ? pt + 1 : pt);
+		if (unlink(abs) == 0)
+			qprintf("%s<<<%s %s (preserved, no longer NEEDed)\n",
+					GREEN, NORM, pt);
+		free(abs);
+	}
+
+	upds = array_new();
+	array_for_each(preserved_entries(reg), i, pe) {
+		array *surv    = array_new();
+		bool   changed = false;
+
+		array_for_each(pe->paths, n, pt) {
+			if (contains_set(pt, removed) != NULL)
+				changed = true;
+			else
+				array_append(surv, xstrdup(pt));
+		}
+		if (!changed) {
+			array_deepfree(surv, free);
+			continue;
 		}
 		{
 			char *sl = strchr(pe->cps, ':');
 
-			preserved_register(reg, pe->cpv,
-							   sl != NULL ? sl + 1 : "0",
-							   pe->counter, NULL);
+			u = xzalloc(sizeof(*u));
+			u->cpv     = xstrdup(pe->cpv);
+			u->slot    = xstrdup(sl != NULL ? sl + 1 : "0");
+			u->counter = xstrdup(pe->counter);
+			u->paths   = surv;
+			array_append(upds, u);
 		}
 	}
+	array_for_each(upds, i, u) {
+		preserved_register(reg, u->cpv, u->slot, u->counter,
+						   array_cnt(u->paths) > 0 ? u->paths : NULL);
+		free(u->cpv);
+		free(u->slot);
+		free(u->counter);
+		array_deepfree(u->paths, free);
+	}
+	array_deepfree(upds, free);
+
+	array_deepfree(remove, free);
+	free_set(removed);
+	free_set(plibpaths);
+	array_deepfree(nodes, qm_plib_node_free);
 	linkage_free(map);
 }
 
@@ -5271,7 +5986,8 @@ best_version(const depend_atom *atom, int mode)
 							continue;
 						if (qm_kg_masked(pa))
 							continue;
-						if (!binpkg_keywords_ok(cand, pa, true))
+						if (!binpkg_keywords_ok(cand, pa, true) ||
+					!binpkg_chost_ok(cand, pa, true))
 							continue;
 						if (!binpkg_license_ok(cand, pa, true))
 							continue;
@@ -5370,6 +6086,7 @@ best_version(const depend_atom *atom, int mode)
 							 !qm_path_is_gpkg(tree_pkg_get_path(cand))) ||
 							binpkg_masked(pa) ||
 							!binpkg_keywords_ok(cand, pa, true) ||
+							!binpkg_chost_ok(cand, pa, true) ||
 							!binpkg_license_ok(cand, pa, true) ||
 							binpkg_excluded(cand, pa, true))
 						continue;
@@ -5832,7 +6549,7 @@ pkg_unpack_environment(int dirfd, const char *vdb_path, const char *T)
 	}
 
 	a = archive_read_new();
-	archive_read_support_filter_all(a);
+	qarchive_read_filters(a);
 	archive_read_support_format_raw(a);
 	if (archive_read_open_fd(a, fd, BUFSIZ) == ARCHIVE_OK &&
 			archive_read_next_header(a, &entry) == ARCHIVE_OK)
@@ -5909,6 +6626,7 @@ pkg_run_func_at(
 	const char *phase;
 	char       *script;
 	int         eapi;
+	bool        declared;
 
 	/* EAPI officially is a string, but since the official ones are only
 	 * numbers, we'll just go with the numbers */
@@ -5925,7 +6643,8 @@ pkg_run_func_at(
 	 * The phases are the func with the "pkg_" chopped off. */
 	func = phase_table[phaseidx].phasestr;
 	phase = func + 4;
-	if (strstr(phases, phase) == NULL) {
+	declared = strstr(phases, phase) != NULL;
+	if (!declared) {
 		/* GLEP 65: postinst/preinst QA checks must run even when the
 		 * ebuild defines no pkg_(pre|post)inst, matching portage's
 		 * separate post-phase hook (postinst_qa_check). For every other
@@ -5954,13 +6673,14 @@ pkg_run_func_at(
 		return;
 	}
 
-	qprintf("@@@ %s\n", func);
-
 	if (pkg_unpack_environment(dirfd, vdb_path, T) != 0) {
-		warn("cannot unpack %s/environment.bz2, skipping %s",
-			 vdb_path, func);
-		return;
+		if (!declared)
+			return;
+		errp("failed to extract environment for %s", qm_phase_pkg != NULL ?
+			 qm_phase_pkg : vdb_path);
 	}
+
+	qprintf("@@@ %s\n", func);
 
 	if (qm_user_quiet)
 		setenv("QMERGE_PHASE_QUIET", "1", 1);
@@ -6718,11 +7438,16 @@ merge_tree_at(int fd_src, const char *src, int fd_dst, const char *dst,
 			bool have_pending = false;
 
 			hash = hash_file_at(subfd_src, name, HASH_MD5);
+			if (hash == NULL) {
+				warnp("could not compute digest for %s", cpath);
+				failed = true;
+				continue;
+			}
 			if (!pretend)
 				fprintf(contents, "obj %s %s %zu""\n",
-					cpath, hash ? hash : "xxx", (size_t)st.st_mtime);
+					cpath, hash, (size_t)st.st_mtime);
 
-			snprintf(srcmd5, sizeof(srcmd5), "%s", hash ? hash : "");
+			snprintf(srcmd5, sizeof(srcmd5), "%s", hash);
 
 			dest_exists = fstatat(subfd_dst, name, &ignore,
 					AT_SYMLINK_NOFOLLOW) == 0;
@@ -6955,7 +7680,7 @@ qm_tar_read_cb(struct archive *a, void *ud, const void **bufp)
 	return (la_ssize_t)n;
 }
 
-/* ---- resolver S1: atom satisfaction incl. USE-dep constraints ---- */
+/* ---- rewriting the resolver S01: atom full satisfaction incl. USE-dep constraints ---- */
 
 /* check whether a candidate package cand satisfy dependency atom dep.
  * category/PN/version/operator/slot/subslot via the standard
@@ -6992,7 +7717,7 @@ atom_satisfied_by(atom_ctx *dep, tree_pkg_ctx *cand, set *parent_use)
 	return true;
 }
 
-/* ---- resolver S2: || (any-of) choice via dep_zapdeps ranking ---- */
+/* ---- rewriting the resolver S02: || (any-of) choice via dep_zapdeps ranking ---- */
 
 enum {
 	/* every atom satisfied by an installed pkg */
@@ -7075,7 +7800,7 @@ zapdeps_pick(dep_node_t *any, set *parent_use)
 	return best;
 }
 
-/* ---- resolver S3: transitive resolve pass producing the merge list ---- */
+/* ---- rewriting the resolver S03: transitive resolve hopefully pass producing the merge list ---- */
 
 struct qm_plan {
 	/* owned cpv (CAT/PF) strings, dependency order */
@@ -7914,7 +8639,7 @@ qm_passwd_uid(const char *name, gid_t *gidp)
 
 /* portage-parity merge history: qlop-parseable records appended to
  * EMERGE_LOG_DIR/emerge.log (same file, format and perms as portage),
- * so qlop -muv answers "what happened on this box" for qmerge-driven
+ * so qlop -muv answers "what happened on this machine" for qmerge-driven
  * systems too.
  * Lazily opened on first record; silent on failure.
  * (logging must never break a merge). */
@@ -8106,7 +8831,7 @@ struct qm_scctx {
 };
 
 /* a surviving/planned pkg needs an atom the end-state no longer satisfies and
- * we can't install it from a binpkg, shared reporter, caps the noise */
+ * we can't install it from a binpkg */
 static void
 qm_report_conflict(struct qm_scctx *sc, const char *revdep,
 				   const char *atomstr, const char *revdep_cpslot)
@@ -8143,7 +8868,7 @@ qm_report_conflict(struct qm_scctx *sc, const char *revdep,
 		return;
 	}
 	if (sc->printed < 12) {
-		warn("dep conflict: %s needs %s, but the plan installs a version "
+		warn("dep conflict: %s needs %s, but the check installs a version "
 			 "that no longer satisfies it -- can't install it from a binpkg",
 			 revdep, atomstr);
 		sc->printed++;
@@ -8359,9 +9084,19 @@ qm_plan_pick(const char *cpvp, atom_ctx *ca)
 					TREE_MATCH_SORT | TREE_MATCH_VIRTUAL |
 					TREE_MATCH_ACCT);
 			array_for_each(t, cn, cand) {
-				char *pp = tree_pkg_meta(cand, Q_PATH);
+				char  *pp = tree_pkg_meta(cand, Q_PATH);
+				size_t lp;
+				size_t lw;
 
-				if (pp != NULL && strcmp(pp, want) == 0) {
+				if (pp == NULL)
+					continue;
+				lp = strlen(pp);
+				lw = strlen(want);
+				if ((lp == lw && strcmp(pp, want) == 0) ||
+						(lp > lw && pp[lp - lw - 1] == '/' &&
+						 strcmp(pp + lp - lw, want) == 0) ||
+						(lw > lp && want[lw - lp - 1] == '/' &&
+						 strcmp(want + lw - lp, pp) == 0)) {
 					hitc = cand;
 					break;
 				}
@@ -8958,7 +9693,7 @@ qm_check_slot_conflicts(array *merge, set *fixable, hash_t *fix_edges)
 		a = atom_explode(ex);
 		if (a == NULL)
 			continue;
-		bpkg = best_version(a, BV_BINPKG);
+		bpkg = qm_plan_pick(cpvp, a);
 		if (bpkg == NULL) { atom_implode(a); continue; }
 		ba = tree_pkg_atom(bpkg, true);
 		snprintf(cpslot, sizeof(cpslot), "%s/%s:%s",
@@ -9140,7 +9875,7 @@ qm_check_slot_conflicts(array *merge, set *fixable, hash_t *fix_edges)
 		pca = atom_explode(ex);
 		if (pca == NULL)
 			continue;
-		pbin = best_version(pca, BV_BINPKG);
+		pbin = qm_plan_pick(cpvp, pca);
 		if (pbin == NULL) { atom_implode(pca); continue; }
 		/* B1: snapshot before any further best_version invalidates pbin */
 		{
@@ -9445,7 +10180,8 @@ qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out)
 
 			if (binpkg_masked(pa))
 				continue;
-			if (!binpkg_keywords_ok(cand, pa, true))
+			if (!binpkg_keywords_ok(cand, pa, true) ||
+					!binpkg_chost_ok(cand, pa, true))
 				continue;
 			if (!binpkg_license_ok(cand, pa, true))
 				continue;
@@ -9696,6 +10432,17 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 					qm_internal_pull = false;
 					atom_implode(ea);
 					progress = true;
+					if (qm_plan_inst != NULL) {
+						char *rp = tree_pkg_meta(newc, Q_PATH);
+
+						if (rp != NULL && rp[0] != '\0') {
+							void *oldrec = NULL;
+
+							qm_plan_inst = hash_add(qm_plan_inst,
+									exact + 1, xstrdup(rp), &oldrec);
+							free(oldrec);
+						}
+					}
 					if (verbose) {
 						char msg[560];
 						char key[560];
@@ -9778,6 +10525,25 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 						 * pinned to the held-back version would strand
 						 * next, drop them too */
 						qm_plan_drop_pinning(plan, pcpn, todo, iter + 1);
+					} else if (qm_atom_is_target(A, todo)) {
+						char tk[1024];
+
+						snprintf(tk, sizeof(tk), "%s\1%s", cpslot, astr);
+						if (qm_tolerated == NULL)
+							qm_tolerated = create_set();
+						if (contains_set(tk, qm_tolerated) == NULL) {
+							char msg[560];
+
+							add_set(tk, qm_tolerated);
+							snprintf(msg, sizeof(msg),
+									 "pin %s left unsatisfied, no "
+									 "acceptable rebuilt binpkg; "
+									 "explicit target proceeds despite "
+									 "QMERGE_LENIENT_UPGRADE=0 "
+									 "(backtrack round %d)",
+									 astr, iter + 1);
+							qm_notice(cpslot, msg);
+						}
 					}
 					atom_implode(A);
 				}
@@ -9848,7 +10614,7 @@ qm_collect_slot_dups(array *merge, set **planned_out)
 		a = atom_explode(ex);
 		if (a == NULL)
 			continue;
-		bpkg = best_version(a, BV_BINPKG);
+		bpkg = qm_plan_pick(cpvp, a);
 		if (bpkg == NULL) { atom_implode(a); continue; }
 		ba = tree_pkg_atom(bpkg, true);
 		snprintf(cpslot, sizeof(cpslot), "%s/%s:%s",
@@ -10175,6 +10941,176 @@ qm_blk_sweep(array *merge)
 	return qm_check_slot_conflicts(merge, NULL, NULL);
 }
 
+static void qm_run_trust_helper(void);
+
+/* binrepos.conf openpgp-key-package */
+static bool
+qm_keypkg_match(const char *cpv)
+{
+	size_t    i;
+	atom_ctx *a;
+	bool      any = false;
+	bool      r   = false;
+
+	for (i = 0; i < qm_nbinrepos && !any; i++)
+		any = qm_binrepos[i].key_pkg != NULL;
+	if (!any)
+		return false;
+
+	a = atom_explode(cpv);
+	if (a == NULL)
+		return false;
+	for (i = 0; i < qm_nbinrepos && !r; i++) {
+		atom_ctx *ka;
+
+		if (qm_binrepos[i].key_pkg == NULL)
+			continue;
+		ka = atom_explode(qm_binrepos[i].key_pkg);
+		if (ka == NULL)
+			continue;
+		r = ka->PN != NULL && a->PN != NULL &&
+			strcmp(ka->PN, a->PN) == 0 &&
+			(ka->CATEGORY == NULL || a->CATEGORY == NULL ||
+			 strcmp(ka->CATEGORY, a->CATEGORY) == 0);
+		atom_implode(ka);
+	}
+	atom_implode(a);
+	return r;
+}
+
+/* (qm_demands: demanded cpslot -> list of "revdep\1atom") */
+static bool
+qm_demanded_by(const char *depcpv, const char *bycpv)
+{
+	array    *k;
+	size_t    i;
+	size_t    j;
+	char     *key;
+	atom_ctx *da;
+	atom_ctx *ba;
+	bool      r = false;
+
+	if (qm_demands == NULL)
+		return false;
+	da = atom_explode(depcpv);
+	ba = atom_explode(bycpv);
+	if (da == NULL || ba == NULL) {
+		if (da != NULL)
+			atom_implode(da);
+		if (ba != NULL)
+			atom_implode(ba);
+		return false;
+	}
+	k = hash_keys(qm_demands);
+	if (k != NULL) {
+		array_for_each(k, i, key) {
+			atom_ctx *kk;
+			array    *d;
+			char     *rec;
+
+			if (r)
+				break;
+			kk = atom_explode(key);
+			if (kk == NULL)
+				continue;
+			if (kk->PN == NULL || da->PN == NULL ||
+					strcmp(kk->PN, da->PN) != 0 ||
+					(kk->CATEGORY != NULL && da->CATEGORY != NULL &&
+					 strcmp(kk->CATEGORY, da->CATEGORY) != 0)) {
+				atom_implode(kk);
+				continue;
+			}
+			atom_implode(kk);
+			d = hash_get(qm_demands, key);
+			array_for_each(d, j, rec) {
+				char     *sep = strchr(rec, '\1');
+				char     *rd;
+				atom_ctx *ra;
+
+				if (sep == NULL)
+					continue;
+				rd = xmalloc((size_t)(sep - rec) + 1);
+				memcpy(rd, rec, (size_t)(sep - rec));
+				rd[sep - rec] = '\0';
+				ra = atom_explode(rd);
+				free(rd);
+				if (ra == NULL)
+					continue;
+				if (ra->PN != NULL && ba->PN != NULL &&
+						strcmp(ra->PN, ba->PN) == 0 &&
+						(ra->CATEGORY == NULL || ba->CATEGORY == NULL ||
+						 strcmp(ra->CATEGORY, ba->CATEGORY) == 0))
+					r = true;
+				atom_implode(ra);
+				if (r)
+					break;
+			}
+		}
+		array_free(k);
+	}
+	atom_implode(da);
+	atom_implode(ba);
+	return r;
+}
+
+/* openpgp-key-package only merges first when signatures are mandatory (primary condition)
+ * the trust helper is re-run after it covers the rest of the run. */
+static void
+qm_keypkg_promote(struct qm_plan *plan)
+{
+	size_t  i;
+	size_t  k = 0;
+	char   *cpv = NULL;
+	char   *kc;
+	array  *na;
+	bool    found = false;
+
+	if (plan == NULL || plan->merge == NULL || !qm_sigs_mandatory())
+		return;
+
+	array_for_each(plan->merge, i, cpv)
+		if (qm_keypkg_match(cpv)) {
+			k = i;
+			found = true;
+			break;
+		}
+	if (!found || k == 0)
+		return;
+
+	for (i = 0; i < k; i++)
+		if (qm_demanded_by((char *)array_get(plan->merge, i), cpv)) {
+			warn("openpgp-key-package %s kept in dependency order "
+				 "(would be lifted above its own deps)", cpv);
+			return;
+		}
+
+	kc = array_remove(plan->merge, k);
+	na = array_new();
+	array_append(na, kc);
+	array_for_each(plan->merge, i, cpv)
+		array_append(na, cpv);
+	array_free(plan->merge);
+	plan->merge = na;
+	if (verbose)
+		printf(" %s*%s openpgp-key-package %s promoted to merge first\n",
+			   GREEN, NORM, kc);
+}
+
+/* after the trust-check package lands, force a keyring refresh so the
+ * new keys cover the remaining merges of this run */
+static void
+qm_keypkg_refresh(const char *cpv)
+{
+	char stamp[_Q_PATH_MAX];
+
+	if (!qm_sigs_mandatory() || !qm_keypkg_match(cpv))
+		return;
+	snprintf(stamp, sizeof(stamp), "%.2000setc/portage/gnupg/.getuto.last",
+			 portroot);
+	unlink(stamp);
+	qm_run_trust_helper();
+}
+
 /* The actual mechanism from portage applied here. Under --keep-going it
  * runs in a forked child (qm_kg_round) that reports each package over
  * the round pipe and fails on the first failure instead of going through. */
@@ -10235,8 +11171,15 @@ qm_exec_round(struct qm_plan *plan)
 					exit(100);
 				}
 				qm_kg_announce('O', cpvp, NULL);
+				qm_keypkg_refresh(cpvp);
 			} else {
+				size_t pre = qm_exec_failed != NULL ?
+						cnt_set(qm_exec_failed) : 0;
+
 				pkg_fetch(0, a, bpkg);
+				if ((qm_exec_failed != NULL ?
+						cnt_set(qm_exec_failed) : 0) == pre)
+					qm_keypkg_refresh(cpvp);
 			}
 		} else {
 			warn("resolved package %s not found as a binpkg", cpvp);
@@ -10853,6 +11796,8 @@ resolve_again:
 	if (qm_keep_going == 1 && qm_kg_mask != NULL)
 		(void)qm_kg_drop_dependents(&plan);
 
+	qm_keypkg_promote(&plan);
+
 	int rc = EXIT_SUCCESS;
 
 	if (array_cnt(plan.merge) == 0) {
@@ -10922,7 +11867,7 @@ resolve_again:
 			 * wins).
 			 * Binary merges use portage's PKG_BINARY_MERGE
 			 * family (purple/magenta, cf. emerge -K), NOT green --
-			 * green means from-source in emerge terms. */
+			 * green means from-source in emerge non-political dialect. */
 			{
 				const char *stc = st[0] == 'N' ? GREEN :
 								  st[0] == 'R' ? YELLOW :
@@ -11119,7 +12064,8 @@ resolve_again:
 		qm_print_use_rejects();
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
-		/* surface subslot conflicts in the merge list too, like emerge does; a
+		/* surface subslot conflicts in the merge list too, like emerge does.
+		 * 
 		 * contradictory resolution is a failure even in pretend, and (crucially)
 		 * makes the interactive dry-run return non-zero so the caller skips
 		 * the "OK to merge" prompt instead of offering a merge list we refuse. */
@@ -11150,12 +12096,12 @@ resolve_again:
 	} else if (qm_blk_sweep(plan.merge) > 0 &&
 			   !qm_ignore_slot_conflicts()) {
 		/* the resolution would strand installed packages we can't rebuild from a
-		 * binpkg; bail instead of half-migrating and breaking the system */
+		 * binpkg; fail instead of half-migrating and breaking the system */
 		if (qm_print_blocks())
 			printf("\n * Error: The above package list contains "
 				   "packages which cannot be\n * installed at the "
 				   "same time on the same system.\n");
-		warn("refusing to merge: the plan would break installed packages "
+		warn("refusing to merge: it would break installed packages "
 			 "(subslot conflict above). Rebuild them from source with "
 			 "emerge, or set QMERGE_IGNORE_SLOT_CONFLICTS=1 to force it.");
 		rc = EXIT_FAILURE;
@@ -11172,7 +12118,6 @@ resolve_again:
 			rc = qm_exec_round(&plan);
 
 		if (kg_retry && ++qm_kg_rounds <= QM_MAX_FIXPOINT) {
-			/* round state teardown, exactly the Layer-3 redo dance */
 			qm_verdict_memo_flush();
 			qm_use_rejects_flush();
 			array_deepfree(plan.merge, free);
@@ -11181,8 +12126,6 @@ resolve_again:
 			qm_plan_inst_free();
 			final_dups    = NULL;
 			final_planned = NULL;
-			/* the round child changed the VDB on disk; the resolver
-			 * cache predates it */
 			if (qmerge_vdb_tree != NULL) {
 				tree_close(qmerge_vdb_tree);
 				qmerge_vdb_tree = NULL;
@@ -11238,8 +12181,8 @@ resolve_again:
 	return rc;
 }
 
-/* Faithful port of Portage's vardbapi.get_counter_tick_core()
- * (lib/portage/dbapi/vartree.py): return a COUNTER value that is at
+/* Cloning  Portage's vardbapi.get_counter_tick_core()
+ * (lib/portage/dbapi/vartree.py):: return a COUNTER value that is at
  * least one greater than both the global counter file and the highest
  * COUNTER of any installed package.
  * Trusting only the global file can yield a value that is too low 
@@ -11247,20 +12190,38 @@ resolve_again:
  * AUTOCLEAN because a freshly merged package would carry a lower 
  * COUNTER than the version it replaces. */
 static int  qm_vdb_lockfd = -1;
+static int  qm_vdb_lockdepth = 0;
 static char qm_vdb_lockp[2 * _Q_PATH_MAX + 64];
 
 static int
 qm_vdb_lock(void)
 {
-	if (qm_vdb_lockfd < 0) {
+	if (qm_vdb_lockfd >= 0) {
+		qm_vdb_lockdepth++;
+		return qm_vdb_lockfd;
+	}
+	{
 		char         vdbroot[_Q_PATH_MAX];
 		char        *slash;
 		int          fd;
 		struct flock fl;
+		bool         waited = false;
 
 		snprintf(vdbroot, sizeof(vdbroot), "%s%s", portroot, portvdb);
 		{
 			size_t vl = strlen(vdbroot);
+			char  *w  = vdbroot;
+			char  *r  = vdbroot;
+
+			while (*r != '\0') {
+				if (*r == '/' && w > vdbroot && w[-1] == '/') {
+					r++;
+					continue;
+				}
+				*w++ = *r++;
+			}
+			*w = '\0';
+			vl = strlen(vdbroot);
 			while (vl > 1 && vdbroot[vl - 1] == '/')
 				vdbroot[--vl] = '\0';
 		}
@@ -11274,31 +12235,43 @@ qm_vdb_lock(void)
 					".%s.portage_lockfile", vdbroot);
 		}
 
-		fd = open(qm_vdb_lockp, O_CREAT | O_RDWR | O_CLOEXEC, 0660);
-		if (fd < 0) {
-			warnp("cannot open %s", qm_vdb_lockp);
-			return -1;
-		}
-
 		memset(&fl, 0, sizeof(fl));
 		fl.l_type   = F_WRLCK;
 		fl.l_whence = SEEK_SET;
-		if (fcntl(fd, F_SETLK, &fl) != 0) {
-			if (errno != EACCES && errno != EAGAIN) {
-				warnp("cannot lock %s", qm_vdb_lockp);
-				close(fd);
+		for (;;) {
+			struct stat fst;
+			struct stat pst;
+
+			fd = open(qm_vdb_lockp, O_CREAT | O_RDWR | O_CLOEXEC, 0660);
+			if (fd < 0) {
+				warnp("cannot open %s", qm_vdb_lockp);
 				return -1;
 			}
-			warn("waiting for vdb lock %s", qm_vdb_lockp);
-			while (fcntl(fd, F_SETLKW, &fl) != 0) {
-				if (errno == EINTR)
-					continue;
-				warnp("cannot lock %s", qm_vdb_lockp);
-				close(fd);
-				return -1;
+			if (fcntl(fd, F_SETLK, &fl) != 0) {
+				if (errno != EACCES && errno != EAGAIN) {
+					warnp("cannot lock %s", qm_vdb_lockp);
+					close(fd);
+					return -1;
+				}
+				if (!waited)
+					warn("waiting for vdb lock %s", qm_vdb_lockp);
+				waited = true;
+				while (fcntl(fd, F_SETLKW, &fl) != 0) {
+					if (errno == EINTR)
+						continue;
+					warnp("cannot lock %s", qm_vdb_lockp);
+					close(fd);
+					return -1;
+				}
 			}
+			if (fstat(fd, &fst) != 0 ||
+					(fst.st_nlink > 0 && stat(qm_vdb_lockp, &pst) == 0 &&
+					 pst.st_dev == fst.st_dev && pst.st_ino == fst.st_ino))
+				break;
+			close(fd);
 		}
 		qm_vdb_lockfd = fd;
+		qm_vdb_lockdepth = 1;
 	}
 	return qm_vdb_lockfd;
 }
@@ -11306,10 +12279,35 @@ qm_vdb_lock(void)
 static void
 qm_vdb_unlock(void)
 {
+	struct flock fl;
+	struct stat  fst;
+
 	if (qm_vdb_lockfd < 0)
 		return;
+	if (qm_vdb_lockdepth > 1) {
+		qm_vdb_lockdepth--;
+		return;
+	}
+	memset(&fl, 0, sizeof(fl));
+	fl.l_type   = F_UNLCK;
+	fl.l_whence = SEEK_SET;
+	fcntl(qm_vdb_lockfd, F_SETLK, &fl);
+	fl.l_type = F_WRLCK;
+	if (fcntl(qm_vdb_lockfd, F_SETLK, &fl) == 0 &&
+			fstat(qm_vdb_lockfd, &fst) == 0 && fst.st_nlink == 1)
+		unlink(qm_vdb_lockp);
 	close(qm_vdb_lockfd);
 	qm_vdb_lockfd = -1;
+	qm_vdb_lockdepth = 0;
+}
+
+static bool
+qm_vdb_writable(void)
+{
+	char vdbroot[_Q_PATH_MAX];
+
+	snprintf(vdbroot, sizeof(vdbroot), "%s%s", portroot, portvdb);
+	return access(vdbroot, W_OK) == 0;
 }
 
 static long
@@ -11418,7 +12416,7 @@ qm_counter_tick(void)
 
 /* GLEP 78/63/79 signature posture for a package served by binrepo ri
  * (-1 unknown), FEATURES and binrepos.conf combined with portage's
- * precedence (lib/portage/gpkg.py:793-822):
+ * precedence (lib/portage/gpkg.py):
  *   verify  = check signatures when present (default on)
  *   request = signatures are mandatory (missing sig -> refuse)
  * binpkg-ignore-signature prio over binpkg-request-signature which has prio over the
@@ -11455,7 +12453,7 @@ qm_sig_effective(ssize_t ri, bool *request, bool *verify, const char **why)
 }
 
 /* Portage's PORTAGE_TRUST_HELPER equivalent (bintree.py:_run_trust_helper):
- * before a run that will verify signatures, refresh the binpkg trust keyring
+ * before run that will verify signatures, refresh the binpkg trust keyring
  * so gpgme has trusted keys to check against.
  * Runs only when signatures are mandatory (binpkg-request-signature, 
  * or a repo with verify-signature=true), we will actually merge 
@@ -11521,8 +12519,7 @@ qm_gpkg_is_signed(const char *gpkg_path)
 	bool                  is_signed = false;
 
 	a = archive_read_new();
-	archive_read_support_format_all(a);
-	archive_read_support_filter_all(a);
+	qarchive_read_taronly(a);
 	if (archive_read_open_filename(a, gpkg_path, BUFSIZ) != ARCHIVE_OK) {
 		archive_read_free(a);
 		return false;
@@ -11639,7 +12636,7 @@ qm_gpgme_read_cb(void *handle, void *buffer, size_t size)
  * Returns true iff the package is trustworthy.
  * Runs inside the unprivileged child forked by qm_gpkg_verify(). */
 static bool
-qm_gpkg_verify_impl(const char *gpkg_path)
+qm_gpkg_verify_impl(const char *gpkg_path, int cfd)
 {
 #ifdef HAVE_GPGME
 	struct qm_sig { char *name; char *data; size_t len; };
@@ -11653,17 +12650,30 @@ qm_gpkg_verify_impl(const char *gpkg_path)
 	bool                  ok = false;
 	size_t                i;
 	struct qm_sig        *sg;
+	int                   pass1_fd = -1;
 
 	gpgme_check_version(NULL);
 
 	/* pass 1: buffer the small members (Manifest + every detached .sig),
-	 * skipping the large compressed payloads without reading them */
-	a = archive_read_new();
-	archive_read_support_format_all(a);
-	archive_read_support_filter_all(a);
-	if (archive_read_open_filename(a, gpkg_path, BUFSIZ) != ARCHIVE_OK) {
-		archive_read_free(a);
-		goto out;
+	 * skipping the large compressed payloads without reading them.
+	 * cfd was opened by the (possibly root) parent: the store may not
+	 * be readable once privileges are dropped, so never reopen by path */
+	{
+		int pfd = dup(cfd);
+
+		if (pfd < 0 || lseek(pfd, 0, SEEK_SET) == (off_t)-1) {
+			if (pfd >= 0)
+				close(pfd);
+			goto out;
+		}
+		a = archive_read_new();
+		qarchive_read_taronly(a);
+		if (archive_read_open_fd(a, pfd, BUFSIZ) != ARCHIVE_OK) {
+			archive_read_free(a);
+			close(pfd);
+			goto out;
+		}
+		pass1_fd = pfd;
 	}
 	while (archive_read_next_header(a, &e) == ARCHIVE_OK) {
 		const char *nm = archive_entry_pathname(e);
@@ -11697,6 +12707,8 @@ qm_gpkg_verify_impl(const char *gpkg_path)
 		}
 	}
 	archive_read_free(a);
+	close(pass1_fd);
+	pass1_fd = -1;
 
 	if (manifest == NULL) {
 		warn("%s: Manifest not found", gpkg_path);
@@ -11716,11 +12728,23 @@ qm_gpkg_verify_impl(const char *gpkg_path)
 	}
 
 	/* 2. stream-verify every signed member's detached signature */
-	a = archive_read_new();
-	archive_read_support_format_all(a);
-	archive_read_support_filter_all(a);
-	if (archive_read_open_filename(a, gpkg_path, BUFSIZ) != ARCHIVE_OK)
-		goto out;
+	{
+		int pfd = dup(cfd);
+
+		if (pfd < 0 || lseek(pfd, 0, SEEK_SET) == (off_t)-1) {
+			if (pfd >= 0)
+				close(pfd);
+			goto out;
+		}
+		a = archive_read_new();
+		qarchive_read_taronly(a);
+		if (archive_read_open_fd(a, pfd, BUFSIZ) != ARCHIVE_OK) {
+			archive_read_free(a);
+			close(pfd);
+			goto out;
+		}
+		pass1_fd = pfd;
+	}
 	ok = true;
 	while (ok && archive_read_next_header(a, &e) == ARCHIVE_OK) {
 		const char           *nm = archive_entry_pathname(e);
@@ -11777,6 +12801,8 @@ qm_gpkg_verify_impl(const char *gpkg_path)
 	archive_read_free(a);
 
 out:
+	if (pass1_fd >= 0)
+		close(pass1_fd);
 	if (md != NULL)    gpgme_data_release(md);
 	if (plain != NULL) gpgme_data_release(plain);
 	free(manifest);
@@ -11789,6 +12815,7 @@ out:
 	return ok;
 #else
 	(void)gpkg_path;
+	(void)cfd;
 	warn("built without gpgme: cannot verify binary package signatures");
 	return false;
 #endif
@@ -11825,26 +12852,41 @@ qm_drop_privs(void)
  * status as the verdict.
  * A fork failure falls back to verifying in-process (no worse than before).
  * Returns true iff trustworthy. */
-static bool
+bool
 qm_gpkg_verify(const char *gpkg_path)
 {
 	pid_t pid;
 	int   status;
+	int   cfd;
+	bool  r;
 
-	if (geteuid() != 0)
-		return qm_gpkg_verify_impl(gpkg_path);
+	cfd = open(gpkg_path, O_RDONLY | O_CLOEXEC);
+	if (cfd < 0) {
+		warnp("cannot open %s for signature verification", gpkg_path);
+		return false;
+	}
+
+	if (geteuid() != 0) {
+		r = qm_gpkg_verify_impl(gpkg_path, cfd);
+		close(cfd);
+		return r;
+	}
 
 	fflush(stdout);
 	fflush(stderr);
 	pid = fork();
 	if (pid == 0) {
 		qm_drop_privs();
-		_exit(qm_gpkg_verify_impl(gpkg_path) ? 0 : 1);
+		_exit(qm_gpkg_verify_impl(gpkg_path, cfd) ? 0 : 1);
 	}
-	if (pid < 0)
+	if (pid < 0) {
 		/* fork died; do it here */
-		return qm_gpkg_verify_impl(gpkg_path);
+		r = qm_gpkg_verify_impl(gpkg_path, cfd);
+		close(cfd);
+		return r;
+	}
 
+	close(cfd);
 	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
 		;
 	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
@@ -11887,8 +12929,7 @@ qm_gpkg_check(const char *gpkg_path)
 	struct gpkg_member   *m;
 
 	a = archive_read_new();
-	archive_read_support_format_all(a);
-	archive_read_support_filter_all(a);
+	qarchive_read_taronly(a);
 	if (archive_read_open_filename(a, gpkg_path, BUFSIZ) != ARCHIVE_OK) {
 		archive_read_free(a);
 		free_set(seen);
@@ -12014,8 +13055,7 @@ qm_binpkg_is_gpkg(const char *path)
 		struct archive_entry *e;
 		int                   n = 0;
 
-		archive_read_support_format_tar(a);
-		archive_read_support_filter_all(a);
+		qarchive_read_taronly(a);
 		if (archive_read_open_filename(a, path, 65536) == ARCHIVE_OK) {
 			while (n++ < 8 &&
 				   archive_read_next_header(a, &e) == ARCHIVE_OK) {
@@ -12162,6 +13202,34 @@ qm_collision_owner_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 
 	free(contents);
 	return 0;
+}
+
+/* FEATURES=unmerge-backup/downgrade-backup snapshot an installed
+ * instance into PKGDIR before */
+static bool
+qm_backup_wanted(atom_equality replacing, bool standalone)
+{
+	if (contains_set("unmerge-backup", features) != NULL)
+		return true;
+	if (!standalone && replacing == OLDER &&
+			contains_set("downgrade-backup", features) != NULL)
+		return true;
+	return false;
+}
+
+static void
+qm_backup_instance(tree_pkg_ctx *pkg)
+{
+	atom_ctx *a = tree_pkg_atom(pkg, true);
+
+	printf(">>> Saving %s to binpkgs before removal\n",
+		   atom_format("%[CATEGORY]%[PF]%[BUILDID]", a));
+	if (qpkg_backup(pkg) != 0)
+		err("%s: failed to back up %s; aborting",
+			contains_set("unmerge-backup", features) != NULL ?
+				"unmerge-backup" : "downgrade-backup",
+			atom_format("%[CATEGORY]%[PF]", a));
+	binpkg_index_regen();
 }
 
 /* returns only when the merge may proceed, aborts via err() otherwise */
@@ -12355,6 +13423,16 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	if (fetch_only)
 		return;
 
+
+	if (!pretend && slotmembers != NULL && array_cnt(slotmembers) > 0 &&
+			qm_backup_wanted(replacing, false)) {
+		size_t        bn;
+		tree_pkg_ctx *bm;
+
+		array_for_each(slotmembers, bn, bm)
+			qm_backup_instance(bm);
+	}
+
 	if (pretend == 100) {
 		return;
 	}
@@ -12382,9 +13460,10 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	 * here before doing it. */
 	rm_rf(".");
 
-	mkdir("temp", 0755);
-	mkdir("vdb", 0755);
-	mkdir("image", 0755);
+	if (mkdir("temp", 0755) != 0 ||
+			mkdir("vdb", 0755) != 0 ||
+			mkdir("image", 0755) != 0)
+		errp("cannot create work subdirectories in %s", buf);
 
 	p = tree_pkg_get_path(mpkg);
 	/* p is portroot-relative and cwd is the build tempdir here */
@@ -12457,10 +13536,11 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		}
 
 		xchdir("temp");
-		int ar;
+		int  ar;
+		set *mseen;
 		a = archive_read_new();
 		t = archive_write_disk_new();
-		archive_read_support_format_all(a);
+		archive_read_support_format_tar(a);
 		if (archive_read_open_filename(a, buf, BUFSIZ) != ARCHIVE_OK)
 			err("failed to open %s: %s", buf, archive_error_string(a));
 		while ((ar = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
@@ -12527,8 +13607,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		xchdir("vdb");
 		a = archive_read_new();
 		t = archive_write_disk_new();
-		archive_read_support_format_all(a);
-		archive_read_support_filter_all(a);
+		qarchive_read_taronly(a);
 		archive_write_disk_set_options(t, (ARCHIVE_EXTRACT_PERM |
 									   	   ARCHIVE_EXTRACT_TIME |
 									   	   ARCHIVE_EXTRACT_ACL |
@@ -12540,6 +13619,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		if (archive_read_open_filename(a, "../temp/metadata",
 									   BUFSIZ) != ARCHIVE_OK)
 			err("failed to open metadata: %s", archive_error_string(a));
+		mseen = create_set();
 		while ((ar = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
 			const char *fname = archive_entry_pathname(entry);
 			size_t      size;
@@ -12552,6 +13632,12 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			if (*fname == '\0')
 				/* bug #968185 */
 				continue;
+
+			if (contains_set(fname, mseen) != NULL)
+				err("%s: duplicate metadata member '%s' "
+					"(possible same-name attack), refusing to merge",
+					atom_format("%[CAT]%[PF]", matom), fname);
+			add_set(fname, mseen);
 
 			archive_entry_set_pathname(entry, fname);
 			fname = archive_entry_pathname(entry);
@@ -12586,8 +13672,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		xchdir("image");
 		a = archive_read_new();
 		t = archive_write_disk_new();
-		archive_read_support_format_all(a);
-		archive_read_support_filter_all(a);
+		qarchive_read_taronly(a);
 		archive_write_disk_set_options(t, (ARCHIVE_EXTRACT_PERM |
 									   	   ARCHIVE_EXTRACT_TIME |
 									   	   ARCHIVE_EXTRACT_ACL |
@@ -12599,6 +13684,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		if (archive_read_open_filename(a, "../temp/image",
 									   BUFSIZ) != ARCHIVE_OK)
 			err("failed to open metadata: %s", archive_error_string(a));
+		free_set(mseen);
+		mseen = create_set();
 		while ((ar = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
 			const char *fname = archive_entry_pathname(entry);
 			size_t      size;
@@ -12611,6 +13698,12 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			if (*fname == '\0')
 				/* bug #968185 */
 				continue;
+
+			if (contains_set(fname, mseen) != NULL)
+				err("%s: duplicate image member '%s' "
+					"(possible same-name attack), refusing to merge",
+					atom_format("%[CAT]%[PF]", matom), fname);
+			add_set(fname, mseen);
 
 			archive_entry_set_pathname(entry, fname);
 			fname = archive_entry_pathname(entry);
@@ -12659,6 +13752,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			err("failed to finalize gpkg extraction: %s",
 				archive_error_string(t));
 		archive_write_free(t);
+		free_set(mseen);
 		xchdir("..");
 #else
 		err("gpkg support not compiled in for %s", p);
@@ -12688,63 +13782,11 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		if (mfd >= 0)
 			close(mfd);
 
-		if (fmt == FMAGIC_UNKNOWN) {
-			/* no magic matched: brotli (no magic header) is the only
-			 * compressor libarchive cannot handle, fall back to an
-			 * external decompress pipeline for it */
-			FILE          *tarpipe;
-			FILE          *tbz2f;
-			unsigned char  iobuf[8192];
-			int            piped = 0;
-			int            perr;
-			size_t         n;
-			size_t         rd;
-			size_t         wr;
-
-			snprintf(buf, sizeof(buf),
-				BUSYBOX " sh -c 'brotli -dc | tar -x%sf - -C image/'",
-				((verbose > 1) ? "v" : ""));
-
-			if ((tarpipe = popen(buf, "w")) == NULL)
-				errp("failed to start %s", buf);
-
-			snprintf(buf, sizeof(buf), "%s/%s", portroot, p);
-			if ((tbz2f = fopen(buf, "r")) == NULL)
-				errp("failed to open %s for reading", p);
-
-			for (piped = wr = 0; piped < tbz2size; piped += wr) {
-				n = MIN(tbz2size - piped, (ssize_t)sizeof iobuf);
-				rd = fread(iobuf, 1, n, tbz2f);
-				if (0 == rd) {
-					if ((perr = ferror(tbz2f)) != 0)
-						errp("reading %s failed", p);
-
-					if (feof(tbz2f))
-						err("unexpected EOF in %s: corrupted binpkg", p);
-				}
-
-				for (wr = n = 0; wr < rd; wr += n) {
-					n = fwrite(iobuf + wr, 1, rd - wr, tarpipe);
-					if (n != rd - wr) {
-						if ((perr = ferror(tarpipe)) != 0)
-							errp("failed to unpack binpkg");
-
-						if (feof(tarpipe))
-							err("unexpected EOF trying to unpack binpkg");
-					}
-				}
-			}
-
-			fclose(tbz2f);
-
-			perr = pclose(tarpipe);
-			if (perr > 0)
-				err("finishing unpack binpkg exited with status %d", perr);
-			else if (perr < 0)
-				errp("finishing unpack binpkg unsuccessful");
-		} else {
-			/* known compression: extract in-process via libarchive,
-			 * bounded to the tar bytes preceding the xpak trailer */
+		{
+			/* extract in-process via libarchive, bounded to the tar
+			 * bytes preceding the xpak trailer; no magic matched means
+			 * brotli (no magic header), the only compressor libarchive
+			 * has no filter for, so let it run the decompressor */
 			struct archive       *a;
 			struct archive       *t;
 			struct archive_entry *entry;
@@ -12761,8 +13803,14 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			xchdir("image");
 			a = archive_read_new();
 			t = archive_write_disk_new();
-			archive_read_support_format_tar(a);
-			archive_read_support_filter_all(a);
+			if (fmt == FMAGIC_UNKNOWN) {
+				archive_read_support_format_tar(a);
+				if (archive_read_support_filter_program(a,
+						"brotli -dc") != ARCHIVE_OK)
+					err("failed to set up brotli decompression: %s",
+						archive_error_string(a));
+			} else
+				qarchive_read_taronly(a);
 			archive_write_disk_set_options(t, (ARCHIVE_EXTRACT_PERM |
 											   ARCHIVE_EXTRACT_TIME |
 											   ARCHIVE_EXTRACT_ACL |
@@ -12776,6 +13824,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 				err("failed to open binpkg %s: %s",
 					p, archive_error_string(a));
 			while ((r = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
+				if (verbose > 1)
+					printf("%s\n", archive_entry_pathname(entry));
 				if (archive_write_header(t, entry) != ARCHIVE_OK)
 					err("failed to unpack binpkg '%s': %s",
 						archive_entry_pathname(entry),
@@ -12828,6 +13878,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	if (!pretend) {
 		pkg_run_func("vdb", pm_phases, PKG_PRETEND, D, T, eapi, replver);
 		pkg_run_func("vdb", pm_phases, PKG_SETUP,   D, T, eapi, replver);
+		qm_vdb_lock();
 		pkg_run_func("vdb", pm_phases, PKG_PREINST, D, T, eapi, replver);
 	}
 
@@ -13082,6 +14133,9 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		size_t tlen;
 		bool   fastok;
 		char   vdbtmp[_Q_PATH_MAX + 64];
+
+		tree_vdbmeta_consolidate("vdb", false, false);
+
 		/* move the local vdb copy to the final place */
 		len = snprintf(buf, sizeof(buf), "%s%s/%s",
 				portroot, portvdb, matom->CATEGORY);
@@ -13134,6 +14188,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 						matom->CATEGORY, matom->PF);
 			}
 		}
+
+		tree_vdbmeta_stamp(vdbtmp);
 
 		rm_rf(buf);
 		if (rename(vdbtmp, buf) != 0) {
@@ -13216,7 +14272,19 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		qm_env_update_hook(touched);
 		if (touched != NULL)
 			array_deepfree(touched, free);
+		qm_vdb_unlock();
 	}
+}
+
+static char *
+qm_unmerge_path(const char *name)
+{
+	char *p;
+
+	if (portroot[1] == '\0')
+		return xstrdup(name);
+	xasprintf(&p, "%s%s", portroot, name + 1);
+	return p;
 }
 
 static int
@@ -13242,8 +14310,10 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		qm_elog(rpkg == NULL ? "=== Unmerging... (%s)"
 							 : " === Unmerging... (%s)",
 				atom_format("%[CAT]%[PF]", atom));
-	snprintf(T, sizeof(T), "%s%s/qmerge._unmerge_.%s",
-			 portroot, port_tmpdir, atom->PF);
+	if (snprintf(T, sizeof(T), "%s%s/qmerge._unmerge_.%s",
+				 portroot, port_tmpdir, atom->PF) >= (int)sizeof(T))
+		err("unmerge work path too long for %s under %s%s",
+			atom->PF, portroot, port_tmpdir);
 
 	printf("%s***%s unmerging %s\n", YELLOW, NORM,
 			atom_format("%[CATEGORY]%[PF]", atom));
@@ -13357,7 +14427,10 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 				protected ? "***" : "<<<" , NORM);
 
 		if (protected) {
-			qprintf("%s %s\n", zing, e->name);
+			char *dp = qm_unmerge_path(e->name);
+
+			qprintf("%s %s\n", zing, dp);
+			free(dp);
 			continue;
 		}
 
@@ -13374,8 +14447,12 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 			strcpy(zing, "---");
 
 		/* No match, so unmerge it */
-		if (!quiet)
-			printf("%s %s\n", zing, e->name);
+		if (!quiet) {
+			char *dp = qm_unmerge_path(e->name);
+
+			printf("%s %s\n", zing, dp);
+			free(dp);
+		}
 		if (!keep || !del) {
 			char *p;
 
@@ -13403,8 +14480,13 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		int rm;
 
 		rm = pretend ? -1 : rmdir_r_at(portroot_fd, dirs->data + 1);
-		qprintf("%s%s%s %s%s%s/\n", rm ? YELLOW : GREEN, rm ? "---" : "<<<",
-			NORM, DKBLUE, dirs->data, NORM);
+		{
+			char *dp = qm_unmerge_path(dirs->data);
+
+			qprintf("%s%s%s %s%s%s/\n", rm ? YELLOW : GREEN,
+					rm ? "---" : "<<<", NORM, DKBLUE, dp, NORM);
+			free(dp);
+		}
 
 		list = dirs->next;
 		free(dirs->data);
@@ -14023,6 +15105,113 @@ binpkg_index_load_old(const char *file, array **blocks)
 	return ret;
 }
 
+/* one binpkg file checked against its index entry. recurses one level
+ * for the cat/pn/file store layout */
+static bool
+qm_populate_scan(const char *base, const char *rel, int depth,
+		set *old, size_t *nseen)
+{
+	char           path[_Q_PATH_MAX + 810];
+	char           sub[800];
+	DIR           *d;
+	struct dirent *de;
+	struct stat    st;
+	bool           drift = false;
+
+	snprintf(path, sizeof(path), "%.4095s%s%.799s", base,
+			 rel[0] != '\0' ? "/" : "", rel);
+	d = opendir(path);
+	if (d == NULL)
+		return false;
+
+	while (!drift && (de = readdir(d)) != NULL) {
+		size_t nlen = strlen(de->d_name);
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(sub, sizeof(sub), "%.520s%s%.256s", rel,
+				 rel[0] != '\0' ? "/" : "", de->d_name);
+		snprintf(path, sizeof(path), "%.4095s/%.799s", base, sub);
+		if (stat(path, &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode)) {
+			if (depth < 2)
+				drift = qm_populate_scan(base, sub, depth + 1,
+										 old, nseen);
+			continue;
+		}
+		if (!S_ISREG(st.st_mode) || depth == 0)
+			continue;
+		if (!((nlen > 5 && strcmp(de->d_name + nlen - 5, ".tbz2") == 0) ||
+			  (nlen > 9 && strcmp(de->d_name + nlen - 9, ".gpkg.tar") == 0)))
+			continue;
+
+		(*nseen)++;
+		if (old == NULL) {
+			drift = true;
+		} else {
+			struct qm_oldblock *ob =
+				(struct qm_oldblock *)get_set(sub, old);
+
+			if (ob == NULL ||
+					ob->mtime != (long long)st.st_mtime ||
+					ob->size  != (long long)st.st_size)
+				drift = true;
+		}
+	}
+	closedir(d);
+	return drift;
+}
+
+/* need docs here . */
+static void
+qm_local_index_populate(const char *loc)
+{
+	static bool         done = false;
+	char                base[_Q_PATH_MAX];
+	char                finp[_Q_PATH_MAX + 16];
+	set                *old;
+	array              *oldmem = NULL;
+	struct qm_oldblock *ob;
+	size_t              i;
+	size_t              nseen  = 0;
+	size_t              nold   = 0;
+	bool                drift;
+
+	if (done)
+		return;
+	done = true;
+
+	for (i = 1; i < qm_nbinrepos; i++) {
+		char        lb[_Q_PATH_MAX];
+		const char *l = qm_repo_loc(i, lb, sizeof(lb));
+
+		if (strcmp(l, loc) == 0)
+			return;
+	}
+
+	snprintf(base, sizeof(base), "%.2000s%.2094s", portroot, loc);
+	snprintf(finp, sizeof(finp), "%s/%s", base, Packages);
+
+	old = binpkg_index_load_old(finp, &oldmem);
+	nold = oldmem != NULL ? array_cnt(oldmem) : 0;
+
+	drift = qm_populate_scan(base, "", 0, old, &nseen);
+	if (!drift)
+		drift = nseen != nold;
+
+	if (old != NULL)
+		free_set(old);
+	if (oldmem != NULL) {
+		array_for_each(oldmem, i, ob)
+			free(ob);
+		array_free(oldmem);
+	}
+
+	if (drift && binpkg_index_regen() != 0)
+		warn("local binpkg index may be stale; run `qmerge -i'");
+}
+
 /* filename -> cpv parsing (qbh_*) lives in libq/binpath.c so it can
  * be fuzzed on its own; the PATH strings it consumes come from a
  * remote Packages index and are untrusted. */
@@ -14098,7 +15287,8 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 
 		if (ob != NULL &&
 				ob->mtime == (long long)stt.st_mtime &&
-				ob->size  == (long long)stt.st_size)
+				ob->size  == (long long)stt.st_size &&
+				strstr(ob->raw, "SLOT: ") != NULL)
 		{
 			ent = xzalloc(sizeof(*ent));
 			ent->atom = atom;
@@ -14108,6 +15298,38 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 			array_append(st->entries, ent);
 			st->count++;
 			st->reused++;
+			return 0;
+		}
+	}
+
+	{
+		const char *mval;
+		bool        nocat;
+		bool        nopf;
+		bool        noslot;
+
+		mval   = tree_pkg_meta(pkg, Q_CATEGORY);
+		nocat  = mval == NULL || *mval == '\0';
+		mval   = tree_pkg_meta(pkg, Q_PF);
+		nopf   = mval == NULL || *mval == '\0';
+		mval   = tree_pkg_meta(pkg, Q_SLOT);
+		noslot = mval == NULL || *mval == '\0';
+
+		if (nocat || nopf || noslot) {
+			char missing[32];
+
+			snprintf(missing, sizeof(missing), "%s%s%s%s%s",
+					 nocat ? "CATEGORY" : "",
+					 nocat && (nopf || noslot) ? ", " : "",
+					 nopf ? "PF" : "",
+					 nopf && noslot ? ", " : "",
+					 noslot ? "SLOT" : "");
+			fprintf(stderr,
+					"\n!!! Invalid binary package: '%s%s'\n",
+					portroot, tree_pkg_get_path(pkg));
+			fprintf(stderr,
+					"!!! Missing metadata key(s): %s. This binary package "
+					"is not recoverable and should be deleted.\n", missing);
 			return 0;
 		}
 	}
@@ -14695,6 +15917,23 @@ binpkg_index_regen(void)
 					gzfail = true;
 				if (fin != NULL)
 					fclose(fin);
+				if (!gzfail) {
+					int mfd = open(gztmp, O_WRONLY | O_CLOEXEC);
+
+					if (mfd >= 0) {
+						unsigned char mt[4];
+
+						mt[0] = (unsigned char)(idxts & 0xff);
+						mt[1] = (unsigned char)((idxts >> 8) & 0xff);
+						mt[2] = (unsigned char)((idxts >> 16) & 0xff);
+						mt[3] = (unsigned char)((idxts >> 24) & 0xff);
+						if (pwrite(mfd, mt, sizeof(mt), 4) !=
+								(ssize_t)sizeof(mt))
+							gzfail = true;
+						close(mfd);
+					} else
+						gzfail = true;
+				}
 				if (!gzfail) {
 					binpkg_perms(gztmp, false);
 					utimensat(AT_FDCWD, gztmp, its, 0);
@@ -15508,7 +16747,10 @@ qm_env_update(bool check_only, bool always_ldconfig, bool no_ldconfig,
 		char ldc[_Q_PATH_MAX];
 
 		snprintf(ldc, sizeof(ldc), "%ssbin/ldconfig", portroot);
-		if (access(ldc, X_OK) == 0) {
+		if (access(ldc, X_OK) == 0 && access("/bin/sh", X_OK) != 0) {
+			warn("no /bin/sh: %setc/ld.so.cache not regenerated, run "
+				 "'cd / && %s -X -r %s' by hand", portroot, ldc, portroot);
+		} else if (access(ldc, X_OK) == 0) {
 			char cmd[_Q_PATH_MAX * 2];
 
 			qprintf("%s>>>%s Regenerating %setc/ld.so.cache...\n",
@@ -15605,21 +16847,21 @@ qmerge_moves_maint(bool fix)
 		} else if (have != NULL) {
 			if (unlinkat(dfd, "Moves", 0) == 0)
 				qprintf("%s>>>%s removed %s (repo carries no move "
-						"directives)\n", GREEN, NORM, mpath);
+						"instructions)\n", GREEN, NORM, mpath);
 			else if (errno != ENOENT)
 				warnp("cannot remove %s", mpath);
 		} else {
-			qprintf("%s>>>%s nothing to do (no move directives, no "
+			qprintf("%s>>>%s nothing to do (no move instructions, no "
 					"Moves file)\n", GREEN, NORM);
 		}
 	} else if (want == NULL && have == NULL) {
-		printf("Moves: OK (no move directives, no Moves file)\n");
+		printf("Moves: OK (no move instructions, no Moves file)\n");
 	} else if (want == NULL) {
 		printf("Moves: STALE, %s exists but the repo carries no move "
-			   "directives (run `qmaint moves -f')\n", mpath);
+			   "instructions (run `qmaint moves -f')\n", mpath);
 		ret = EXIT_FAILURE;
 	} else if (have == NULL) {
-		printf("Moves: MISSING, the repo carries move directives but "
+		printf("Moves: MISSING, the repo carries move instructions but "
 			   "%s does not exist (run `qmaint moves -f')\n", mpath);
 		ret = EXIT_FAILURE;
 	} else if (strcmp(want, have) != 0) {
@@ -15716,7 +16958,7 @@ qmerge_news_maint(bool fix)
 		struct archive       *ar = archive_read_new();
 		struct archive_entry *e;
 
-		archive_read_support_format_all(ar);
+		archive_read_support_format_tar(ar);
 		if (archive_read_open_filename(ar, npath, 8192) == ARCHIVE_OK) {
 			while (archive_read_next_header(ar, &e) == ARCHIVE_OK) {
 				const char *p  = archive_entry_pathname(e);
@@ -15777,6 +17019,100 @@ qmerge_news_maint(bool fix)
 	free_set(want);
 	free_set(have);
 	return ret;
+}
+
+/* portage emaint vdb module (lib/portage/emaint/modules/vdb/vdb.py):
+ *   check: "Report how many packages have/lack the consolidated
+ *   metadata file."
+ *   fix: "Populate the consolidated metadata file for packages that
+ *   lack it."
+ *   remove: "Undo --fix: restore individual per-field files, drop the
+ *   metadata file." */
+int
+qmerge_vdb_maint(bool fix, bool del_individual, bool remove_meta)
+{
+	char           vdir[_Q_PATH_MAX];
+	DIR           *cd;
+	struct dirent *ce;
+	int            with_meta    = 0;
+	int            without_meta = 0;
+	int            restored     = 0;
+	int            errors       = 0;
+
+	snprintf(vdir, sizeof(vdir), "%s%s", portroot, portvdb);
+	cd = opendir(vdir);
+	if (cd == NULL) {
+		warnp("cannot open %s", vdir);
+		return EXIT_FAILURE;
+	}
+	while ((ce = readdir(cd)) != NULL) {
+		char           pdir[_Q_PATH_MAX + 260];
+		DIR           *pd;
+		struct dirent *pe;
+
+		if (ce->d_name[0] == '.' || ce->d_name[0] == '-')
+			continue;
+		snprintf(pdir, sizeof(pdir), "%s/%.255s", vdir, ce->d_name);
+		pd = opendir(pdir);
+		if (pd == NULL)
+			continue;
+		while ((pe = readdir(pd)) != NULL) {
+			char pkgd[_Q_PATH_MAX + 520];
+
+			if (pe->d_name[0] == '.' || pe->d_name[0] == '-')
+				continue;
+			snprintf(pkgd, sizeof(pkgd), "%.2048s/%.255s",
+					 pdir, pe->d_name);
+			if (remove_meta) {
+				char mp[_Q_PATH_MAX + 552];
+				int  r;
+
+				snprintf(mp, sizeof(mp), "%.2800s/metadata", pkgd);
+				if (access(mp, F_OK) != 0)
+					continue;
+				r = tree_vdbmeta_explode(pkgd);
+				if (r < 0) {
+					warn("%.255s/%.255s: metadata file cannot be "
+						 "safely removed", ce->d_name, pe->d_name);
+					errors++;
+				} else
+					restored += r;
+			} else if (fix) {
+				if (!del_individual && tree_vdbmeta_usable(pkgd))
+					continue;
+				if (!tree_vdbmeta_consolidate(pkgd, del_individual,
+											  true)) {
+					warn("%.255s/%.255s: cannot write metadata file",
+						 ce->d_name, pe->d_name);
+					errors++;
+				}
+			} else {
+				if (tree_vdbmeta_usable(pkgd))
+					with_meta++;
+				else
+					without_meta++;
+			}
+		}
+		closedir(pd);
+	}
+	closedir(cd);
+
+	if (remove_meta) {
+		if (restored > 0)
+			printf("Restored %d individual VDB files.\n", restored);
+		return errors > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+	}
+	if (fix)
+		return errors > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+
+	printf("%d packages in VDB\n", with_meta + without_meta);
+	printf("  %d have consolidated metadata file\n", with_meta);
+	printf("  %d are missing, stale, or use an older format\n",
+		   without_meta);
+	if (without_meta > 0)
+		printf("Run 'qmaint vdb --fix' to populate missing metadata "
+			   "files.\n");
+	return without_meta > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 int
@@ -16110,6 +17446,11 @@ pkg_fetch(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	}
 
 	/* GLEP 23: license visibility checks */
+	if (!forced && !binpkg_chost_ok(mpkg, patom, false)) {
+		qm_exec_fail(patom);
+		return;
+	}
+
 	if (!forced && !binpkg_license_ok(mpkg, patom, false)) {
 		qm_exec_fail(patom);
 		return;
@@ -16185,30 +17526,19 @@ extern bool qlist_match(
 		bool exact,
 		bool applymasks);
 
-struct qm_keepscan {
-	set        *keep;
-	const char *skip_cat;
-	const char *skip_pf;
+struct qm_ownscan {
+	hash_t *counts;
+	set    *interest;
 };
 
 static int
-/* we either write full docs, or we don't write at all.
- * one line with 16 random characters won't help anyone understand
- * wtf is going on in that line. */
-qm_keepscan_cb(tree_pkg_ctx *pkg_ctx, void *priv)
+qm_ownscan_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 {
-	struct qm_keepscan *ks = priv;
-	atom_ctx           *a  = tree_pkg_atom(pkg_ctx, false);
-	char               *contents;
-	char               *line;
-	char               *savep;
+	struct qm_ownscan *os       = priv;
+	char              *contents = tree_pkg_meta(pkg_ctx, Q_CONTENTS);
+	char              *line;
+	char              *savep;
 
-	if (a != NULL && a->CATEGORY != NULL && a->PF != NULL &&
-			strcmp(a->CATEGORY, ks->skip_cat) == 0 &&
-			strcmp(a->PF, ks->skip_pf) == 0)
-		return 0;
-
-	contents = tree_pkg_meta(pkg_ctx, Q_CONTENTS);
 	if (contents == NULL)
 		return 0;
 	contents = xstrdup(contents);
@@ -16218,40 +17548,151 @@ qm_keepscan_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			line = strtok_r(NULL, "\n", &savep))
 	{
 		contents_entry *e = contents_parse_line(line);
-		if (e != NULL && (e->type == CONTENTS_OBJ || e->type == CONTENTS_SYM))
-			add_set(e->name, ks->keep);
+
+		if (e != NULL && (e->type == CONTENTS_OBJ || e->type == CONTENTS_SYM) &&
+				(os->interest == NULL ||
+				 contains_set(e->name, os->interest) != NULL)) {
+			void     *v = hash_get(os->counts, e->name);
+			uintptr_t n = (uintptr_t)v;
+
+			hash_add(os->counts, e->name, (void *)(n + 1), NULL);
+		}
 	}
 
 	free(contents);
 	return 0;
 }
 
-/* Build the set of all regular-file/symlink paths owned by installed
- * packages OTHER than skip_cat/skip_pf.
- * Passed to pkg_unmerge as its keep set so a standalone unmerge
- * never deletes a file another package still owns, Portage
- * gives the same protection via others_in_slot. */
-static set *
-qm_other_owned_files(const char *skip_cat, const char *skip_pf)
+static hash_t *
+qm_owner_counts(set *interest)
 {
-	struct qm_keepscan ks;
-	tree_ctx          *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+	struct qm_ownscan os;
+	tree_ctx         *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
 
-	ks.keep     = create_set();
-	ks.skip_cat = skip_cat;
-	ks.skip_pf  = skip_pf;
-
+	os.counts   = hash_new();
+	os.interest = interest;
 	if (vdb != NULL) {
-		tree_foreach_pkg_fast(vdb, qm_keepscan_cb, &ks, NULL);
+		tree_foreach_pkg_fast(vdb, qm_ownscan_cb, &os, NULL);
 		tree_close(vdb);
 	}
 
-	return ks.keep;
+	return os.counts;
+}
+
+static array *
+qm_owned_paths(tree_pkg_ctx *pkg_ctx)
+{
+	array *paths    = array_new();
+	char  *contents = tree_pkg_meta(pkg_ctx, Q_CONTENTS);
+	char  *line;
+	char  *savep;
+
+	if (contents == NULL)
+		return paths;
+	contents = xstrdup(contents);
+
+	for (line = strtok_r(contents, "\n", &savep);
+			line != NULL;
+			line = strtok_r(NULL, "\n", &savep))
+	{
+		contents_entry *e = contents_parse_line(line);
+
+		if (e != NULL && (e->type == CONTENTS_OBJ || e->type == CONTENTS_SYM))
+			array_append(paths, xstrdup(e->name));
+	}
+
+	free(contents);
+	return paths;
+}
+
+static set *
+qm_keep_for(hash_t *counts, array *paths)
+{
+	set             *keep = create_set();
+	set             *own  = create_set();
+	size_t           i;
+	char            *p;
+	preserved_entry *pe;
+
+	array_for_each(paths, i, p) {
+		void *v = hash_get(counts, p);
+
+		add_set(p, own);
+		if ((uintptr_t)v >= 2)
+			add_set(p, keep);
+	}
+	array_for_each(preserved_entries(qm_preserved_get()), i, pe) {
+		size_t k;
+		char  *pt;
+
+		array_for_each(pe->paths, k, pt) {
+			void *v = hash_get(counts, pt);
+
+			if ((uintptr_t)v >= (contains_set(pt, own) != NULL ? 2u : 1u))
+				add_set(pt, keep);
+		}
+	}
+
+	free_set(own);
+	return keep;
+}
+
+static void
+qm_owner_counts_drop(hash_t *counts, array *paths)
+{
+	size_t i;
+	char  *p;
+
+	array_for_each(paths, i, p) {
+		void     *v = hash_get(counts, p);
+		uintptr_t n = (uintptr_t)v;
+
+		if (n <= 1)
+			hash_delete(counts, p);
+		else
+			hash_add(counts, p, (void *)(n - 1), NULL);
+	}
+}
+
+struct qm_unmerge_batch {
+	set    *todo;
+	set    *interest;
+	hash_t *counts;
+};
+
+static int
+qm_unmerge_interest_cb(tree_pkg_ctx *pkg_ctx, void *priv)
+{
+	struct qm_unmerge_batch *ub   = priv;
+	array                   *todo = set_keys(ub->todo);
+	size_t                   n;
+	char                    *p;
+
+	array_for_each(todo, n, p) {
+		depend_atom *na  = NULL;
+		bool         hit = qlist_match(pkg_ctx, p, &na, true, false);
+
+		if (na != NULL)
+			atom_implode(na);
+		if (hit) {
+			array  *paths = qm_owned_paths(pkg_ctx);
+			size_t  i;
+			char   *pt;
+
+			array_for_each(paths, i, pt)
+				add_set(pt, ub->interest);
+			array_deepfree(paths, free);
+			break;
+		}
+	}
+	array_free(todo);
+	return 0;
 }
 
 static int
 qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 {
+	struct qm_unmerge_batch *ub = priv;
 	int cp_argc;
 	int cpm_argc;
 	char **cp_argv;
@@ -16263,15 +17704,21 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	makeargv(config_protect, &cp_argc, &cp_argv);
 	makeargv(config_protect_mask, &cpm_argc, &cpm_argv);
 
-	todo = set_keys(priv);
+	todo = set_keys(ub->todo);
 	array_for_each(todo, n, p)
 	{
-		if (qlist_match(pkg_ctx, p, NULL, true, false)) {
-			atom_ctx *a    = tree_pkg_atom(pkg_ctx, true);
-			set      *keep = uninstall_force
+		depend_atom *na  = NULL;
+		bool         hit = qlist_match(pkg_ctx, p, &na, true, false);
+
+		if (na != NULL)
+			atom_implode(na);
+		if (hit) {
+			atom_ctx *a     = tree_pkg_atom(pkg_ctx, true);
+			array    *paths = qm_owned_paths(pkg_ctx);
+			set      *keep  = ub->counts == NULL
 					? create_set()
-					: qm_other_owned_files(a->CATEGORY, a->PF);
-			array    *pres = NULL;
+					: qm_keep_for(ub->counts, paths);
+			array    *pres  = NULL;
 			char      uslot[128];
 			char      ucnt[64];
 			char      ucpv[512];
@@ -16299,9 +17746,14 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 				pres = qm_preserve_compute(one, NULL, keep);
 				array_free(one);
 			}
+			if (!pretend && qm_backup_wanted(NOT_EQUAL, true))
+				qm_backup_instance(pkg_ctx);
 			pkg_unmerge(pkg_ctx, NULL, keep,
 					cp_argc, cp_argv, cpm_argc, cpm_argv);
 			free_set(keep);
+			if (ub->counts != NULL)
+				qm_owner_counts_drop(ub->counts, paths);
+			array_deepfree(paths, free);
 			if (!pretend) {
 				preserved_unregister(qm_preserved_get(), ucpv,
 									 uslot, ucnt);
@@ -16331,18 +17783,49 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 static int
 unmerge_packages(set *todo)
 {
-	tree_ctx *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
-	int ret = 1;
+	struct qm_unmerge_batch ub;
+	tree_ctx               *vdb;
+	int                     ret = 1;
+
+	if (!pretend)
+		qm_vdb_lock();
+	ub.todo     = todo;
+	ub.interest = create_set();
+	ub.counts   = NULL;
+	if (!uninstall_force) {
+		tree_ctx        *scan = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+		preserved_entry *pe;
+		size_t           i;
+
+		if (scan != NULL) {
+			tree_foreach_pkg_fast(scan, qm_unmerge_interest_cb, &ub, NULL);
+			tree_close(scan);
+		}
+		array_for_each(preserved_entries(qm_preserved_get()), i, pe) {
+			size_t k;
+			char  *pt;
+
+			array_for_each(pe->paths, k, pt)
+				add_set(pt, ub.interest);
+		}
+		ub.counts = qm_owner_counts(ub.interest);
+	}
+	free_set(ub.interest);
+	vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
 	if (vdb != NULL) {
-		ret = tree_foreach_pkg_fast(vdb, qmerge_unmerge_cb, todo, NULL);
+		ret = tree_foreach_pkg_fast(vdb, qmerge_unmerge_cb, &ub, NULL);
 		tree_close(vdb);
 	}
+	if (ub.counts != NULL)
+		hash_free(ub.counts);
 	if (!pretend) {
 		qm_preserved_gc();
 		qm_preserved_finish();
 	}
 	if (!pretend && qm_deselect != 0)
 		qm_world_clean_unmerged();
+	if (!pretend)
+		qm_vdb_unlock();
 	return ret;
 }
 
@@ -16378,15 +17861,15 @@ qmerge_add_set_token(char *tok, set *q)
 }
 
 static set *
-qmerge_add_set_file(const char *pfx, const char *dir, const char *file,
-					bool optional, set *q)
+qmerge_add_set_file(const char *root, const char *pfx, const char *dir,
+					const char *file, bool optional, set *q)
 {
 	FILE *fp;
 	int linelen;
 	size_t buflen;
 	char *buf, *fname;
 
-	xasprintf(&fname, "%s%s%s/%s", portroot, pfx, dir, file);
+	xasprintf(&fname, "%s%s%s/%s", root, pfx, dir, file);
 
 	if ((fp = fopen(fname, "r")) == NULL) {
 		if (!optional || errno != ENOENT)
@@ -16559,11 +18042,11 @@ qmerge_expand_setname(const char *name, set *q)
 		return qmerge_expand_setref("selected-sets", q);
 	}
 	if (strcmp(name, "selected-packages") == 0)
-		return qmerge_add_set_file(CONFIG_EPREFIX, "/var/lib/portage",
-								   "world", true, q);
+		return qmerge_add_set_file(portroot, CONFIG_EPREFIX,
+								   "/var/lib/portage", "world", true, q);
 	if (strcmp(name, "selected-sets") == 0)
-		return qmerge_add_set_file(CONFIG_EPREFIX, "/var/lib/portage",
-								   "world_sets", true, q);
+		return qmerge_add_set_file(portroot, CONFIG_EPREFIX,
+								   "/var/lib/portage", "world_sets", true, q);
 	if (strcmp(name, "all") == 0 || strcmp(name, "installed") == 0) {
 		/* every installed package as cat/pn:slot (portage's
 		 * EverythingSet emits slot atoms), via a plain VDB enumeration --
@@ -16680,9 +18163,8 @@ qmerge_expand_setname(const char *name, set *q)
 			free_set(cand);
 		return q;
 	}
-	/* TODO: use configroot */
-	return qmerge_add_set_file(CONFIG_EPREFIX,
-							   "/etc/portage/sets", name, false, q);
+	return qmerge_add_set_file(configroot, "", "/etc/portage/sets", name,
+							   false, q);
 }
 
 static set *
@@ -17142,7 +18624,7 @@ qm_gpkg_environment(const char *gpkg_path)
 	size_t                txtlen = 0;
 
 	a = archive_read_new();
-	archive_read_support_format_all(a);
+	archive_read_support_format_tar(a);
 	if (archive_read_open_filename(a, gpkg_path, BUFSIZ) != ARCHIVE_OK) {
 		archive_read_free(a);
 		return NULL;
@@ -17166,8 +18648,7 @@ qm_gpkg_environment(const char *gpkg_path)
 
 	/* inner metadata tar (any compression): environment.bz2 */
 	a = archive_read_new();
-	archive_read_support_format_all(a);
-	archive_read_support_filter_all(a);
+	qarchive_read_taronly(a);
 	if (archive_read_open_memory(a, mdbuf, mdlen) != ARCHIVE_OK) {
 		archive_read_free(a);
 		free(mdbuf);
@@ -17191,7 +18672,7 @@ qm_gpkg_environment(const char *gpkg_path)
 	/* the bz2 blob itself */
 	a = archive_read_new();
 	archive_read_support_format_raw(a);
-	archive_read_support_filter_all(a);
+	qarchive_read_filters(a);
 	if (archive_read_open_memory(a, envbz, envlen) != ARCHIVE_OK) {
 		archive_read_free(a);
 		free(envbz);
@@ -17605,6 +19086,7 @@ qm_search_binpkgs(int npat, char **pats)
 
 							if (binpkg_masked(pa) ||
 									!binpkg_keywords_ok(cand, pa, true) ||
+							!binpkg_chost_ok(cand, pa, true) ||
 									!binpkg_license_ok(cand, pa, true) ||
 									binpkg_excluded(cand, pa, true))
 								continue;
@@ -17667,6 +19149,5616 @@ qm_search_binpkgs(int npat, char **pats)
 			   BOLD, NORM, found, found == 1 ? "" : "s");
 
 	return found > 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+/* the last piece of work: the depclean
+ * portage _calc_depclean copy-paste (lib/_emerge/actions.py)
+ * the keep graph is a depgraph in "remove" mode over the vartree,
+ * || groups are decided by dep_zapdeps, the clean list is installed minus
+ * graph, the lib check is the ELF linkage map and the removal order comes
+ * from UnmergeDepPriority. */
+
+static int qm_depclean    = 0;
+static int qm_prune       = 0;
+static int qm_dc_bdeps    = -1;
+static int qm_dc_libcheck = -1;
+static int qm_omega       = -1;
+static set *qm_omega_sets = NULL;
+
+static set *qm_worldset_select;
+static bool qm_setname_builtin(const char *n);
+static set *qm_world_load(const char *fname);
+
+#define QM_DC_NDEPS 5
+enum {
+	QM_DC_RDEPEND = 0,
+	QM_DC_IDEPEND,
+	QM_DC_PDEPEND,
+	QM_DC_DEPEND,
+	QM_DC_BDEPEND,
+};
+
+static const enum tree_pkg_meta_keys qm_dc_depkeys[QM_DC_NDEPS] = {
+	Q_RDEPEND, Q_IDEPEND, Q_PDEPEND, Q_DEPEND, Q_BDEPEND
+};
+
+#define QM_DC_PRIO_SOFT (-4)
+
+struct qm_dc_prio {
+	bool buildtime;
+	bool runtime;
+	bool runtime_post;
+	bool installtime;
+	bool runtime_slot_op;
+	bool buildtime_slot_op;
+	bool optional;
+	bool satisfied;
+	bool none;
+};
+
+static int
+qm_dc_prio_int(const struct qm_dc_prio *p)
+{
+	if (p->installtime)
+		return 0;
+	if (p->runtime_slot_op)
+		return -1;
+	if (p->runtime)
+		return -2;
+	if (p->runtime_post)
+		return -3;
+	return -4;
+}
+
+struct qm_dc_parent {
+	char *name;
+	char *atom;
+};
+
+struct qm_dc_pkg {
+	char     *cpv;
+	char     *cp;
+	char     *cat;
+	char     *pn;
+	char     *slot;
+	char     *subslot;
+	char     *repo;
+	atom_ctx *atom;
+	set      *use;
+	set      *iuse;
+	char     *deps[QM_DC_NDEPS];
+	char     *restrict_;
+	unsigned long long build_time;
+	bool      pmask;
+	bool      kwmask;
+	int       equiv;
+	bool      in_graph;
+	bool      virt_rec;
+	array    *parents;
+};
+
+struct qm_dc_setarg {
+	char  *name;
+	array *atoms;
+	array *nested;
+};
+
+struct qm_dc_dep {
+	atom_ctx         *atom;
+	set              *puse;
+	struct qm_dc_pkg *parent;
+	const char       *setname;
+	struct qm_dc_pkg *child;
+	struct qm_dc_prio prio;
+	struct qm_dc_prio cprio;
+};
+
+enum { QM_DCX_ATOM = 0, QM_DCX_ANY, QM_DCX_ALL };
+
+struct qm_dcx {
+	int               kind;
+	atom_ctx         *atom;
+	atom_ctx         *orig;
+	struct qm_dc_pkg *virt;
+	struct qm_dc_pkg *owner;
+	set              *puse;
+	array            *items;
+};
+
+struct qm_dc_disj {
+	struct qm_dc_pkg *pkg;
+	struct qm_dc_prio prio;
+	array            *expr;
+};
+
+struct qm_dc {
+	array  *pkgs;
+	hash_t *by_cpv;
+	hash_t *by_cp;
+	hash_t *setidx;
+	array  *setargs;
+	array  *stack;
+	array  *disj;
+	array  *unsat;
+	array  *init_unsat;
+	set    *masked_installed;
+	set    *virt_stack;
+	bool    bdeps;
+	bool    args_given;
+	bool    prune;
+	size_t  ngraph;
+};
+
+static int
+qm_dc_vercmp(const struct qm_dc_pkg *a, const struct qm_dc_pkg *b)
+{
+	atom_equality e = atom_compare_flg(a->atom, b->atom,
+			ATOM_COMP_NOSLOT | ATOM_COMP_NOSUBSLOT | ATOM_COMP_NOREPO);
+
+	return e == NEWER ? 1 : e == OLDER ? -1 : 0;
+}
+
+/* Package.__lt__: cp, then version, then build time */
+static int
+qm_dc_pkgcmp(const struct qm_dc_pkg *a, const struct qm_dc_pkg *b)
+{
+	int c = strcmp(a->cp, b->cp);
+
+	if (c != 0)
+		return c;
+	c = qm_dc_vercmp(a, b);
+	if (c != 0)
+		return c;
+	if (a->build_time != b->build_time)
+		return a->build_time < b->build_time ? -1 : 1;
+	return 0;
+}
+
+static int
+qm_dc_pkgcmp_cb(const void *l, const void *r)
+{
+	return qm_dc_pkgcmp(*(struct qm_dc_pkg * const *)l,
+						*(struct qm_dc_pkg * const *)r);
+}
+
+static int
+qm_dc_cpvcmp_cb(const void *l, const void *r)
+{
+	return strcmp((*(struct qm_dc_pkg * const *)l)->cpv,
+				  (*(struct qm_dc_pkg * const *)r)->cpv);
+}
+
+static int
+qm_dc_atomcmp_cb(const void *l, const void *r)
+{
+	char lb[_Q_PATH_MAX];
+	char rb[_Q_PATH_MAX];
+
+	atom_to_string_r(lb, sizeof(lb), *(atom_ctx * const *)l);
+	atom_to_string_r(rb, sizeof(rb), *(atom_ctx * const *)r);
+	return strcmp(lb, rb);
+}
+
+static void
+qm_dc_sapp(char *buf, size_t len, size_t *off, const char *fmt, ...)
+{
+	va_list ap;
+	int     n;
+
+	if (*off >= len)
+		return;
+	va_start(ap, fmt);
+	n = vsnprintf(buf + *off, len - *off, fmt, ap);
+	va_end(ap);
+	if (n < 0)
+		return;
+	*off = (size_t)n >= len - *off ? len - 1 : *off + (size_t)n;
+}
+
+/* portage Atom rendering; slot/subslot override the atom's own, usemode
+ * 0 = as written, 1 = without USE deps, 2 = conditionals evaluated
+ * against puse (Atom.evaluate_conditionals) */
+static char *
+qm_dc_atom_fmt(char *buf, size_t len, const atom_ctx *a, const char *slot,
+			   const char *subslot, int usemode, set *puse)
+{
+	size_t             off   = 0;
+	const atom_usedep *ud;
+	bool               first = true;
+
+	buf[0] = '\0';
+	qm_dc_sapp(buf, len, &off, "%s%s",
+			   atom_blocker_str[a->blocker], atom_op_str[a->pfx_op]);
+	if (a->CATEGORY != NULL)
+		qm_dc_sapp(buf, len, &off, "%s/", a->CATEGORY);
+	if (a->PN != NULL)
+		qm_dc_sapp(buf, len, &off, "%s", a->PN);
+	if (a->PV != NULL)
+		qm_dc_sapp(buf, len, &off, "-%s", a->PV);
+	if (a->PR_int > 0)
+		qm_dc_sapp(buf, len, &off, "-r%u", a->PR_int);
+	qm_dc_sapp(buf, len, &off, "%s", atom_op_str[a->sfx_op]);
+	if (slot != NULL) {
+		qm_dc_sapp(buf, len, &off, ":%s", slot);
+		if (subslot != NULL && strcmp(subslot, slot) != 0)
+			qm_dc_sapp(buf, len, &off, "/%s", subslot);
+	} else if (a->SLOT != NULL || a->slotdep != ATOM_SD_NONE) {
+		qm_dc_sapp(buf, len, &off, ":%s%s%s%s",
+				   a->SLOT ? : "",
+				   a->SUBSLOT != NULL && a->SUBSLOT != a->SLOT ? "/" : "",
+				   a->SUBSLOT != NULL && a->SUBSLOT != a->SLOT ? a->SUBSLOT : "",
+				   atom_slotdep_str[a->slotdep]);
+	}
+	if (usemode != 1) {
+		for (ud = a->usedeps; ud != NULL; ud = ud->next) {
+			const char *pfx = atom_usecond_str[ud->pfx_cond];
+			const char *sfx = atom_usecond_str[ud->sfx_cond];
+
+			if (usemode == 2 &&
+					(ud->sfx_cond == ATOM_UC_COND ||
+					 ud->sfx_cond == ATOM_UC_EQUAL))
+			{
+				bool on  = puse != NULL && contains_set(ud->use, puse) != NULL;
+				bool neg = ud->pfx_cond == ATOM_UC_NOT;
+
+				if (ud->sfx_cond == ATOM_UC_COND) {
+					if (neg ? on : !on)
+						continue;
+					pfx = neg ? "-" : "";
+				} else {
+					pfx = (on != neg) ? "" : "-";
+				}
+				sfx = "";
+			}
+			qm_dc_sapp(buf, len, &off, "%s%s%s%s",
+					   first ? "[" : ",", pfx, ud->use, sfx);
+			first = false;
+		}
+		if (!first)
+			qm_dc_sapp(buf, len, &off, "]");
+	}
+	if (a->REPO != NULL)
+		qm_dc_sapp(buf, len, &off, "::%s", a->REPO);
+	return buf;
+}
+
+static char *
+qm_dc_atom_str(const atom_ctx *a, set *puse)
+{
+	static char buf[_Q_PATH_MAX];
+
+	return qm_dc_atom_fmt(buf, sizeof(buf), a, NULL, NULL, 2, puse);
+}
+
+static atom_ctx *
+qm_dc_atom_variant(const atom_ctx *a, const char *slot, const char *subslot,
+				   int usemode, set *puse)
+{
+	char buf[_Q_PATH_MAX];
+
+	qm_dc_atom_fmt(buf, sizeof(buf), a, slot, subslot, usemode, puse);
+	return atom_explode(buf);
+}
+
+static bool
+qm_dc_is_virtual(const atom_ctx *a)
+{
+	return a->CATEGORY != NULL && strcmp(a->CATEGORY, "virtual") == 0;
+}
+
+static bool
+qm_dc_atom_matches(const atom_ctx *atom, const struct qm_dc_pkg *p,
+				   set *puse, bool with_use)
+{
+	atom_ctx           q;
+	const atom_usedep *ud;
+
+	if (atom->blocker != ATOM_BL_NONE) {
+		q         = *atom;
+		q.blocker = ATOM_BL_NONE;
+		atom      = &q;
+	}
+	if (atom_compare_flg(p->atom, atom, ATOM_COMP_NOREPO) != EQUAL)
+		return false;
+	if (with_use)
+		for (ud = atom->usedeps; ud != NULL; ud = ud->next)
+			if (!usedep_ok(ud, p->use, p->iuse, puse))
+				return false;
+	return true;
+}
+
+/* installed packages matching atom, ascending version order */
+static array *
+qm_dc_match(struct qm_dc *dc, const atom_ctx *atom, set *puse, bool with_use)
+{
+	array            *ret = array_new();
+	char              cp[512];
+	array            *grp;
+	size_t            i;
+	struct qm_dc_pkg *p;
+
+	if (atom == NULL || atom->CATEGORY == NULL || atom->PN == NULL)
+		return ret;
+	snprintf(cp, sizeof(cp), "%s/%s", atom->CATEGORY, atom->PN);
+	grp = hash_get(dc->by_cp, cp);
+	if (grp == NULL)
+		return ret;
+	array_for_each(grp, i, p)
+		if (qm_dc_atom_matches(atom, p, puse, with_use))
+			array_append(ret, p);
+	return ret;
+}
+
+static bool
+qm_dc_any_match(struct qm_dc *dc, const atom_ctx *atom, set *puse,
+				bool with_use)
+{
+	array *m   = qm_dc_match(dc, atom, puse, with_use);
+	bool   ret = array_cnt(m) > 0;
+
+	array_free(m);
+	return ret;
+}
+
+static bool
+qm_dc_cp_installed(struct qm_dc *dc, const atom_ctx *atom)
+{
+	char cp[512];
+
+	if (atom->CATEGORY == NULL || atom->PN == NULL)
+		return false;
+	snprintf(cp, sizeof(cp), "%s/%s", atom->CATEGORY, atom->PN);
+	return hash_get(dc->by_cp, cp) != NULL;
+}
+
+/* pkg.visible for an installed package, or already in the graph */
+static bool
+qm_dc_visibility_check(const struct qm_dc_pkg *p)
+{
+	return !p->pmask || p->in_graph;
+}
+
+/* _equiv_ebuild_visible on a binhost user: a binpkg of the
+ * same cpv in a configured captured list */
+static bool
+qm_dc_equiv_visible(struct qm_dc_pkg *p)
+{
+	size_t    rcnt;
+	size_t    ri;
+	atom_ctx *ea;
+	char      exact[520];
+
+	if (p->equiv != 0)
+		return p->equiv > 0;
+	p->equiv = -1;
+	snprintf(exact, sizeof(exact), "=%s", p->cpv);
+	ea = atom_explode(exact);
+	if (ea == NULL)
+		return false;
+	rcnt = qm_bintree_cnt();
+	for (ri = 0; ri < rcnt && p->equiv < 0; ri++) {
+		tree_ctx     *bt = qm_bintree(ri);
+		array        *t;
+		size_t        n;
+		tree_pkg_ctx *cand;
+
+		if (bt == NULL)
+			continue;
+		t = tree_match_atom(bt, ea, TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
+		array_for_each(t, n, cand) {
+			atom_ctx *ca = tree_pkg_atom(cand, true);
+
+			if (ca != NULL && !binpkg_masked(ca) &&
+					binpkg_keywords_ok(cand, ca, true)) {
+				p->equiv = 1;
+				break;
+			}
+		}
+		array_free(t);
+	}
+	atom_implode(ea);
+	return p->equiv > 0;
+}
+
+static struct qm_dc_pkg *qm_dc_select_installed(struct qm_dc *dc,
+		const atom_ctx *atom, set *puse);
+static bool qm_dc_depcheck_str(struct qm_dc *dc, const char *depstr,
+		set *use, struct qm_dc_pkg *parent, struct qm_dc_pkg *gparent,
+		array *out);
+static void qm_dcx_free(void *p);
+
+/* _virt_deps_visible(pkg, ignore_use=True) */
+static bool
+qm_dc_virt_deps_visible(struct qm_dc *dc, struct qm_dc_pkg *v)
+{
+	array         *sel;
+	size_t         i;
+	struct qm_dcx *x;
+	bool           ok = true;
+
+	if (v->virt_rec)
+		return false;
+	v->virt_rec = true;
+	sel = array_new();
+	if (!qm_dc_depcheck_str(dc, v->deps[QM_DC_RDEPEND], v->use, v, v, sel)) {
+		fprintf(stderr, "!!! Invalid RDEPEND in '%svar/db/pkg/%s/RDEPEND'\n",
+				portroot, v->cpv);
+		ok = false;
+	}
+	array_for_each(sel, i, x) {
+		atom_ctx         *a;
+		struct qm_dc_pkg *p;
+
+		if (!ok)
+			break;
+		if (x->atom->blocker != ATOM_BL_NONE)
+			continue;
+		a = qm_dc_atom_variant(x->atom, NULL, NULL, 1, NULL);
+		if (a == NULL)
+			continue;
+		p = qm_dc_select_installed(dc, a, NULL);
+		atom_implode(a);
+		if (p == NULL || !qm_dc_visibility_check(p))
+			ok = false;
+	}
+	array_deepfree(sel, qm_dcx_free);
+	v->virt_rec = false;
+	return ok;
+}
+
+/* _dep_check_composite_db._visible in remove mode */
+static bool
+qm_dc_visible(struct qm_dc *dc, struct qm_dc_pkg *p, const atom_ctx *atom,
+			  set *puse, bool avoid_slot_conflict)
+{
+	if ((p->pmask || p->kwmask || !qm_dc_visibility_check(p)) &&
+			!qm_dc_equiv_visible(p))
+		return false;
+	if (strcmp(p->cat, "virtual") == 0 && !qm_dc_virt_deps_visible(dc, p))
+		return false;
+	if (!avoid_slot_conflict)
+		return true;
+	{
+		char              sa[600];
+		atom_ctx         *slot_atom;
+		struct qm_dc_pkg *highest;
+
+		snprintf(sa, sizeof(sa), "%s:%s", p->cp, p->slot);
+		slot_atom = atom_explode(sa);
+		if (slot_atom == NULL)
+			return true;
+		highest = qm_dc_select_installed(dc, slot_atom, NULL);
+		atom_implode(slot_atom);
+		if (highest != NULL && qm_dc_pkgcmp(p, highest) < 0 &&
+				qm_dc_atom_matches(atom, highest, puse, true))
+			return false;
+	}
+	return true;
+}
+
+/* _select_pkg_from_installed: highest installed match after the
+ * three-stage mask filter */
+static struct qm_dc_pkg *
+qm_dc_select_installed(struct qm_dc *dc, const atom_ctx *atom, set *puse)
+{
+	array            *matches = qm_dc_match(dc, atom, puse, true);
+	array            *keep;
+	size_t            i;
+	struct qm_dc_pkg *p;
+	struct qm_dc_pkg *ret;
+
+	if (array_cnt(matches) == 0) {
+		array_free(matches);
+		return NULL;
+	}
+	if (array_cnt(matches) > 1) {
+		keep = array_new();
+		array_for_each(matches, i, p)
+			if (qm_dc_visibility_check(p))
+				array_append(keep, p);
+		if (array_cnt(keep) == 1) {
+			array_free(matches);
+			matches = keep;
+		} else if (array_cnt(keep) > 1) {
+			array_free(keep);
+			keep = array_new();
+			array_for_each(matches, i, p)
+				if (!p->pmask && !p->kwmask)
+					array_append(keep, p);
+			if (array_cnt(keep) > 0) {
+				array_free(matches);
+				matches = keep;
+				if (array_cnt(matches) > 1) {
+					keep = array_new();
+					array_for_each(matches, i, p)
+						if (qm_dc_equiv_visible(p))
+							array_append(keep, p);
+					if (array_cnt(keep) > 0) {
+						array_free(matches);
+						matches = keep;
+					} else {
+						array_free(keep);
+					}
+				}
+			} else {
+				array_free(keep);
+			}
+		} else {
+			array_free(keep);
+		}
+	}
+	ret = array_get(matches, array_cnt(matches) - 1);
+	array_free(matches);
+	return ret;
+}
+
+/* _dep_check_composite_db.match_pkgs in remove mode */
+static array *
+qm_dc_cmatch(struct qm_dc *dc, const atom_ctx *atom, set *puse)
+{
+	array            *ret = array_new();
+	struct qm_dc_pkg *pkg = qm_dc_select_installed(dc, atom, puse);
+
+	if (pkg == NULL)
+		return ret;
+	if (qm_dc_visible(dc, pkg, atom, puse, true))
+		array_append(ret, pkg);
+	if (atom->SUBSLOT == atom->SLOT && strcmp(pkg->cat, "virtual") == 0 &&
+			array_cnt(ret) == 0)
+	{
+		array            *all = qm_dc_match(dc, atom, puse, true);
+		set              *seen = create_set();
+		size_t            i;
+		struct qm_dc_pkg *vp;
+
+		array_for_each(all, i, vp) {
+			char      key[600];
+			atom_ctx *slot_atom;
+			struct qm_dc_pkg *sp;
+
+			if (strcmp(vp->cp, pkg->cp) != 0)
+				continue;
+			snprintf(key, sizeof(key), "%s/%s", vp->slot, vp->subslot);
+			if (contains_set(key, seen) != NULL)
+				continue;
+			add_set(key, seen);
+			slot_atom = qm_dc_atom_variant(atom, vp->slot, vp->subslot,
+										   0, NULL);
+			if (slot_atom == NULL)
+				continue;
+			sp = qm_dc_select_installed(dc, slot_atom, puse);
+			atom_implode(slot_atom);
+			if (sp == NULL)
+				continue;
+			if (!qm_dc_visible(dc, sp, atom, puse, false))
+				continue;
+			array_append(ret, sp);
+		}
+		array_free(all);
+		free_set(seen);
+		if (array_cnt(ret) > 1)
+			array_sort(ret, qm_dc_pkgcmp_cb);
+	}
+	return ret;
+}
+
+/* dep expression nodes (use_reduce opconvert form) */
+
+static struct qm_dcx *
+qm_dcx_new_atom(const atom_ctx *a, set *puse)
+{
+	struct qm_dcx *x = xzalloc(sizeof(*x));
+
+	x->kind = QM_DCX_ATOM;
+	x->atom = atom_clone(q_deconst_p(a));
+	x->puse = puse;
+	return x;
+}
+
+static struct qm_dcx *
+qm_dcx_new_group(int kind)
+{
+	struct qm_dcx *x = xzalloc(sizeof(*x));
+
+	x->kind  = kind;
+	x->items = array_new();
+	return x;
+}
+
+static void
+qm_dcx_free(void *p)
+{
+	struct qm_dcx *x = p;
+
+	if (x == NULL)
+		return;
+	if (x->atom != NULL)
+		atom_implode(x->atom);
+	if (x->orig != NULL)
+		atom_implode(x->orig);
+	if (x->items != NULL)
+		array_deepfree(x->items, qm_dcx_free);
+	free(x);
+}
+
+static struct qm_dcx *
+qm_dcx_clone(const struct qm_dcx *x)
+{
+	struct qm_dcx *n = xzalloc(sizeof(*n));
+	size_t         i;
+	struct qm_dcx *c;
+
+	n->kind  = x->kind;
+	n->virt  = x->virt;
+	n->owner = x->owner;
+	n->puse  = x->puse;
+	if (x->atom != NULL)
+		n->atom = atom_clone(x->atom);
+	if (x->orig != NULL)
+		n->orig = atom_clone(x->orig);
+	if (x->items != NULL) {
+		n->items = array_new();
+		array_for_each(x->items, i, c)
+			array_append(n->items, qm_dcx_clone(c));
+	}
+	return n;
+}
+
+/* paren_enclose(opconvert=True) */
+static void
+qm_dcx_repr(const struct qm_dcx *x, char *buf, size_t len, size_t *off)
+{
+	size_t         i;
+	struct qm_dcx *c;
+
+	if (x->kind == QM_DCX_ATOM) {
+		qm_dc_sapp(buf, len, off, "%s", qm_dc_atom_str(x->atom, x->puse));
+		return;
+	}
+	qm_dc_sapp(buf, len, off, x->kind == QM_DCX_ANY ? "|| ( " : "( ");
+	array_for_each(x->items, i, c) {
+		if (i > 0)
+			qm_dc_sapp(buf, len, off, " ");
+		qm_dcx_repr(c, buf, len, off);
+	}
+	qm_dc_sapp(buf, len, off, " )");
+}
+
+static void
+qm_dcx_flatten(const struct qm_dcx *x, array *out)
+{
+	size_t         i;
+	struct qm_dcx *c;
+
+	if (x->kind == QM_DCX_ATOM) {
+		array_append(out, q_deconst_p(x));
+		return;
+	}
+	array_for_each(x->items, i, c)
+		qm_dcx_flatten(c, out);
+}
+
+static void
+qm_dcx_convert(dep_node_t *n, array *out, bool out_disj, set *puse,
+			   struct qm_dc_pkg *owner);
+
+/* convert one group's members into l (a conjunction list) */
+static void
+qm_dcx_convert_members(dep_node_t *n, array *l, set *puse,
+					   struct qm_dc_pkg *owner)
+{
+	array      *ch = dep_node_children(n);
+	size_t      i;
+	dep_node_t *c;
+
+	if (ch != NULL)
+		array_for_each(ch, i, c)
+			qm_dcx_convert(c, l, false, puse, owner);
+}
+
+/* mirror use_reduce's bracket removal. */
+static void
+qm_dcx_convert(dep_node_t *n, array *out, bool out_disj, set *puse,
+			   struct qm_dc_pkg *owner)
+{
+	dep_type_t t = dep_node_type(n);
+
+	switch (t) {
+	case DEP_ATOM: {
+		atom_ctx *a = dep_node_atom(n);
+
+		if (a != NULL && a->CATEGORY != NULL && a->PN != NULL) {
+			struct qm_dcx *x = qm_dcx_new_atom(a, puse);
+
+			x->owner = owner;
+			array_append(out, x);
+		}
+		break;
+	}
+	case DEP_ALL:
+	case DEP_USE: {
+		array *l = array_new();
+
+		qm_dcx_convert_members(n, l, puse, owner);
+		if (!out_disj) {
+			array_move(out, l);
+		} else if (array_cnt(l) == 1) {
+			struct qm_dcx *one = array_get(l, 0);
+
+			if (one->kind == QM_DCX_ANY) {
+				array_move(out, one->items);
+				qm_dcx_free(one);
+			} else {
+				array_append(out, one);
+			}
+		} else if (array_cnt(l) > 1) {
+			struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ALL);
+
+			array_move(g->items, l);
+			array_append(out, g);
+		}
+		array_free(l);
+		break;
+	}
+	case DEP_ANY: {
+		array      *d  = array_new();
+		array      *ch = dep_node_children(n);
+		size_t      i;
+		dep_node_t *c;
+
+		if (ch != NULL)
+			array_for_each(ch, i, c)
+				qm_dcx_convert(c, d, true, puse, owner);
+		if (array_cnt(d) == 1) {
+			struct qm_dcx *one = array_get(d, 0);
+
+			if (one->kind == QM_DCX_ALL && !out_disj) {
+				array_move(out, one->items);
+				qm_dcx_free(one);
+			} else if (one->kind == QM_DCX_ANY) {
+				if (out_disj)
+					array_move(out, one->items);
+				else
+					array_append(out, one);
+				if (out_disj)
+					qm_dcx_free(one);
+			} else {
+				array_append(out, one);
+			}
+		} else if (array_cnt(d) > 1) {
+			if (out_disj) {
+				array_move(out, d);
+			} else {
+				struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ANY);
+
+				array_move(g->items, d);
+				array_append(out, g);
+			}
+		}
+		array_free(d);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+static bool qm_dc_depcheck_list(struct qm_dc *dc, array *list, set *use,
+		struct qm_dc_pkg *parent, struct qm_dc_pkg *gparent, array *out);
+
+/* _expand_new_virtuals in remove mode: an atom in the virtual category
+ * becomes ( chosen provider atoms =virtual/x-v ), one alternative per
+ * installed virtual (highest first) */
+static void
+qm_dcx_expand(struct qm_dc *dc, array *list, bool is_disj,
+			  struct qm_dc_pkg *parent, struct qm_dc_pkg *gparent,
+			  set *puse, array *out)
+{
+	size_t         i;
+	struct qm_dcx *x;
+
+	array_for_each(list, i, x) {
+		if (x->kind == QM_DCX_ANY) {
+			array *e = array_new();
+
+			qm_dcx_expand(dc, x->items, true, parent, gparent, puse, e);
+			if (is_disj) {
+				if (array_cnt(e) == 1) {
+					struct qm_dcx *one = array_get(e, 0);
+
+					if (one->kind == QM_DCX_ANY) {
+						array_move(out, one->items);
+						qm_dcx_free(one);
+					} else {
+						array_append(out, one);
+					}
+				} else {
+					struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ANY);
+
+					array_move(g->items, e);
+					array_append(out, g);
+				}
+			} else {
+				struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ANY);
+
+				array_move(g->items, e);
+				array_append(out, g);
+			}
+			array_free(e);
+			continue;
+		}
+		if (x->kind == QM_DCX_ALL) {
+			array *e = array_new();
+
+			qm_dcx_expand(dc, x->items, false, parent, gparent, puse, e);
+			if (is_disj) {
+				if (array_cnt(e) == 1) {
+					struct qm_dcx *one = array_get(e, 0);
+
+					if (one->kind == QM_DCX_ANY) {
+						array_move(out, one->items);
+						qm_dcx_free(one);
+					} else {
+						array_append(out, one);
+					}
+				} else if (array_cnt(e) > 1) {
+					struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ALL);
+
+					array_move(g->items, e);
+					array_append(out, g);
+				}
+			} else {
+				array_move(out, e);
+			}
+			array_free(e);
+			continue;
+		}
+
+		if (!qm_dc_is_virtual(x->atom) || x->atom->blocker != ATOM_BL_NONE) {
+			array_append(out, qm_dcx_clone(x));
+			continue;
+		}
+
+		{
+			atom_ctx *nouse = qm_dc_atom_variant(x->atom, NULL, NULL, 1, NULL);
+			array    *matches;
+			array    *alts = array_new();
+			size_t    m;
+			struct qm_dc_pkg *vp;
+
+			matches = nouse != NULL ? qm_dc_cmatch(dc, nouse, x->puse)
+									: array_new();
+			if (nouse != NULL)
+				atom_implode(nouse);
+			array_for_each_rev(matches, m, vp) {
+				char           vbuf[_Q_PATH_MAX];
+				char           ubuf[_Q_PATH_MAX];
+				atom_ctx      *va;
+				struct qm_dcx *conj;
+				struct qm_dcx *vnode;
+				array         *sel;
+
+				if (strcmp(vp->cat, "virtual") != 0)
+					continue;
+				if (contains_set(vp->cpv, dc->virt_stack) != NULL)
+					continue;
+				snprintf(vbuf, sizeof(vbuf), "=%s", vp->cpv);
+				if (x->atom->usedeps != NULL) {
+					char *ob;
+
+					qm_dc_atom_fmt(ubuf, sizeof(ubuf), x->atom, NULL, NULL,
+								   2, gparent != NULL ? gparent->use : puse);
+					ob = strrchr(ubuf, '[');
+					if (ob != NULL) {
+						size_t vl = strlen(vbuf);
+
+						if (vl < sizeof(vbuf) - 1) {
+							size_t cl = MIN(strlen(ob), sizeof(vbuf) - 1 - vl);
+
+							memcpy(vbuf + vl, ob, cl);
+							vbuf[vl + cl] = '\0';
+						}
+					}
+				}
+				va = atom_explode(vbuf);
+				if (va == NULL)
+					continue;
+				sel = array_new();
+				add_set(vp->cpv, dc->virt_stack);
+				if (!qm_dc_depcheck_str(dc, vp->deps[QM_DC_RDEPEND], vp->use,
+										parent, vp, sel)) {
+					del_set(vp->cpv, dc->virt_stack, NULL);
+					array_deepfree(sel, qm_dcx_free);
+					atom_implode(va);
+					continue;
+				}
+				del_set(vp->cpv, dc->virt_stack, NULL);
+				conj = qm_dcx_new_group(QM_DCX_ALL);
+				array_move(conj->items, sel);
+				array_free(sel);
+				vnode        = qm_dcx_new_atom(va, x->puse);
+				vnode->orig  = atom_clone(x->atom);
+				vnode->virt  = vp;
+				vnode->owner = gparent;
+				atom_implode(va);
+				array_append(conj->items, vnode);
+				array_append(alts, conj);
+			}
+			array_free(matches);
+
+			if (array_cnt(alts) == 0) {
+				array_append(out, qm_dcx_clone(x));
+			} else if (is_disj) {
+				array_move(out, alts);
+			} else if (array_cnt(alts) == 1) {
+				struct qm_dcx *one = array_get(alts, 0);
+
+				array_move(out, one->items);
+				qm_dcx_free(one);
+			} else {
+				struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ANY);
+
+				array_move(g->items, alts);
+				array_append(out, g);
+			}
+			array_free(alts);
+		}
+	}
+}
+
+/* _overlap_dnf / dnf_convert */
+
+static bool
+qm_dcx_contains_disj(array *list, bool is_disj)
+{
+	size_t         i;
+	struct qm_dcx *x;
+
+	array_for_each(list, i, x) {
+		if (x->kind == QM_DCX_ANY)
+			return true;
+		if (x->kind == QM_DCX_ALL && is_disj &&
+				qm_dcx_contains_disj(x->items, false))
+			return true;
+	}
+	return false;
+}
+
+#define QM_DCX_DNF_MAX 2048
+
+static array *
+qm_dcx_dnf_convert(array *list)
+{
+	array         *conj = array_new();
+	array         *disj = array_new();
+	array         *ret  = array_new();
+	size_t         i;
+	struct qm_dcx *x;
+
+	array_for_each(list, i, x) {
+		if (x->kind != QM_DCX_ANY) {
+			array_append(conj, qm_dcx_clone(x));
+			continue;
+		}
+		{
+			bool           nested = false;
+			size_t         j;
+			struct qm_dcx *el;
+			struct qm_dcx *xd;
+
+			array_for_each(x->items, j, el)
+				if (el->kind != QM_DCX_ATOM)
+					nested = true;
+			if (!nested) {
+				array_append(disj, qm_dcx_clone(x));
+				continue;
+			}
+			xd = qm_dcx_new_group(QM_DCX_ANY);
+			array_for_each(x->items, j, el) {
+				if (el->kind == QM_DCX_ALL) {
+					array *ed = qm_dcx_dnf_convert(el->items);
+
+					if (qm_dcx_contains_disj(ed, false)) {
+						struct qm_dcx *only = array_get(ed, 0);
+
+						array_move(xd->items, only->items);
+						array_deepfree(ed, qm_dcx_free);
+					} else {
+						struct qm_dcx *g = qm_dcx_new_group(QM_DCX_ALL);
+
+						array_move(g->items, ed);
+						array_free(ed);
+						array_append(xd->items, g);
+					}
+				} else {
+					array_append(xd->items, qm_dcx_clone(el));
+				}
+			}
+			array_append(disj, xd);
+		}
+	}
+
+	if (array_cnt(disj) > 0 && (array_cnt(conj) > 0 || array_cnt(disj) > 1)) {
+		size_t combos = 1;
+		size_t k;
+
+		for (k = 0; k < array_cnt(disj); k++) {
+			struct qm_dcx *d = array_get(disj, k);
+			size_t         c = array_cnt(d->items);
+
+			if (c == 0 || combos > QM_DCX_DNF_MAX / c) {
+				combos = QM_DCX_DNF_MAX + 1;
+				break;
+			}
+			combos *= c;
+		}
+		if (combos > QM_DCX_DNF_MAX) {
+			warn("%zu overlapping || groups would expand to more than %d "
+				 "combinations, keeping them as written",
+				 array_cnt(disj), QM_DCX_DNF_MAX);
+			array_move(ret, conj);
+			array_move(ret, disj);
+			array_free(conj);
+			array_free(disj);
+			return ret;
+		}
+	}
+	if (array_cnt(disj) > 0 && (array_cnt(conj) > 0 || array_cnt(disj) > 1)) {
+		struct qm_dcx *dnf  = qm_dcx_new_group(QM_DCX_ANY);
+		size_t         nd   = array_cnt(disj);
+		size_t        *idx  = xcalloc(nd, sizeof(*idx));
+		bool           done = false;
+
+		while (!done) {
+			struct qm_dcx *combo = qm_dcx_new_group(QM_DCX_ALL);
+			size_t         k;
+			struct qm_dcx *c;
+
+			array_for_each(conj, k, c)
+				array_append(combo->items, qm_dcx_clone(c));
+			for (k = 0; k < nd; k++) {
+				struct qm_dcx *d  = array_get(disj, k);
+				struct qm_dcx *el = array_get(d->items, idx[k]);
+
+				if (el->kind == QM_DCX_ALL) {
+					size_t         q;
+					struct qm_dcx *ec;
+
+					array_for_each(el->items, q, ec)
+						array_append(combo->items, qm_dcx_clone(ec));
+				} else {
+					array_append(combo->items, qm_dcx_clone(el));
+				}
+			}
+			array_append(dnf->items, combo);
+			for (k = nd; k > 0; k--) {
+				struct qm_dcx *d = array_get(disj, k - 1);
+
+				idx[k - 1]++;
+				if (idx[k - 1] < array_cnt(d->items))
+					break;
+				idx[k - 1] = 0;
+				if (k == 1)
+					done = true;
+			}
+			if (nd == 0)
+				done = true;
+		}
+		free(idx);
+		array_append(ret, dnf);
+		array_deepfree(conj, qm_dcx_free);
+		array_deepfree(disj, qm_dcx_free);
+	} else {
+		array_move(ret, conj);
+		array_move(ret, disj);
+		array_free(conj);
+		array_free(disj);
+	}
+	return ret;
+}
+
+struct qm_dc_ufind {
+	array *cps;
+	array *parent;
+};
+
+static size_t
+qm_dc_uf_index(struct qm_dc_ufind *uf, const char *cp)
+{
+	size_t i;
+	char  *c;
+
+	array_for_each(uf->cps, i, c)
+		if (strcmp(c, cp) == 0)
+			return i;
+	array_append(uf->cps, xstrdup(cp));
+	{
+		size_t *p = xmalloc(sizeof(*p));
+
+		*p = array_cnt(uf->cps) - 1;
+		array_append(uf->parent, p);
+	}
+	return array_cnt(uf->cps) - 1;
+}
+
+static size_t
+qm_dc_uf_find(struct qm_dc_ufind *uf, size_t i)
+{
+	size_t *p = array_get(uf->parent, i);
+
+	while (*p != i) {
+		i = *p;
+		p = array_get(uf->parent, i);
+	}
+	return i;
+}
+
+static void
+qm_dc_uf_union(struct qm_dc_ufind *uf, size_t a, size_t b)
+{
+	size_t  ra = qm_dc_uf_find(uf, a);
+	size_t  rb = qm_dc_uf_find(uf, b);
+	size_t *p;
+
+	if (ra == rb)
+		return;
+	p  = array_get(uf->parent, rb);
+	*p = ra;
+}
+
+/* returns a fresh list when overlapping || groups were merged into DNF,
+ * otherwise NULL (the caller keeps using list) */
+static array *
+qm_dcx_overlap_dnf(array *list)
+{
+	struct qm_dc_ufind  uf;
+	array              *result;
+	array              *groups;
+	array              *gcps;
+	size_t              i;
+	struct qm_dcx      *x;
+	bool                overlap = false;
+	bool                have    = false;
+
+	array_for_each(list, i, x)
+		if (x->kind == QM_DCX_ANY)
+			have = true;
+	if (!have)
+		return NULL;
+
+	uf.cps    = array_new();
+	uf.parent = array_new();
+	result    = array_new();
+	groups    = array_new();
+	gcps      = array_new();
+
+	array_for_each(list, i, x) {
+		if (x->kind != QM_DCX_ANY) {
+			array_append(result, x);
+			continue;
+		}
+		{
+			array  *flat = array_new();
+			size_t  j;
+			struct qm_dcx *a;
+			size_t  prev = (size_t)-1;
+			set    *cps  = create_set();
+
+			qm_dcx_flatten(x, flat);
+			array_for_each(flat, j, a) {
+				char   cp[512];
+				size_t ci;
+
+				if (a->atom->blocker != ATOM_BL_NONE)
+					continue;
+				snprintf(cp, sizeof(cp), "%s/%s",
+						 a->atom->CATEGORY, a->atom->PN);
+				ci = qm_dc_uf_index(&uf, cp);
+				add_set_unique(cp, cps, NULL);
+				if (prev != (size_t)-1)
+					qm_dc_uf_union(&uf, ci, prev);
+				prev = ci;
+			}
+			array_free(flat);
+			if (prev == (size_t)-1) {
+				array_append(result, x);
+				free_set(cps);
+			} else {
+				array_append(groups, x);
+				array_append(gcps, cps);
+			}
+		}
+	}
+
+	{
+		set *done = create_set();
+
+		array_for_each(uf.cps, i, x) {
+			const char *cp   = (const char *)x;
+			size_t      root;
+			array      *comp;
+			size_t      g;
+			struct qm_dcx *gx;
+
+			if (contains_set(cp, done) != NULL)
+				continue;
+			comp = array_new();
+			root = qm_dc_uf_find(&uf, i);
+			array_for_each(groups, g, gx) {
+				set   *cps = array_get(gcps, g);
+				array *ks  = set_keys(cps);
+				size_t k;
+				char  *kc;
+				bool   in  = false;
+
+				array_for_each(ks, k, kc)
+					if (qm_dc_uf_find(&uf, qm_dc_uf_index(&uf, kc)) == root) {
+						in = true;
+						add_set_unique(kc, done, NULL);
+					}
+				array_free(ks);
+				if (in)
+					array_append(comp, gx);
+			}
+			if (array_cnt(comp) > 1) {
+				array *uniq  = array_new();
+				set   *reprs = create_set();
+				size_t c;
+
+				overlap = true;
+				array_for_each(comp, c, gx) {
+					char   rb[_Q_PATH_MAX * 4];
+					size_t off = 0;
+
+					qm_dcx_repr(gx, rb, sizeof(rb), &off);
+					if (off < sizeof(rb) - 1) {
+						if (contains_set(rb, reprs) != NULL)
+							continue;
+						add_set(rb, reprs);
+					}
+					array_append(uniq, gx);
+				}
+				free_set(reprs);
+				if (array_cnt(uniq) > 1) {
+					array *conv = qm_dcx_dnf_convert(uniq);
+
+					array_move(result, conv);
+					array_free(conv);
+				} else {
+					array_move(result, uniq);
+				}
+				array_free(uniq);
+			} else if (array_cnt(comp) == 1) {
+				array_append(result, array_get(comp, 0));
+			}
+			array_free(comp);
+		}
+		free_set(done);
+	}
+
+	array_deepfree(uf.cps, free);
+	array_deepfree(uf.parent, free);
+	array_free(groups);
+	array_deepfree(gcps, set_free_cb);
+
+	if (!overlap) {
+		array_free(result);
+		return NULL;
+	}
+	{
+		/* the merged groups were ate by the DNF copies
+		 * drop the ones that are no longer referenced */
+		array_for_each(list, i, x) {
+			size_t r;
+			struct qm_dcx *rx;
+			bool   used = false;
+
+			array_for_each(result, r, rx)
+				if (rx == x)
+					used = true;
+			if (!used)
+				qm_dcx_free(x);
+		}
+		array_free(list);
+	}
+	return result;
+}
+
+/* dep_zapdeps in remove mode */
+
+struct qm_dc_choice {
+	array  *atoms;
+	array  *slot_keys;
+	hash_t *slot_map;
+	array  *cp_keys;
+	hash_t *cp_map;
+	bool    all_available;
+	bool    all_installed_slots;
+	bool    all_in_graph;
+	bool    want_update;
+	size_t  new_slot_count;
+};
+
+static void
+qm_dc_choice_free(void *p)
+{
+	struct qm_dc_choice *c = p;
+
+	if (c == NULL)
+		return;
+	array_free(c->atoms);
+	array_deepfree(c->slot_keys, free);
+	hash_free(c->slot_map);
+	array_deepfree(c->cp_keys, free);
+	hash_free(c->cp_map);
+	free(c);
+}
+
+static void qm_dc_zapdeps(struct qm_dc *dc, array *list, bool is_disj,
+		struct qm_dc_pkg *parent, bool minimize_slots, array *out);
+
+static struct qm_dc_choice *
+qm_dc_choice_new(struct qm_dc *dc, array *atoms, struct qm_dc_pkg *parent,
+				 array **bin, array *bins[9])
+{
+	struct qm_dc_choice *ch = xzalloc(sizeof(*ch));
+	size_t               i;
+	struct qm_dcx       *x;
+	bool all_available      = true;
+	bool all_use_satisfied  = true;
+	bool all_use_unmasked   = true;
+	bool conflict_downgrade = false;
+	bool installed_downgrade = false;
+	hash_t *slot_atoms      = hash_new();
+
+	ch->atoms     = atoms;
+	ch->slot_keys = array_new();
+	ch->slot_map  = hash_new();
+	ch->cp_keys   = array_new();
+	ch->cp_map    = hash_new();
+
+	array_for_each(atoms, i, x) {
+		atom_ctx         *atom = x->atom;
+		atom_ctx         *nouse;
+		struct qm_dc_pkg *replacing = NULL;
+		struct qm_dc_pkg *avail = NULL;
+		array            *m;
+		char              slotkey[600];
+		struct qm_dc_pkg *highest_cpv;
+		array            *sa;
+
+		if (atom->blocker != ATOM_BL_NONE)
+			continue;
+
+		if (parent != NULL && atom->CATEGORY != NULL && atom->PN != NULL) {
+			char pcp[512];
+
+			snprintf(pcp, sizeof(pcp), "%s/%s", atom->CATEGORY, atom->PN);
+			if (strcmp(parent->cp, pcp) == 0) {
+				size_t            k;
+				struct qm_dc_pkg *cand;
+
+				m = qm_dc_match(dc, atom, x->puse, true);
+				array_for_each(m, k, cand)
+					if (strcmp(cand->slot, parent->slot) == 0) {
+						replacing = cand;
+						break;
+					}
+				array_free(m);
+			}
+		}
+
+		nouse = qm_dc_atom_variant(atom, NULL, NULL, 1, NULL);
+		m = nouse != NULL ? qm_dc_cmatch(dc, nouse, x->puse) : array_new();
+		if (nouse != NULL)
+			atom_implode(nouse);
+		if (array_cnt(m) == 0 && replacing != NULL)
+			array_append(m, replacing);
+		if (array_cnt(m) > 0)
+			avail = array_get(m, array_cnt(m) - 1);
+		array_free(m);
+		if (avail == NULL) {
+			all_available     = false;
+			all_use_satisfied = false;
+			break;
+		}
+
+		if (replacing == NULL) {
+			char      sk[600];
+			atom_ctx *slot_atom;
+
+			snprintf(sk, sizeof(sk), "%s:%s", avail->cp, avail->slot);
+			slot_atom = atom_explode(sk);
+			if (slot_atom != NULL) {
+				array *sm = qm_dc_cmatch(dc, slot_atom, NULL);
+
+				if (array_cnt(sm) > 1 &&
+						qm_dc_pkgcmp(avail, array_get(sm, array_cnt(sm) - 1)) < 0)
+					conflict_downgrade = true;
+				array_free(sm);
+				atom_implode(slot_atom);
+			}
+		}
+
+		if (atom->usedeps != NULL) {
+			m = qm_dc_cmatch(dc, atom, x->puse);
+			if (array_cnt(m) == 0) {
+				all_use_satisfied = false;
+			} else {
+				struct qm_dc_pkg *au = array_get(m, array_cnt(m) - 1);
+
+				if (au != avail)
+					avail = au;
+			}
+			array_free(m);
+		}
+
+		if (replacing == NULL) {
+			char      sk[600];
+			atom_ctx *slot_atom;
+
+			snprintf(sk, sizeof(sk), "%s:%s", avail->cp, avail->slot);
+			slot_atom = atom_explode(sk);
+			if (slot_atom != NULL) {
+				array *sm = qm_dc_cmatch(dc, slot_atom, NULL);
+
+				if (array_cnt(sm) > 0 &&
+						qm_dc_pkgcmp(avail, array_get(sm, array_cnt(sm) - 1)) < 0)
+					installed_downgrade = true;
+				array_free(sm);
+				atom_implode(slot_atom);
+			}
+		}
+
+		snprintf(slotkey, sizeof(slotkey), "%s:%s", avail->cp, avail->slot);
+		if (hash_get(ch->slot_map, slotkey) == NULL)
+			array_append(ch->slot_keys, xstrdup(slotkey));
+		hash_add(ch->slot_map, slotkey, avail, NULL);
+		sa = hash_get(slot_atoms, slotkey);
+		if (sa == NULL) {
+			sa = array_new();
+			hash_add(slot_atoms, slotkey, sa, NULL);
+		}
+		array_append(sa, x);
+
+		highest_cpv = hash_get(ch->cp_map, avail->cp);
+		{
+			int  all_match_current  = -1;
+			int  all_match_previous = -1;
+			bool current_higher;
+
+			if (highest_cpv != NULL &&
+					strcmp(highest_cpv->slot, avail->slot) == 0) {
+				size_t         k;
+				struct qm_dcx *sx;
+
+				all_match_current  = 1;
+				all_match_previous = 1;
+				array_for_each(sa, k, sx) {
+					if (!qm_dc_atom_matches(sx->atom, avail, sx->puse, true))
+						all_match_current = 0;
+					if (!qm_dc_atom_matches(sx->atom, highest_cpv, sx->puse,
+											true))
+						all_match_previous = 0;
+				}
+				if (all_match_previous == 1 && all_match_current == 0)
+					continue;
+			}
+			current_higher = highest_cpv == NULL ||
+							 qm_dc_vercmp(avail, highest_cpv) > 0;
+			if (current_higher ||
+					(all_match_current == 1 && all_match_previous == 0)) {
+				if (highest_cpv == NULL)
+					array_append(ch->cp_keys, xstrdup(avail->cp));
+				hash_add(ch->cp_map, avail->cp, avail, NULL);
+			}
+		}
+	}
+	{
+		array *ks = hash_keys(slot_atoms);
+		size_t k;
+		char  *kk;
+
+		array_for_each(ks, k, kk)
+			array_free(hash_get(slot_atoms, kk));
+		array_free(ks);
+		hash_free(slot_atoms);
+	}
+
+	ch->new_slot_count = array_cnt(ch->slot_keys);
+	ch->all_available  = all_available;
+
+	if (all_available) {
+		bool all_installed = true;
+		bool all_installed_slots = false;
+		set *seen = create_set();
+
+		array_for_each(atoms, i, x) {
+			char cp[512];
+
+			if (x->atom->blocker != ATOM_BL_NONE)
+				continue;
+			snprintf(cp, sizeof(cp), "%s/%s",
+					 x->atom->CATEGORY, x->atom->PN);
+			if (contains_set(cp, seen) != NULL)
+				continue;
+			add_set(cp, seen);
+			if (!qm_dc_cp_installed(dc, x->atom) && !qm_dc_is_virtual(x->atom)) {
+				all_installed = false;
+				break;
+			}
+		}
+		free_set(seen);
+		if (all_installed) {
+			size_t k;
+			char  *sk;
+
+			all_installed_slots = true;
+			array_for_each(ch->slot_keys, k, sk) {
+				atom_ctx *slot_atom = atom_explode(sk);
+				bool      inst;
+
+				if (slot_atom == NULL)
+					continue;
+				inst = qm_dc_any_match(dc, slot_atom, NULL, true);
+				if (!inst && !qm_dc_is_virtual(slot_atom)) {
+					atom_implode(slot_atom);
+					all_installed_slots = false;
+					break;
+				}
+				atom_implode(slot_atom);
+			}
+		}
+		ch->all_installed_slots = all_installed_slots;
+
+		if (conflict_downgrade || installed_downgrade) {
+			*bin = bins[8];
+		} else {
+			bool all_in_graph = true;
+
+			array_for_each(atoms, i, x) {
+				array            *gm;
+				size_t            k;
+				struct qm_dc_pkg *gp;
+				bool              any = false;
+
+				if (x->atom->blocker != ATOM_BL_NONE ||
+						qm_dc_is_virtual(x->atom))
+					continue;
+				gm = qm_dc_cmatch(dc, x->atom, x->puse);
+				array_for_each(gm, k, gp)
+					if (gp->in_graph)
+						any = true;
+				array_free(gm);
+				if (!any) {
+					all_in_graph = false;
+					break;
+				}
+			}
+			ch->all_in_graph = all_in_graph;
+
+			if (all_use_satisfied) {
+				if (all_in_graph)
+					*bin = bins[0];
+				else if (all_installed)
+					*bin = bins[0];
+				else
+					*bin = bins[1];
+			} else {
+				if (!all_use_unmasked)
+					*bin = bins[8];
+				else if (all_in_graph)
+					*bin = bins[2];
+				else if (all_installed_slots)
+					*bin = bins[3];
+				else
+					*bin = bins[4];
+			}
+		}
+	} else {
+		bool all_installed  = true;
+		bool some_installed = false;
+		bool any_slot       = false;
+
+		array_for_each(atoms, i, x) {
+			if (x->atom->blocker != ATOM_BL_NONE)
+				continue;
+			if (qm_dc_any_match(dc, x->atom, x->puse, true))
+				some_installed = true;
+			else
+				all_installed = false;
+			if (qm_dc_cp_installed(dc, x->atom))
+				any_slot = true;
+		}
+		if (all_installed) {
+			ch->all_installed_slots = true;
+			*bin = bins[5];
+		} else if (some_installed) {
+			*bin = bins[6];
+		} else if (any_slot) {
+			*bin = bins[7];
+		} else {
+			*bin = bins[8];
+		}
+	}
+	return ch;
+}
+
+static void
+qm_dc_choice_promote(array *choices, size_t from, size_t to)
+{
+	struct qm_dc_choice *c = array_remove(choices, from);
+	array               *tmp = array_new();
+	size_t               i;
+	struct qm_dc_choice *o;
+
+	array_for_each(choices, i, o) {
+		if (i == to)
+			array_append(tmp, c);
+		array_append(tmp, o);
+	}
+	if (to >= array_cnt(choices))
+		array_append(tmp, c);
+	while (array_cnt(choices) > 0)
+		array_remove(choices, 0);
+	array_move(choices, tmp);
+	array_free(tmp);
+}
+
+/* docs here? */
+static void
+qm_dc_zapdeps_sort(array *choices, bool minimize_slots)
+{
+	size_t i1;
+
+	if (array_cnt(choices) < 2)
+		return;
+	if (minimize_slots) {
+		/* stable selection on new_slot_count */
+		{
+			array *tmp = array_new();
+			size_t k;
+
+			while (array_cnt(choices) > 0) {
+				size_t               best = 0;
+				struct qm_dc_choice *bc   = array_get(choices, 0);
+				struct qm_dc_choice *c;
+
+				array_for_each(choices, k, c)
+					if (c->new_slot_count < bc->new_slot_count) {
+						best = k;
+						bc   = c;
+					}
+				array_append(tmp, array_remove(choices, best));
+			}
+			array_move(choices, tmp);
+			array_free(tmp);
+		}
+	}
+
+	/* `for choice_1 in choices[1:]` goes through a snapshot of the order */
+	{
+		array *snap = array_new();
+		size_t s;
+		struct qm_dc_choice *sc;
+
+		array_for_each(choices, s, sc)
+			if (s > 0)
+				array_append(snap, sc);
+		array_for_each(snap, s, sc) {
+			size_t i2;
+			struct qm_dc_choice *c1 = sc;
+			size_t cur = 0;
+
+			array_for_each(choices, i2, sc)
+				if (sc == c1)
+					cur = i2;
+			i1 = cur;
+			for (i2 = 0; i2 < array_cnt(choices); i2++) {
+				struct qm_dc_choice *c2 = array_get(choices, i2);
+				bool   has_upgrade   = false;
+				bool   has_downgrade = false;
+				size_t k;
+				char  *cp;
+
+				if (c1 == c2)
+					break;
+				if (c1->all_installed_slots && !c2->all_installed_slots &&
+						!c2->want_update) {
+					qm_dc_choice_promote(choices, i1, i2);
+					break;
+				}
+				array_for_each(c1->cp_keys, k, cp) {
+					struct qm_dc_pkg *v1 = hash_get(c1->cp_map, cp);
+					struct qm_dc_pkg *v2 = hash_get(c2->cp_map, cp);
+					int               d;
+
+					if (v2 == NULL)
+						continue;
+					d = qm_dc_vercmp(v1, v2);
+					if (d > 0)
+						has_upgrade = true;
+					else if (d < 0)
+						has_downgrade = true;
+				}
+				if ((has_upgrade && !has_downgrade) ||
+						(c1->all_in_graph && !c2->all_in_graph &&
+						 !(has_downgrade && !has_upgrade))) {
+					qm_dc_choice_promote(choices, i1, i2);
+					break;
+				}
+			}
+		}
+		array_free(snap);
+	}
+}
+
+/* returns borrowed atom nodes of the chosen alternatives in out */
+static void
+qm_dc_zapdeps(struct qm_dc *dc, array *list, bool is_disj,
+			  struct qm_dc_pkg *parent, bool minimize_slots, array *out)
+{
+	size_t         i;
+	struct qm_dcx *x;
+
+	if (!is_disj) {
+		array_for_each(list, i, x) {
+			if (x->kind == QM_DCX_ATOM)
+				array_append(out, x);
+			else
+				qm_dc_zapdeps(dc, x->items, x->kind == QM_DCX_ANY, parent,
+							  minimize_slots, out);
+		}
+		return;
+	}
+
+	{
+		array *bins[9];
+		array *all = array_new();
+		size_t b;
+		bool   picked = false;
+
+		for (b = 0; b < 9; b++)
+			bins[b] = array_new();
+
+		array_for_each(list, i, x) {
+			array               *atoms = array_new();
+			array               *bin   = NULL;
+			struct qm_dc_choice *ch;
+
+			if (x->kind == QM_DCX_ATOM)
+				array_append(atoms, x);
+			else
+				qm_dc_zapdeps(dc, x->items, x->kind == QM_DCX_ANY, parent,
+							  minimize_slots, atoms);
+			ch = qm_dc_choice_new(dc, atoms, parent, &bin, bins);
+			array_append(bin, ch);
+			array_append(all, ch);
+		}
+
+		for (b = 0; b < 9; b++)
+			qm_dc_zapdeps_sort(bins[b], minimize_slots);
+
+		{
+			int allow_masked;
+
+			for (allow_masked = 0; allow_masked < 2 && !picked; allow_masked++)
+				for (b = 0; b < 9 && !picked; b++) {
+					size_t               k;
+					struct qm_dc_choice *ch;
+
+					array_for_each(bins[b], k, ch)
+						if (ch->all_available || allow_masked) {
+							array_move(out, ch->atoms);
+							picked = true;
+							break;
+						}
+				}
+		}
+		for (b = 0; b < 9; b++)
+			array_free(bins[b]);
+		array_deepfree(all, qm_dc_choice_free);
+	}
+}
+
+/* dep_check on a normalized expression
+ * expand the virtuals, merge overlapping || groups, choose
+ * out receives owned copies of the selected atom nodes */
+static bool
+qm_dc_depcheck_list(struct qm_dc *dc, array *list, set *use,
+					struct qm_dc_pkg *parent, struct qm_dc_pkg *gparent,
+					array *out)
+{
+	array *expanded = array_new();
+	array *dnf;
+	array *sel = array_new();
+	size_t i;
+	struct qm_dcx *x;
+	bool   minimize = false;
+
+	qm_dcx_expand(dc, list, false, parent, gparent, use, expanded);
+	dnf = qm_dcx_overlap_dnf(expanded);
+	if (dnf != NULL) {
+		expanded = dnf;
+		minimize = true;
+	}
+	qm_dc_zapdeps(dc, expanded, false, parent, minimize, sel);
+	array_for_each(sel, i, x)
+		array_append(out, qm_dcx_clone(x));
+	array_free(sel);
+	array_deepfree(expanded, qm_dcx_free);
+	return true;
+}
+
+static bool
+qm_dc_depcheck_str(struct qm_dc *dc, const char *depstr, set *use,
+				   struct qm_dc_pkg *parent, struct qm_dc_pkg *gparent,
+				   array *out)
+{
+	dep_node_t *tree;
+	array      *list;
+	bool        ret;
+
+	if (depstr == NULL || depstr[0] == '\0')
+		return true;
+	tree = dep_grow_tree(depstr);
+	if (tree == NULL)
+		return false;
+	dep_prune_use(tree, use);
+	list = array_new();
+	qm_dcx_convert(tree, list, false, use, gparent);
+	dep_burn_tree(tree);
+	ret = qm_dc_depcheck_list(dc, list, use, parent, gparent, out);
+	array_deepfree(list, qm_dcx_free);
+	return ret;
+}
+
+/* keep graph traversal (_add_dep, _add_pkg, _create_graph) */
+
+static void
+qm_dc_dep_free(void *p)
+{
+	struct qm_dc_dep *d = p;
+
+	if (d == NULL)
+		return;
+	if (d->atom != NULL)
+		atom_implode(d->atom);
+	free(d);
+}
+
+static void
+qm_dc_parent_add(struct qm_dc_pkg *pkg, const char *name, const char *atomstr)
+{
+	size_t              i;
+	struct qm_dc_parent *pa;
+
+	array_for_each(pkg->parents, i, pa)
+		if (strcmp(pa->name, name) == 0 && strcmp(pa->atom, atomstr) == 0)
+			return;
+	pa       = xmalloc(sizeof(*pa));
+	pa->name = xstrdup(name);
+	pa->atom = xstrdup(atomstr);
+	array_append(pkg->parents, pa);
+}
+
+static void
+qm_dc_parent_free(void *p)
+{
+	struct qm_dc_parent *pa = p;
+
+	if (pa == NULL)
+		return;
+	free(pa->name);
+	free(pa->atom);
+	free(pa);
+}
+
+/* _add_pkg in remove mode */
+static void
+qm_dc_add_pkg(struct qm_dc *dc, struct qm_dc_pkg *pkg, struct qm_dc_dep *dep)
+{
+	bool   prev = pkg->in_graph;
+	array *sa   = hash_get(dc->setidx, pkg->cp);
+	size_t i;
+	struct qm_dc_parent *pa;
+
+	if (pkg != dep->parent || (dep->prio.buildtime && !dep->prio.satisfied)) {
+		if (!pkg->in_graph) {
+			pkg->in_graph = true;
+			dc->ngraph++;
+		}
+		if (dep->atom != NULL) {
+			char nb[600];
+
+			if (dep->parent != NULL)
+				snprintf(nb, sizeof(nb), "%s", dep->parent->cpv);
+			else
+				snprintf(nb, sizeof(nb), "@%s", dep->setname ? : "");
+			qm_dc_parent_add(pkg, nb, qm_dc_atom_str(dep->atom, dep->puse));
+		}
+	}
+	if (sa != NULL) {
+		array_for_each(sa, i, pa) {
+			atom_ctx *a = atom_explode(pa->atom);
+			bool      m;
+
+			if (a == NULL)
+				continue;
+			m = qm_dc_atom_matches(a, pkg, NULL, true);
+			atom_implode(a);
+			if (!m)
+				continue;
+			if (!pkg->in_graph) {
+				pkg->in_graph = true;
+				dc->ngraph++;
+			}
+			qm_dc_parent_add(pkg, pa->name, pa->atom);
+		}
+	}
+	if (!prev && pkg->in_graph)
+		array_append(dc->stack, pkg);
+}
+
+static void
+qm_dc_add_dep(struct qm_dc *dc, struct qm_dc_dep *dep)
+{
+	struct qm_dc_pkg *dep_pkg;
+
+	if (dep->atom->blocker != ATOM_BL_NONE) {
+		qm_dc_dep_free(dep);
+		return;
+	}
+	dep_pkg = dep->child != NULL ? dep->child
+			: qm_dc_select_installed(dc, dep->atom, dep->puse);
+	if (dep_pkg == NULL) {
+		if (dep->cprio.optional) {
+			qm_dc_dep_free(dep);
+			return;
+		}
+		array_append(dc->unsat, dep);
+		return;
+	}
+	qm_dc_add_pkg(dc, dep_pkg, dep);
+	qm_dc_dep_free(dep);
+}
+
+struct qm_dc_pair {
+	struct qm_dcx    *atom;
+	struct qm_dc_pkg *child;
+};
+
+/* _minimize_children */
+static void
+qm_dc_minimize_children(struct qm_dc *dc, array *atoms, array *out)
+{
+	size_t         i;
+	struct qm_dcx *x;
+	array         *mapped = array_new();
+	hash_t        *cp_pkgs = hash_new();
+	array         *cps    = array_new();
+
+	array_for_each(atoms, i, x) {
+		struct qm_dc_pair *pr = xzalloc(sizeof(*pr));
+
+		pr->atom = x;
+		if (x->atom->blocker == ATOM_BL_NONE)
+			pr->child = qm_dc_select_installed(dc, x->atom, x->puse);
+		if (pr->child == NULL) {
+			array_append(out, pr);
+			continue;
+		}
+		array_append(mapped, pr);
+	}
+	if (array_cnt(mapped) < 2) {
+		array_move(out, mapped);
+		array_free(mapped);
+		array_free(cps);
+		hash_free(cp_pkgs);
+		return;
+	}
+
+	{
+		struct qm_dc_pair *pr;
+
+		array_for_each(mapped, i, pr) {
+			array *g = hash_get(cp_pkgs, pr->child->cp);
+
+			if (g == NULL) {
+				g = array_new();
+				hash_add(cp_pkgs, pr->child->cp, g, NULL);
+				array_append(cps, pr->child->cp);
+			}
+			array_append(g, pr);
+		}
+	}
+
+	{
+		size_t c;
+		char  *cp;
+
+		array_for_each(cps, c, cp) {
+			array *g = hash_get(cp_pkgs, cp);
+			array *pkgs = array_new();
+			size_t k;
+			struct qm_dc_pair *pr;
+			struct qm_dc_pkg  *p;
+
+			array_for_each(g, k, pr) {
+				size_t q;
+				bool   have = false;
+
+				array_for_each(pkgs, q, p)
+					if (p == pr->child)
+						have = true;
+				if (!have)
+					array_append(pkgs, pr->child);
+			}
+			if (array_cnt(pkgs) < 2) {
+				array_move(out, g);
+				array_free(pkgs);
+				continue;
+			}
+
+			/* then eliminate redundant packages in ascending order */
+			{
+				array *edges = array_new();
+				array *alive = array_new();
+				size_t q;
+
+				array_sort(pkgs, qm_dc_pkgcmp_cb);
+				array_for_each(g, k, pr) {
+					array_for_each(pkgs, q, p) {
+						if (p == pr->child ||
+								qm_dc_atom_matches(pr->atom->atom, p,
+												   pr->atom->puse, true)) {
+							struct qm_dc_pair *e = xzalloc(sizeof(*e));
+
+							e->atom  = pr->atom;
+							e->child = p;
+							array_append(edges, e);
+						}
+					}
+				}
+				array_for_each(pkgs, q, p)
+					array_append(alive, p);
+				array_for_each(pkgs, q, p) {
+					bool eliminate = true;
+					size_t e1;
+					struct qm_dc_pair *e;
+
+					array_for_each(edges, e1, e) {
+						size_t e2;
+						struct qm_dc_pair *f;
+						size_t children = 0;
+
+						if (e->child != p)
+							continue;
+						array_for_each(edges, e2, f) {
+							size_t ai;
+							struct qm_dc_pkg *ap;
+							bool   al = false;
+
+							if (f->atom != e->atom)
+								continue;
+							array_for_each(alive, ai, ap)
+								if (ap == f->child)
+									al = true;
+							if (al)
+								children++;
+						}
+						if (children < 2) {
+							eliminate = false;
+							break;
+						}
+					}
+					if (eliminate) {
+						size_t ai;
+						struct qm_dc_pkg *ap;
+
+						array_for_each(alive, ai, ap)
+							if (ap == p) {
+								array_remove(alive, ai);
+								break;
+							}
+					}
+				}
+				{
+					array *abi = array_new();
+					array *normal = array_new();
+					array *order;
+					size_t oi;
+
+					array_for_each(g, k, pr) {
+						if (pr->atom->atom->slotdep == ATOM_SD_ANY_REBUILD &&
+								pr->atom->atom->SLOT != NULL &&
+								pr->atom->atom->SUBSLOT != pr->atom->atom->SLOT)
+							array_append(abi, pr);
+						else
+							array_append(normal, pr);
+					}
+					order = array_new();
+					array_move(order, abi);
+					array_move(order, normal);
+					array_free(abi);
+					array_free(normal);
+					array_for_each(order, oi, pr) {
+						struct qm_dc_pkg *best = NULL;
+						size_t e1;
+						struct qm_dc_pair *e;
+
+						array_for_each(edges, e1, e) {
+							size_t ai;
+							struct qm_dc_pkg *ap;
+							bool   al = false;
+
+							if (e->atom != pr->atom)
+								continue;
+							array_for_each(alive, ai, ap)
+								if (ap == e->child)
+									al = true;
+							if (!al)
+								continue;
+							if (best == NULL || qm_dc_pkgcmp(e->child, best) > 0)
+								best = e->child;
+						}
+						pr->child = best != NULL ? best : pr->child;
+						array_append(out, pr);
+					}
+					array_free(order);
+				}
+				array_deepfree(edges, free);
+				array_free(alive);
+			}
+			array_free(pkgs);
+		}
+	}
+	{
+		size_t c;
+		char  *cp;
+
+		array_for_each(cps, c, cp)
+			array_free(hash_get(cp_pkgs, cp));
+	}
+	array_free(cps);
+	hash_free(cp_pkgs);
+	array_free(mapped);
+}
+
+static struct qm_dc_pkg *
+qm_dc_satisfied(struct qm_dc *dc, const atom_ctx *atom, set *puse,
+				struct qm_dc_pkg *child)
+{
+	array            *inst = qm_dc_match(dc, atom, puse, true);
+	size_t            i;
+	struct qm_dc_pkg *p;
+	struct qm_dc_pkg *ret = NULL;
+
+	if (child != NULL && atom->slotdep == ATOM_SD_ANY_REBUILD) {
+		array *f = array_new();
+
+		array_for_each(inst, i, p)
+			if (strcmp(p->slot, child->slot) == 0 &&
+					strcmp(p->subslot, child->subslot) == 0)
+				array_append(f, p);
+		array_free(inst);
+		inst = f;
+	}
+	array_for_each_rev(inst, i, p) {
+		if (qm_dc_visibility_check(p)) {
+			ret = p;
+			break;
+		}
+	}
+	if (ret == NULL && array_cnt(inst) > 0)
+		ret = array_get(inst, array_cnt(inst) - 1);
+	array_free(inst);
+	return ret;
+}
+
+static struct qm_dc_dep *
+qm_dc_dep_new(const atom_ctx *atom, set *puse, struct qm_dc_pkg *parent,
+			  struct qm_dc_pkg *child, const struct qm_dc_prio *prio,
+			  const struct qm_dc_prio *cprio)
+{
+	struct qm_dc_dep *d = xzalloc(sizeof(*d));
+
+	d->atom   = atom_clone(q_deconst_p(atom));
+	d->puse   = puse;
+	d->parent = parent;
+	d->child  = child;
+	if (prio != NULL)
+		d->prio = *prio;
+	else
+		d->prio.none = true;
+	d->cprio = cprio != NULL ? *cprio : d->prio;
+	return d;
+}
+
+static void qm_dc_add_virtuals(struct qm_dc *dc, struct qm_dc_pkg *pkg,
+		const struct qm_dc_prio *prio, array *sel, set *traversed,
+		set *done, struct qm_dc_pkg *node_parent, bool top);
+
+/* _wrapped_add_pkg_dep_string */
+static void
+qm_dc_add_dep_string(struct qm_dc *dc, struct qm_dc_pkg *pkg,
+					 const struct qm_dc_prio *prio, array *list)
+{
+	array *sel   = array_new();
+	array *top   = array_new();
+	array *pairs = array_new();
+	set   *traversed = create_set();
+	size_t i;
+	struct qm_dcx *x;
+	struct qm_dc_pair *pr;
+
+	if (!qm_dc_depcheck_list(dc, list, pkg->use, pkg, pkg, sel)) {
+		add_set_unique(pkg->cpv, dc->masked_installed, NULL);
+		array_free(sel);
+		array_free(top);
+		array_free(pairs);
+		free_set(traversed);
+		return;
+	}
+	array_for_each(sel, i, x)
+		if (x->owner == pkg)
+			array_append(top, x);
+	qm_dc_minimize_children(dc, top, pairs);
+	array_for_each(pairs, i, pr) {
+		bool             is_virt = pr->atom->orig != NULL;
+		atom_ctx        *atom    = is_virt ? pr->atom->orig : pr->atom->atom;
+		struct qm_dc_prio mp     = *prio;
+		struct qm_dc_dep *dep;
+
+		if (atom->blocker != ATOM_BL_NONE && prio->optional)
+			continue;
+		if (atom->blocker == ATOM_BL_NONE) {
+			if (atom->slotdep == ATOM_SD_ANY_REBUILD) {
+				if (mp.buildtime)
+					mp.buildtime_slot_op = true;
+				if (mp.runtime)
+					mp.runtime_slot_op = true;
+			}
+			mp.satisfied = qm_dc_satisfied(dc, atom, pr->atom->puse,
+										   pr->child) != NULL;
+		}
+		dep = qm_dc_dep_new(atom, pr->atom->puse, pkg, pr->child, &mp, &mp);
+		qm_dc_add_dep(dc, dep);
+		if (is_virt && pr->child != NULL)
+			add_set_unique(pr->child->cpv, traversed, NULL);
+	}
+	array_deepfree(pairs, free);
+	array_free(top);
+
+	{
+		set *done = create_set();
+
+		qm_dc_add_virtuals(dc, pkg, prio, sel, traversed, done, pkg, true);
+		free_set(done);
+	}
+
+	array_deepfree(sel, qm_dcx_free);
+	free_set(traversed);
+}
+
+/* "selected indirect virtual deps" loop
+ * virtual nodes hanging off node_parent, last first, each followed by its own nested virtuals */
+static void
+qm_dc_add_virtuals(struct qm_dc *dc, struct qm_dc_pkg *pkg,
+				   const struct qm_dc_prio *prio, array *sel, set *traversed,
+				   set *done, struct qm_dc_pkg *node_parent, bool top)
+{
+	array *vnodes = array_new();
+	size_t i;
+	struct qm_dcx *x;
+
+	array_for_each(sel, i, x)
+		if (x->virt != NULL && x->owner == node_parent)
+			array_append(vnodes, x);
+
+	array_for_each_rev(vnodes, i, x) {
+		struct qm_dc_pkg *vp = x->virt;
+		struct qm_dc_prio vprio;
+		struct qm_dc_dep *vdep;
+		array *children = array_new();
+		array *pairs    = array_new();
+		size_t k;
+		struct qm_dcx *c;
+		struct qm_dc_pair *pr;
+
+		if (contains_set(vp->cpv, traversed) == NULL ||
+				contains_set(vp->cpv, done) != NULL) {
+			array_free(children);
+			array_free(pairs);
+			continue;
+		}
+		add_set(vp->cpv, done);
+		if (top) {
+			vprio = *prio;
+		} else {
+			memset(&vprio, 0, sizeof(vprio));
+			vprio.runtime = true;
+		}
+		vprio.satisfied = qm_dc_satisfied(dc, x->atom, x->puse, NULL) != NULL;
+		vdep = qm_dc_dep_new(x->atom, x->puse, node_parent, vp, &vprio,
+							 &vprio);
+		qm_dc_add_pkg(dc, vp, vdep);
+		qm_dc_dep_free(vdep);
+
+		array_for_each(sel, k, c)
+			if (c->owner == vp)
+				array_append(children, c);
+		qm_dc_minimize_children(dc, children, pairs);
+		array_for_each(pairs, k, pr) {
+			bool              is_virt = pr->atom->orig != NULL;
+			atom_ctx         *atom    = is_virt ? pr->atom->orig
+												: pr->atom->atom;
+			struct qm_dc_prio mp;
+			struct qm_dc_dep *dep;
+
+			memset(&mp, 0, sizeof(mp));
+			mp.runtime = true;
+			if (atom->blocker == ATOM_BL_NONE)
+				mp.satisfied = qm_dc_satisfied(dc, atom, pr->atom->puse,
+											   pr->child) != NULL;
+			dep = qm_dc_dep_new(atom, pr->atom->puse, vp, pr->child, &mp,
+								prio);
+			qm_dc_add_dep(dc, dep);
+			if (is_virt && pr->child != NULL)
+				add_set_unique(pr->child->cpv, traversed, NULL);
+		}
+		array_deepfree(pairs, free);
+		array_free(children);
+
+		qm_dc_add_virtuals(dc, pkg, prio, sel, traversed, done, vp, false);
+	}
+	array_free(vnodes);
+}
+
+/* _queue_disjunctive_deps: || groups and virtual atoms are deferred */
+static void
+qm_dc_split_disjunctive(array *list, array *nondisj, array *disj)
+{
+	size_t         i;
+	struct qm_dcx *x;
+
+	array_for_each(list, i, x) {
+		if (x->kind == QM_DCX_ANY)
+			array_append(disj, x);
+		else if (x->kind == QM_DCX_ALL)
+			qm_dc_split_disjunctive(x->items, nondisj, disj);
+		else if (qm_dc_is_virtual(x->atom))
+			array_append(disj, x);
+		else
+			array_append(nondisj, x);
+	}
+}
+
+static void
+qm_dc_disj_free(void *p)
+{
+	struct qm_dc_disj *d = p;
+
+	if (d == NULL)
+		return;
+	array_deepfree(d->expr, qm_dcx_free);
+	free(d);
+}
+
+/* _add_pkg_deps in remove mode -> RDEPEND, IDEPEND, PDEPEND, DEPEND,
+ * BDEPEND under the package's own USE */
+static void
+qm_dc_add_pkg_deps(struct qm_dc *dc, struct qm_dc_pkg *pkg)
+{
+	int di;
+
+	for (di = 0; di < QM_DC_NDEPS; di++) {
+		const char       *ds = pkg->deps[di];
+		struct qm_dc_prio prio;
+		dep_node_t       *tree;
+		array            *list;
+		array            *nondisj;
+		array            *disj;
+
+		memset(&prio, 0, sizeof(prio));
+		switch (di) {
+		case QM_DC_RDEPEND: prio.runtime = true; break;
+		case QM_DC_IDEPEND: prio.installtime = true; prio.runtime = true; break;
+		case QM_DC_PDEPEND: prio.runtime_post = true; break;
+		default:            prio.buildtime = true; prio.optional = true; break;
+		}
+		if ((di == QM_DC_DEPEND || di == QM_DC_BDEPEND) && !dc->bdeps)
+			continue;
+		if (di == QM_DC_IDEPEND && strcmp(portroot, "/") != 0)
+			continue;
+		if (ds == NULL || ds[0] == '\0')
+			continue;
+		tree = dep_grow_tree(ds);
+		if (tree == NULL) {
+			add_set_unique(pkg->cpv, dc->masked_installed, NULL);
+			continue;
+		}
+		dep_prune_use(tree, pkg->use);
+		list = array_new();
+		qm_dcx_convert(tree, list, false, pkg->use, pkg);
+		dep_burn_tree(tree);
+
+		nondisj = array_new();
+		disj    = array_new();
+		qm_dc_split_disjunctive(list, nondisj, disj);
+		if (array_cnt(disj) > 0) {
+			struct qm_dc_disj *dj = xzalloc(sizeof(*dj));
+			size_t             k;
+			struct qm_dcx     *x;
+
+			dj->pkg  = pkg;
+			dj->prio = prio;
+			dj->expr = array_new();
+			array_for_each(disj, k, x)
+				array_append(dj->expr, qm_dcx_clone(x));
+			array_append(dc->disj, dj);
+		}
+		if (array_cnt(nondisj) > 0)
+			qm_dc_add_dep_string(dc, pkg, &prio, nondisj);
+		array_free(nondisj);
+		array_free(disj);
+		array_deepfree(list, qm_dcx_free);
+	}
+}
+
+static void
+qm_dc_create_graph(struct qm_dc *dc)
+{
+	while (array_cnt(dc->stack) > 0 || array_cnt(dc->disj) > 0) {
+		while (array_cnt(dc->stack) > 0) {
+			struct qm_dc_pkg *pkg = array_remove(dc->stack,
+												 array_cnt(dc->stack) - 1);
+
+			qm_dc_add_pkg_deps(dc, pkg);
+		}
+		if (array_cnt(dc->disj) > 0) {
+			struct qm_dc_disj *dj = array_remove(dc->disj,
+												 array_cnt(dc->disj) - 1);
+
+			qm_dc_add_dep_string(dc, dj->pkg, &dj->prio, dj->expr);
+			qm_dc_disj_free(dj);
+		}
+	}
+}
+
+/* constructing the _complete_graph
+ * set args nested under @world, then the graph, then the second chance for
+  * unsatisfied deps against the plain vartree */
+static void
+qm_dc_complete_graph(struct qm_dc *dc)
+{
+	size_t               i;
+	struct qm_dc_setarg *sa;
+
+	array_for_each(dc->setargs, i, sa) {
+		size_t    k;
+		atom_ctx *a;
+
+		array_for_each(sa->atoms, k, a) {
+			struct qm_dc_dep *dep = qm_dc_dep_new(a, NULL, NULL, NULL, NULL,
+												  NULL);
+
+			dep->setname = sa->name;
+			qm_dc_add_dep(dc, dep);
+		}
+	}
+	qm_dc_create_graph(dc);
+	while (array_cnt(dc->unsat) > 0) {
+		struct qm_dc_dep *dep = array_remove(dc->unsat, array_cnt(dc->unsat) - 1);
+		array            *m   = qm_dc_match(dc, dep->atom, dep->puse, true);
+
+		if (array_cnt(m) == 0) {
+			array_free(m);
+			array_append(dc->init_unsat, dep);
+			continue;
+		}
+		qm_dc_add_pkg(dc, array_get(m, array_cnt(m) - 1), dep);
+		array_free(m);
+		qm_dc_dep_free(dep);
+		qm_dc_create_graph(dc);
+	}
+}
+
+/* textwrap */
+
+static void
+qm_dc_wrap(array *out, const char *text, size_t width)
+{
+	char  *tmp = xstrdup(text);
+	char  *tok;
+	char  *sp;
+	char   line[1024];
+	size_t ll = 0;
+
+	line[0] = '\0';
+	for (tok = strtok_r(tmp, " ", &sp); tok != NULL;
+		 tok = strtok_r(NULL, " ", &sp)) {
+		size_t tl = strlen(tok);
+
+		if (tl > sizeof(line) - 2)
+			tl = sizeof(line) - 2;
+		if (ll > 0 && ll + 1 + tl > width) {
+			array_append(out, xstrdup(line));
+			ll      = 0;
+			line[0] = '\0';
+		}
+		if (ll > 0) {
+			line[ll++] = ' ';
+			line[ll]   = '\0';
+		}
+		if (tl > sizeof(line) - 1 - ll)
+			tl = sizeof(line) - 1 - ll;
+		memcpy(line + ll, tok, tl);
+		ll += tl;
+		line[ll] = '\0';
+	}
+	if (ll > 0)
+		array_append(out, xstrdup(line));
+	free(tmp);
+}
+
+/* unresolved_deps(): count only runtime-class deps of packages */
+static bool
+qm_dc_unresolved(struct qm_dc *dc)
+{
+	array *lines = array_new();
+	size_t i;
+	struct qm_dc_dep *dep;
+	array *shown = array_new();
+	bool   any = false;
+
+	array_for_each(dc->init_unsat, i, dep) {
+		char key[_Q_PATH_MAX * 2];
+		size_t k;
+		char  *s;
+		bool   dup = false;
+
+		if (dep->parent == NULL || dep->prio.none ||
+				qm_dc_prio_int(&dep->prio) <= QM_DC_PRIO_SOFT)
+			continue;
+		snprintf(key, sizeof(key), "%s\1%s",
+				 qm_dc_atom_str(dep->atom, dep->puse), dep->parent->cpv);
+		array_for_each(shown, k, s)
+			if (strcmp(s, key) == 0)
+				dup = true;
+		if (dup)
+			continue;
+		array_append(shown, xstrdup(key));
+		any = true;
+	}
+	if (!any) {
+		array_deepfree(shown, free);
+		array_free(lines);
+		return false;
+	}
+	if (dc->args_given) {
+		array_deepfree(shown, free);
+		array_free(lines);
+		return false;
+	}
+	array_sort(shown, qm_strcmp_cb);
+	array_append(lines, xstrdup("Dependencies could not be completely resolved due to"));
+	array_append(lines, xstrdup("the following required packages not being installed:"));
+	array_append(lines, xstrdup(""));
+	{
+		size_t k;
+		char  *s;
+
+		array_for_each(shown, k, s) {
+			char *sep = strchr(s, '\1');
+			char  l[_Q_PATH_MAX * 2 + 64];
+			struct qm_dc_dep *d = NULL;
+			size_t q;
+
+			*sep = '\0';
+			array_for_each(dc->init_unsat, q, d)
+				if (d->parent != NULL && strcmp(d->parent->cpv, sep + 1) == 0 &&
+						strcmp(qm_dc_atom_str(d->atom, d->puse), s) == 0)
+					break;
+			if (d != NULL && d->atom->usedeps != NULL) {
+				char ub[_Q_PATH_MAX];
+
+				qm_dc_atom_fmt(ub, sizeof(ub), d->atom, NULL, NULL, 0, NULL);
+				if (strcmp(ub, s) != 0 && qm_dc_any_match(dc, d->atom, d->puse, true)) {
+					snprintf(l, sizeof(l), "  %s (%s) pulled in by:", ub, s);
+					array_append(lines, xstrdup(l));
+					snprintf(l, sizeof(l), "    %s", sep + 1);
+					array_append(lines, xstrdup(l));
+					array_append(lines, xstrdup(""));
+					continue;
+				}
+			}
+			snprintf(l, sizeof(l), "  %s pulled in by:", s);
+			array_append(lines, xstrdup(l));
+			snprintf(l, sizeof(l), "    %s", sep + 1);
+			array_append(lines, xstrdup(l));
+			array_append(lines, xstrdup(""));
+		}
+	}
+	qm_dc_wrap(lines, "Have you forgotten to do a complete update prior to "
+			   "depclean? The most comprehensive command for this purpose is "
+			   "as follows:", 65);
+	array_append(lines, xstrdup(""));
+	{
+		char l[256];
+
+		snprintf(l, sizeof(l), "  %semerge --update --newuse --deep --with-bdeps=y @world%s",
+				 GREEN, NORM);
+		array_append(lines, xstrdup(l));
+	}
+	array_append(lines, xstrdup(""));
+	qm_dc_wrap(lines, "Note that the --with-bdeps=y option is not required in "
+			   "many situations. Refer to the emerge manual page (run `man "
+			   "emerge`) for more information about --with-bdeps.", 65);
+	array_append(lines, xstrdup(""));
+	qm_dc_wrap(lines, "Also, note that it may be necessary to manually "
+			   "uninstall packages that no longer exist in the repository, "
+			   "since it may not be possible to satisfy their dependencies.",
+			   65);
+	if (dc->prune) {
+		char l[256];
+
+		array_append(lines, xstrdup(""));
+		snprintf(l, sizeof(l), "If you would like to ignore dependencies "
+				 "then use %s--nodeps%s.", GREEN, NORM);
+		array_append(lines, xstrdup(l));
+	}
+	{
+		size_t k;
+		char  *s;
+
+		array_for_each(lines, k, s)
+			fprintf(stderr, "%s * %s%s\n", RED, NORM, s);
+	}
+	array_deepfree(lines, free);
+	array_deepfree(shown, free);
+	return true;
+}
+
+static int
+qm_dc_parent_cmp_cb(const void *l, const void *r)
+{
+	return strcmp(*(char * const *)l, *(char * const *)r);
+}
+
+/* show_parents (--verbose) */
+static void
+qm_dc_show_parents(struct qm_dc_pkg *pkg)
+{
+	array  *names = array_new();
+	array  *strs  = array_new();
+	size_t  i;
+	struct qm_dc_parent *pa;
+	char   *n;
+
+	array_for_each(pkg->parents, i, pa) {
+		size_t k;
+		bool   have = false;
+
+		if (strcmp(pa->name, "@____depclean_protected_set____") == 0)
+			continue;
+		array_for_each(names, k, n)
+			if (strcmp(n, pa->name) == 0)
+				have = true;
+		if (!have)
+			array_append(names, pa->name);
+	}
+	if (array_cnt(names) == 0) {
+		array_free(names);
+		array_free(strs);
+		return;
+	}
+	array_for_each(names, i, n) {
+		array *atoms = array_new();
+		size_t k;
+		char   line[_Q_PATH_MAX * 2];
+		size_t off = 0;
+		char  *a;
+
+		array_for_each(pkg->parents, k, pa)
+			if (strcmp(pa->name, n) == 0)
+				array_append(atoms, pa->atom);
+		array_sort(atoms, qm_dc_parent_cmp_cb);
+		qm_dc_sapp(line, sizeof(line), &off, "%s requires ", n);
+		array_for_each(atoms, k, a)
+			qm_dc_sapp(line, sizeof(line), &off, "%s%s", k > 0 ? ", " : "", a);
+		array_append(strs, xstrdup(line));
+		array_free(atoms);
+	}
+	array_sort(strs, qm_strcmp_cb);
+	printf("  %s pulled in by:\n", pkg->cpv);
+	array_for_each(strs, i, n)
+		printf("    %s\n", n);
+	printf("\n");
+	array_deepfree(strs, free);
+	array_free(names);
+}
+
+/* --depclean-lib-check
+ * the graph half of LinkageMapELF */
+
+struct qm_dc_obj {
+	char  *key;
+	char  *arch;
+	char  *soname;
+	char  *owner;
+	array *needed;
+	array *runpaths;
+	array *alt_paths;
+};
+
+struct qm_dc_lmap {
+	hash_t *objs;
+	array  *objlist;
+	hash_t *path_obj;
+	hash_t *providers;
+	hash_t *consumers;
+	set    *defpath;
+	hash_t *pathkeys;
+};
+
+/* os.path.normpath */
+static void
+qm_dc_normpath(char *p)
+{
+	char  *out = xmalloc(strlen(p) + 2);
+	size_t o   = 0;
+	char  *tok;
+	char  *sp;
+	char  *tmp = xstrdup(p);
+	bool   abs = p[0] == '/';
+
+	for (tok = strtok_r(tmp, "/", &sp); tok != NULL;
+		 tok = strtok_r(NULL, "/", &sp)) {
+		if (strcmp(tok, ".") == 0 || tok[0] == '\0')
+			continue;
+		if (strcmp(tok, "..") == 0) {
+			if (o > 0) {
+				while (o > 0 && out[o - 1] != '/')
+					o--;
+				if (o > 0)
+					o--;
+				continue;
+			}
+			if (abs)
+				continue;
+		}
+		if (o > 0 || !abs)
+			out[o++] = '/';
+		if (o == 1 && !abs)
+			o = 0;
+		memcpy(out + o, tok, strlen(tok));
+		o += strlen(tok);
+	}
+	if (o == 0)
+		strcpy(out, abs ? "/" : ".");
+	else
+		out[o] = '\0';
+	if (abs && out[0] != '/') {
+		memmove(out + 1, out, o + 1);
+		out[0] = '/';
+	}
+	strcpy(p, out);
+	free(out);
+	free(tmp);
+}
+
+static const char *
+qm_dc_path_key(struct qm_dc_lmap *lm, const char *path)
+{
+	char       *k = hash_get(lm->pathkeys, path);
+	char        full[_Q_PATH_MAX];
+	struct stat st;
+	char        kb[_Q_PATH_MAX];
+
+	if (k != NULL)
+		return k;
+	snprintf(full, sizeof(full), "%s%s", portroot,
+			 path[0] == '/' ? path + 1 : path);
+	if (stat(full, &st) == 0) {
+		snprintf(kb, sizeof(kb), "%llu:%llu",
+				 (unsigned long long)st.st_dev,
+				 (unsigned long long)st.st_ino);
+	} else {
+		char *rp = realpath(full, NULL);
+
+		if (rp != NULL) {
+			snprintf(kb, sizeof(kb), "%s", rp);
+			free(rp);
+		} else {
+			snprintf(kb, sizeof(kb), "%s", full);
+			qm_dc_normpath(kb);
+		}
+	}
+	k = xstrdup(kb);
+	hash_add(lm->pathkeys, path, k, NULL);
+	return k;
+}
+
+static void
+qm_dc_obj_free(void *p)
+{
+	struct qm_dc_obj *o = p;
+
+	if (o == NULL)
+		return;
+	free(o->key);
+	free(o->arch);
+	free(o->soname);
+	free(o->owner);
+	array_deepfree(o->needed, free);
+	array_deepfree(o->runpaths, free);
+	array_deepfree(o->alt_paths, free);
+	free(o);
+}
+
+static void
+qm_dc_lmap_index(struct qm_dc_lmap *lm, hash_t *idx, const char *arch,
+				 const char *soname, struct qm_dc_obj *o)
+{
+	char   key[1024];
+	array *l;
+
+	snprintf(key, sizeof(key), "%s\1%s", arch, soname);
+	l = hash_get(idx, key);
+	if (l == NULL) {
+		l = array_new();
+		hash_add(idx, key, l, NULL);
+	}
+	array_append(l, o);
+	(void)lm;
+}
+
+struct qm_dc_lentry {
+	char  *owner;
+	char  *arch;
+	char  *path;
+	char  *soname;
+	array *needed;
+	array *runpaths;
+};
+
+static void
+qm_dc_lentry_free(void *p)
+{
+	struct qm_dc_lentry *e = p;
+
+	if (e == NULL)
+		return;
+	free(e->owner);
+	free(e->arch);
+	free(e->path);
+	free(e->soname);
+	array_deepfree(e->needed, free);
+	array_deepfree(e->runpaths, free);
+	free(e);
+}
+
+static struct qm_dc_lmap *
+qm_dc_lmap_build(void)
+{
+	struct qm_dc_lmap *lm  = xzalloc(sizeof(*lm));
+	linkage_map       *map = qm_linkage_build();
+	array             *entries = array_new();
+	size_t             pi;
+	linkage_pkg       *lp;
+	size_t             i;
+	struct qm_dc_lentry *e;
+
+	lm->objs      = hash_new();
+	lm->objlist   = array_new();
+	lm->path_obj  = hash_new();
+	lm->providers = hash_new();
+	lm->consumers = hash_new();
+	lm->defpath   = create_set();
+	lm->pathkeys  = hash_new();
+
+	{
+		set        *dirs = NULL;
+		const char *llp  = qm_config_var("LD_LIBRARY_PATH");
+		char        lds[_Q_PATH_MAX];
+		array      *ks;
+		char       *d;
+
+		if (llp != NULL && llp[0] != '\0') {
+			char *tmp = xstrdup(llp);
+			char *tok;
+			char *sp;
+
+			for (tok = strtok_r(tmp, ":", &sp); tok != NULL;
+				 tok = strtok_r(NULL, ":", &sp))
+				if (*tok != '\0')
+					dirs = add_set_unique(tok, dirs, NULL);
+			free(tmp);
+		}
+		snprintf(lds, sizeof(lds), "%setc/ld.so.conf", portroot);
+		envd_read_ldsoconf(portroot, lds, &dirs);
+		dirs = add_set_unique("/usr/lib", dirs, NULL);
+		dirs = add_set_unique("/lib", dirs, NULL);
+		ks = set_keys(dirs);
+		array_for_each(ks, i, d) {
+			char nd[_Q_PATH_MAX];
+
+			snprintf(nd, sizeof(nd), "%s", d);
+			qm_dc_normpath(nd);
+			add_set_unique(qm_dc_path_key(lm, nd), lm->defpath, NULL);
+		}
+		array_free(ks);
+		free_set(dirs);
+	}
+
+	array_for_each(linkage_pkgs(map), pi, lp) {
+		size_t       oi;
+		linkage_obj *lo;
+
+		array_for_each(lp->objs, oi, lo) {
+			size_t k;
+			char  *s;
+			char   dir[_Q_PATH_MAX];
+			char  *sl;
+
+			e = xzalloc(sizeof(*e));
+			e->owner  = xstrdup(lp->cpv);
+			e->arch   = xstrdup(lo->cat);
+			e->path   = xstrdup(lo->path);
+			qm_dc_normpath(e->path);
+			e->soname = xstrdup(lo->soname);
+			e->needed = array_new();
+			e->runpaths = array_new();
+			array_for_each(lo->needed, k, s)
+				array_append(e->needed, xstrdup(s));
+			snprintf(dir, sizeof(dir), "%s", e->path);
+			sl = strrchr(dir, '/');
+			if (sl != NULL)
+				*sl = '\0';
+			if (dir[0] == '\0')
+				strcpy(dir, "/");
+			array_for_each(lo->rpath, k, s) {
+				char  rp[_Q_PATH_MAX * 2];
+				char *o;
+
+				o = strstr(s, "$ORIGIN");
+				if (o == NULL)
+					o = strstr(s, "${ORIGIN}");
+				if (o != NULL) {
+					size_t vl  = o[1] == '{' ? 9 : 7;
+					size_t off = 0;
+
+					qm_dc_sapp(rp, sizeof(rp), &off, "%.*s",
+							   (int)MIN((size_t)(o - s), (size_t)1024), s);
+					qm_dc_sapp(rp, sizeof(rp), &off, "%s", dir);
+					qm_dc_sapp(rp, sizeof(rp), &off, "%s", o + vl);
+				} else {
+					snprintf(rp, sizeof(rp), "%s", s);
+				}
+				qm_dc_normpath(rp);
+				array_append(e->runpaths, xstrdup(rp));
+			}
+			array_append(entries, e);
+		}
+	}
+	linkage_free(map);
+
+	{
+		preserved_entry *pe;
+		size_t           n;
+		char            *pt;
+
+		array_for_each(preserved_entries(qm_preserved_get()), i, pe)
+			array_for_each(pe->paths, n, pt) {
+				e = xzalloc(sizeof(*e));
+				e->owner    = xstrdup(pe->cpv);
+				e->arch     = xstrdup("");
+				e->path     = xstrdup(pt);
+				qm_dc_normpath(e->path);
+				e->soname   = xstrdup("");
+				e->needed   = array_new();
+				e->runpaths = array_new();
+				array_append(entries, e);
+			}
+	}
+
+	/* implicit runpaths for sonames provided by the same owner */
+	{
+		hash_t *byowner = hash_new();
+		array  *okeys   = array_new();
+
+		array_for_each(entries, i, e) {
+			array *oe = hash_get(byowner, e->owner);
+
+			if (oe == NULL) {
+				oe = array_new();
+				hash_add(byowner, e->owner, oe, NULL);
+				array_append(okeys, e->owner);
+			}
+			array_append(oe, e);
+		}
+	array_for_each(entries, i, e) {
+		size_t               k;
+		char                *nd;
+		char                 dir[_Q_PATH_MAX];
+		array               *oe = hash_get(byowner, e->owner);
+
+		array_for_each(e->needed, k, nd) {
+			size_t               j;
+			struct qm_dc_lentry *pr;
+
+			array_for_each(oe, j, pr) {
+				size_t q;
+				char  *rp;
+				bool   have = false;
+				char  *sl;
+
+				if (pr->soname[0] == '\0' ||
+						strcmp(pr->soname, nd) != 0 ||
+						strcmp(pr->arch, e->arch) != 0)
+					continue;
+				snprintf(dir, sizeof(dir), "%s", pr->path);
+				sl = strrchr(dir, '/');
+				if (sl != NULL)
+					*sl = '\0';
+				if (dir[0] == '\0')
+					strcpy(dir, "/");
+				array_for_each(e->runpaths, q, rp)
+					if (strcmp(rp, dir) == 0)
+						have = true;
+				if (!have)
+					array_append(e->runpaths, xstrdup(dir));
+				break;
+			}
+		}
+	}
+		{
+			size_t k;
+			char  *ok;
+
+			array_for_each(okeys, k, ok)
+				array_free(hash_get(byowner, ok));
+		}
+		array_free(okeys);
+		hash_free(byowner);
+	}
+
+	/* lines are taken last first (lines.pop()) */
+	array_for_each_rev(entries, i, e) {
+		const char       *key = qm_dc_path_key(lm, e->path);
+		struct qm_dc_obj *o   = hash_get(lm->objs, key);
+		size_t            k;
+		char             *s;
+
+		if (o != NULL) {
+			array_append(o->alt_paths, xstrdup(e->path));
+			if (hash_get(lm->path_obj, e->path) == NULL)
+				hash_add(lm->path_obj, e->path, o, NULL);
+			continue;
+		}
+		o = xzalloc(sizeof(*o));
+		o->key      = xstrdup(key);
+		o->arch     = xstrdup(e->arch);
+		o->soname   = xstrdup(e->soname);
+		o->owner    = xstrdup(e->owner);
+		o->needed   = array_new();
+		o->runpaths = array_new();
+		o->alt_paths = array_new();
+		array_for_each(e->needed, k, s)
+			array_append(o->needed, xstrdup(s));
+		array_for_each(e->runpaths, k, s)
+			array_append(o->runpaths, xstrdup(s));
+		array_append(o->alt_paths, xstrdup(e->path));
+		hash_add(lm->objs, key, o, NULL);
+		array_append(lm->objlist, o);
+		hash_add(lm->path_obj, e->path, o, NULL);
+		if (o->soname[0] != '\0')
+			qm_dc_lmap_index(lm, lm->providers, o->arch, o->soname, o);
+		array_for_each(o->needed, k, s)
+			qm_dc_lmap_index(lm, lm->consumers, o->arch, s, o);
+	}
+	array_deepfree(entries, qm_dc_lentry_free);
+	return lm;
+}
+
+static void
+qm_dc_lmap_free(struct qm_dc_lmap *lm)
+{
+	array *ks;
+	size_t i;
+	char  *k;
+
+	if (lm == NULL)
+		return;
+	ks = hash_keys(lm->providers);
+	array_for_each(ks, i, k)
+		array_free(hash_get(lm->providers, k));
+	array_free(ks);
+	hash_free(lm->providers);
+	ks = hash_keys(lm->consumers);
+	array_for_each(ks, i, k)
+		array_free(hash_get(lm->consumers, k));
+	array_free(ks);
+	hash_free(lm->consumers);
+	ks = hash_keys(lm->pathkeys);
+	array_for_each(ks, i, k)
+		free(hash_get(lm->pathkeys, k));
+	array_free(ks);
+	hash_free(lm->pathkeys);
+	hash_free(lm->path_obj);
+	hash_free(lm->objs);
+	array_deepfree(lm->objlist, qm_dc_obj_free);
+	free_set(lm->defpath);
+	free(lm);
+}
+
+static void
+qm_dc_dirname(const char *path, char *out, size_t len)
+{
+	char *sl;
+
+	snprintf(out, len, "%s", path);
+	sl = strrchr(out, '/');
+	if (sl != NULL)
+		*sl = '\0';
+	if (out[0] == '\0')
+		strcpy(out, "/");
+}
+
+/* consumer path keys = defpath + the object's runpaths */
+static set *
+qm_dc_obj_pathkeys(struct qm_dc_lmap *lm, struct qm_dc_obj *o)
+{
+	set   *keys = create_set();
+	array *dk   = set_keys(lm->defpath);
+	size_t i;
+	char  *k;
+
+	array_for_each(dk, i, k)
+		add_set_unique(k, keys, NULL);
+	array_free(dk);
+	array_for_each(o->runpaths, i, k)
+		add_set_unique(qm_dc_path_key(lm, k), keys, NULL);
+	return keys;
+}
+
+/* findConsumers(obj_key)
+ * consumer paths of every object with this soname whose search path covers
+* isone of the object's directories */
+static array *
+qm_dc_find_consumers(struct qm_dc_lmap *lm, struct qm_dc_obj *o)
+{
+	array *ret = array_new();
+	char   key[1024];
+	array *cons;
+	set   *objdirs = create_set();
+	size_t i;
+	char  *p;
+	struct qm_dc_obj *c;
+
+	if (o->soname[0] == '\0') {
+		free_set(objdirs);
+		return ret;
+	}
+	array_for_each(o->alt_paths, i, p) {
+		char d[_Q_PATH_MAX];
+
+		qm_dc_dirname(p, d, sizeof(d));
+		add_set_unique(qm_dc_path_key(lm, d), objdirs, NULL);
+	}
+	snprintf(key, sizeof(key), "%s\1%s", o->arch, o->soname);
+	cons = hash_get(lm->consumers, key);
+	array_for_each(cons, i, c) {
+		set   *pk = qm_dc_obj_pathkeys(lm, c);
+		bool   hit = set_has_intersection(objdirs, pk);
+		size_t k;
+		char  *cp;
+
+		free_set(pk);
+		if (!hit)
+			continue;
+		array_for_each(c->alt_paths, k, cp) {
+			size_t q;
+			char  *have;
+			bool   dup = false;
+
+			array_for_each(ret, q, have)
+				if (strcmp(have, cp) == 0)
+					dup = true;
+			if (!dup)
+				array_append(ret, xstrdup(cp));
+		}
+	}
+	free_set(objdirs);
+	return ret;
+}
+
+/* findProviders(consumer)[soname]: provider paths inside the consumer's
+ * search path */
+static array *
+qm_dc_find_providers(struct qm_dc_lmap *lm, struct qm_dc_obj *c,
+					 const char *soname)
+{
+	array *ret = array_new();
+	set   *pk  = qm_dc_obj_pathkeys(lm, c);
+	char   key[1024];
+	array *provs;
+	size_t i;
+	struct qm_dc_obj *p;
+
+	snprintf(key, sizeof(key), "%s\1%s", c->arch, soname);
+	provs = hash_get(lm->providers, key);
+	array_for_each(provs, i, p) {
+		size_t k;
+		char  *pp;
+
+		array_for_each(p->alt_paths, k, pp) {
+			char d[_Q_PATH_MAX];
+
+			qm_dc_dirname(pp, d, sizeof(d));
+			if (contains_set(qm_dc_path_key(lm, d), pk) != NULL) {
+				size_t q;
+				char  *have;
+				bool   dup = false;
+
+				array_for_each(ret, q, have)
+					if (strcmp(have, pp) == 0)
+						dup = true;
+				if (!dup)
+					array_append(ret, xstrdup(pp));
+			}
+		}
+	}
+	free_set(pk);
+	return ret;
+}
+
+static set *
+qm_dc_contents_paths(const struct qm_dc_pkg *p)
+{
+	set   *paths = create_set();
+	char   path[_Q_PATH_MAX];
+	char  *buf = NULL;
+	size_t len = 0;
+
+	snprintf(path, sizeof(path), "%s%s/%s/CONTENTS", portroot, portvdb, p->cpv);
+	if (eat_file(path, &buf, &len) && buf != NULL) {
+		char *line;
+		char *sp;
+
+		for (line = strtok_r(buf, "\n", &sp); line != NULL;
+			 line = strtok_r(NULL, "\n", &sp)) {
+			contents_entry *ce = contents_parse_line(line);
+
+			if (ce != NULL && ce->name != NULL) {
+				char np[_Q_PATH_MAX];
+
+				snprintf(np, sizeof(np), "%s", ce->name);
+				qm_dc_normpath(np);
+				add_set_unique(np, paths, NULL);
+			}
+		}
+	}
+	free(buf);
+	return paths;
+}
+
+struct qm_dc_lcons {
+	struct qm_dc_pkg *pkg;
+	array            *libs;
+};
+
+struct qm_dc_libc {
+	struct qm_dc_obj *lib;
+	/* char* consumer paths, later known as cpv */
+	array            *consumers;
+};
+
+static bool
+qm_dc_restrict_has(const struct qm_dc_pkg *p, const char *token)
+{
+	char *tmp = xstrdup(p->restrict_ ? : "");
+	char *tok;
+	char *sp;
+	bool  ret = false;
+
+	for (tok = strtok_r(tmp, " \t\n", &sp); tok != NULL;
+		 tok = strtok_r(NULL, " \t\n", &sp))
+		if (strcmp(tok, token) == 0)
+			ret = true;
+	free(tmp);
+	return ret;
+}
+
+/* the --depclean-lib-check block returns true when providers were
+ * re-injected into the keep graph */
+static bool
+qm_dc_libcheck_run(struct qm_dc *dc, array *cleanlist, set *clean_set)
+{
+	struct qm_dc_lmap *lm;
+	array  *cmap = array_new();
+	size_t  i;
+	struct qm_dc_pkg *pkg;
+	bool    preserve = qm_preserve_active();
+	bool    injected = false;
+	bool    had_cons = false;
+	struct qm_dc_lcons *lc;
+
+	printf(">>> Checking for lib consumers...\n");
+	lm = qm_dc_lmap_build();
+
+	array_for_each(cleanlist, i, pkg) {
+		set   *contents;
+		array *paths;
+		size_t k;
+		char  *path;
+		array *libs;
+
+		if (preserve && !qm_dc_restrict_has(pkg, "preserve-libs"))
+			continue;
+		libs     = array_new();
+		contents = qm_dc_contents_paths(pkg);
+		paths = set_keys(contents);
+		array_sort(paths, qm_strcmp_cb);
+		array_for_each(paths, k, path) {
+			struct qm_dc_obj *o = hash_get(lm->objs, qm_dc_path_key(lm, path));
+			array *cons;
+			size_t q;
+			char  *cpath;
+			struct qm_dc_libc *lb;
+			bool   dup = false;
+			size_t z;
+			struct qm_dc_libc *have;
+
+			if (o == NULL)
+				continue;
+			array_for_each(libs, z, have)
+				if (have->lib == o)
+					dup = true;
+			if (dup)
+				continue;
+			cons = qm_dc_find_consumers(lm, o);
+			lb = xzalloc(sizeof(*lb));
+			lb->lib       = o;
+			lb->consumers = array_new();
+			array_for_each(cons, q, cpath)
+				if (contains_set(cpath, contents) == NULL)
+					array_append(lb->consumers, xstrdup(cpath));
+			array_deepfree(cons, free);
+			if (array_cnt(lb->consumers) == 0) {
+				array_free(lb->consumers);
+				free(lb);
+				continue;
+			}
+			array_append(libs, lb);
+		}
+		array_free(paths);
+		free_set(contents);
+		if (array_cnt(libs) == 0) {
+			array_free(libs);
+			continue;
+		}
+		had_cons = true;
+		/* consumer files whose search path really sees this soname,
+		 * then their owning packages; an alternative surviving provider
+		 * releases the consumer */
+		{
+			size_t z;
+			struct qm_dc_libc *lb;
+			array *kept = array_new();
+
+			array_for_each(libs, z, lb) {
+				array *owners = array_new();
+				size_t q;
+				char  *cpath;
+
+				array_for_each(lb->consumers, q, cpath) {
+					struct qm_dc_obj *co = hash_get(lm->path_obj, cpath);
+					array *provs;
+					array *pown;
+					size_t w;
+					char  *pp;
+					bool   alt = false;
+
+					if (co == NULL)
+						continue;
+					provs = qm_dc_find_providers(lm, co, lb->lib->soname);
+					if (array_cnt(provs) == 0) {
+						array_deepfree(provs, free);
+						continue;
+					}
+					pown = array_new();
+					if (array_cnt(provs) > 1) {
+						array_for_each(provs, w, pp) {
+							struct qm_dc_obj *po = hash_get(lm->path_obj, pp);
+							size_t y;
+							char  *oo;
+							bool   d = false;
+
+							if (po == NULL || po->owner == NULL ||
+									hash_get(dc->by_cpv, po->owner) == NULL)
+								continue;
+							array_for_each(pown, y, oo)
+								if (strcmp(oo, po->owner) == 0)
+									d = true;
+							if (!d)
+								array_append(pown, po->owner);
+						}
+						if (array_cnt(pown) > 1)
+							array_for_each(pown, w, pp)
+								if (contains_set(pp, clean_set) == NULL)
+									alt = true;
+					}
+					array_deepfree(provs, free);
+					array_free(pown);
+					if (alt)
+						continue;
+					if (co->owner != NULL &&
+							hash_get(dc->by_cpv, co->owner) != NULL &&
+							contains_set(co->owner, clean_set) == NULL) {
+						size_t y;
+						char  *oo;
+						bool   d = false;
+
+						array_for_each(owners, y, oo)
+							if (strcmp(oo, co->owner) == 0)
+								d = true;
+						if (!d)
+							array_append(owners, xstrdup(co->owner));
+					}
+				}
+				array_deepfree(lb->consumers, free);
+				lb->consumers = owners;
+				if (array_cnt(owners) > 0)
+					array_append(kept, lb);
+				else {
+					array_free(owners);
+					free(lb);
+				}
+			}
+			array_free(libs);
+			libs = kept;
+		}
+		if (array_cnt(libs) == 0) {
+			array_free(libs);
+			continue;
+		}
+		lc       = xzalloc(sizeof(*lc));
+		lc->pkg  = pkg;
+		lc->libs = libs;
+		array_append(cmap, lc);
+	}
+
+	if (had_cons)
+		printf(">>> Assigning files to packages...\n");
+	if (array_cnt(cmap) > 0) {
+		array *lines = array_new();
+		size_t k;
+		char  *s;
+
+		qm_dc_wrap(lines, "In order to avoid breakage of link level "
+				   "dependencies, one or more packages will not be removed. "
+				   "This can be solved by rebuilding the packages that pulled "
+				   "them in.", 70);
+		array_for_each(lines, k, s)
+			fprintf(stderr, "%s * %s%s\n", RED, NORM, s);
+		array_deepfree(lines, free);
+		lines = array_new();
+		array_for_each(cmap, i, lc) {
+			array *ucons = array_new();
+			size_t z;
+			struct qm_dc_libc *lb;
+			char   l[_Q_PATH_MAX];
+			char  *c;
+
+			array_for_each(lc->libs, z, lb) {
+				size_t q;
+
+				array_for_each(lb->consumers, q, c) {
+					size_t y;
+					char  *have;
+					bool   d = false;
+
+					array_for_each(ucons, y, have)
+						if (strcmp(have, c) == 0)
+							d = true;
+					if (!d)
+						array_append(ucons, c);
+				}
+			}
+			array_sort(ucons, qm_strcmp_cb);
+			array_append(lines, xstrdup(""));
+			snprintf(l, sizeof(l), "  %s pulled in by:", lc->pkg->cpv);
+			array_append(lines, xstrdup(l));
+			array_for_each(ucons, z, c) {
+				array *sonames = array_new();
+				size_t q;
+				size_t off = 0;
+				char  *sn;
+
+				array_for_each(lc->libs, q, lb) {
+					size_t y;
+					char  *cc;
+					bool   in = false;
+					bool   d  = false;
+					size_t w;
+
+					array_for_each(lb->consumers, y, cc)
+						if (strcmp(cc, c) == 0)
+							in = true;
+					if (!in)
+						continue;
+					array_for_each(sonames, w, sn)
+						if (strcmp(sn, lb->lib->soname) == 0)
+							d = true;
+					if (!d)
+						array_append(sonames, lb->lib->soname);
+				}
+				array_sort(sonames, qm_strcmp_cb);
+				qm_dc_sapp(l, sizeof(l), &off, "    %s needs ", c);
+				array_for_each(sonames, q, sn)
+					qm_dc_sapp(l, sizeof(l), &off, "%s%s", q > 0 ? ", " : "",
+							   sn);
+				array_append(lines, xstrdup(l));
+				array_free(sonames);
+			}
+			array_free(ucons);
+		}
+		array_append(lines, xstrdup(""));
+		array_for_each(lines, k, s)
+			fprintf(stderr, "%s * %s%s\n", RED, NORM, s);
+		array_deepfree(lines, free);
+
+		printf(">>> Adding lib providers to graph...\n");
+		array_for_each(cmap, i, lc) {
+			array *ucons = array_new();
+			size_t z;
+			struct qm_dc_libc *lb;
+			char  *c;
+
+			array_for_each(lc->libs, z, lb) {
+				size_t q;
+
+				array_for_each(lb->consumers, q, c) {
+					size_t y;
+					char  *have;
+					bool   d = false;
+
+					array_for_each(ucons, y, have)
+						if (strcmp(have, c) == 0)
+							d = true;
+					if (!d)
+						array_append(ucons, c);
+				}
+			}
+			array_for_each(ucons, z, c) {
+				struct qm_dc_pkg *cpkg = hash_get(dc->by_cpv, c);
+				struct qm_dc_prio pr;
+				struct qm_dc_dep *dep;
+
+				if (cpkg == NULL)
+					continue;
+				memset(&pr, 0, sizeof(pr));
+				pr.runtime         = true;
+				pr.runtime_slot_op = true;
+				dep = xzalloc(sizeof(*dep));
+				dep->parent = cpkg;
+				dep->prio   = pr;
+				dep->cprio  = pr;
+				qm_dc_add_pkg(dc, lc->pkg, dep);
+				qm_dc_dep_free(dep);
+			}
+			array_free(ucons);
+		}
+		injected = true;
+	}
+
+	array_for_each(cmap, i, lc) {
+		size_t z;
+		struct qm_dc_libc *lb;
+
+		array_for_each(lc->libs, z, lb) {
+			array_deepfree(lb->consumers, free);
+			free(lb);
+		}
+		array_free(lc->libs);
+		free(lc);
+	}
+	array_free(cmap);
+	qm_dc_lmap_free(lm);
+	return injected;
+}
+
+/* removal order from portage's actions
+ * sigh... */
+
+struct qm_dc_onode {
+	struct qm_dc_pkg *pkg;
+	array            *parents;
+	array            *children;
+	bool              removed;
+};
+
+struct qm_dc_oedge {
+	struct qm_dc_onode *node;
+	int                 pmax;
+};
+
+static void
+qm_dc_ograph_add(struct qm_dc_onode *child, struct qm_dc_onode *parent,
+				 int prio)
+{
+	size_t              i;
+	struct qm_dc_oedge *e;
+
+	array_for_each(child->parents, i, e)
+		if (e->node == parent) {
+			if (prio > e->pmax)
+				e->pmax = prio;
+			return;
+		}
+	e       = xmalloc(sizeof(*e));
+	e->node = parent;
+	e->pmax = prio;
+	array_append(child->parents, e);
+	e       = xmalloc(sizeof(*e));
+	e->node = child;
+	e->pmax = prio;
+	array_append(parent->children, e);
+}
+
+static size_t
+qm_dc_onode_nparents(struct qm_dc_onode *n)
+{
+	size_t              i;
+	struct qm_dc_oedge *e;
+	size_t              c = 0;
+
+	array_for_each(n->parents, i, e)
+		if (!e->node->removed)
+			c++;
+	return c;
+}
+
+static bool
+qm_dc_onode_is_root(struct qm_dc_onode *n, bool ignore, int ignore_prio)
+{
+	size_t              i;
+	struct qm_dc_oedge *e;
+
+	array_for_each(n->parents, i, e) {
+		if (e->node->removed)
+			continue;
+		if (!ignore || ignore_prio < e->pmax)
+			return false;
+	}
+	return true;
+}
+
+static int
+qm_dc_onode_cmp_rev_cb(const void *l, const void *r)
+{
+	const struct qm_dc_onode *a = *(struct qm_dc_onode * const *)l;
+	const struct qm_dc_onode *b = *(struct qm_dc_onode * const *)r;
+
+	return -qm_dc_pkgcmp(a->pkg, b->pkg);
+}
+
+/* returns the clean list in unmerge order
+ * set *ordered false when no package in the list depends on another */
+static array *
+qm_dc_removal_order(struct qm_dc *dc, array *cleanlist, set *clean_set,
+					bool *ordered)
+{
+	array  *nodes = array_new();
+	hash_t *bycpv = hash_new();
+	size_t  i;
+	struct qm_dc_pkg *pkg;
+	array  *out = array_new();
+	struct qm_dc_onode *n;
+	static const int order[QM_DC_NDEPS] = {
+		QM_DC_BDEPEND, QM_DC_DEPEND, QM_DC_IDEPEND, QM_DC_PDEPEND,
+		QM_DC_RDEPEND
+	};
+
+	printf(">>> Calculating removal order...\n");
+
+	array_for_each(cleanlist, i, pkg) {
+		n = xzalloc(sizeof(*n));
+		n->pkg      = pkg;
+		n->parents  = array_new();
+		n->children = array_new();
+		array_append(nodes, n);
+		hash_add(bycpv, pkg->cpv, n, NULL);
+	}
+
+	array_for_each(nodes, i, n) {
+		int oi;
+
+		for (oi = 0; oi < QM_DC_NDEPS; oi++) {
+			int    di = order[oi];
+			struct qm_dc_prio prio;
+			array *sel;
+			size_t k;
+			struct qm_dcx *x;
+
+			memset(&prio, 0, sizeof(prio));
+			switch (di) {
+			case QM_DC_IDEPEND: prio.installtime = true; prio.runtime = true; break;
+			case QM_DC_RDEPEND: prio.runtime = true; break;
+			case QM_DC_PDEPEND: prio.runtime_post = true; break;
+			default:            prio.buildtime = true; break;
+			}
+			if (n->pkg->deps[di] == NULL || n->pkg->deps[di][0] == '\0')
+				continue;
+			sel = array_new();
+			if (!qm_dc_depcheck_str(dc, n->pkg->deps[di], n->pkg->use, n->pkg,
+									n->pkg, sel)) {
+				array_deepfree(sel, qm_dcx_free);
+				continue;
+			}
+			array_for_each(sel, k, x) {
+				atom_ctx *atom;
+				array    *m;
+				size_t    q;
+				struct qm_dc_pkg *child;
+
+				if (x->owner != n->pkg)
+					continue;
+				atom = x->orig != NULL ? x->orig : x->atom;
+				if (atom->blocker != ATOM_BL_NONE)
+					continue;
+				m = qm_dc_match(dc, atom, x->puse, true);
+				array_for_each(m, q, child) {
+					struct qm_dc_onode *cn;
+					struct qm_dc_prio   mp = prio;
+
+					if (contains_set(child->cpv, clean_set) == NULL)
+						continue;
+					cn = hash_get(bycpv, child->cpv);
+					if (cn == NULL)
+						continue;
+					if (atom->slotdep == ATOM_SD_ANY_REBUILD &&
+							atom->SLOT != NULL && atom->SUBSLOT != atom->SLOT) {
+						if (mp.buildtime)
+							mp.buildtime_slot_op = true;
+						if (mp.runtime)
+							mp.runtime_slot_op = true;
+					}
+					if (cn != n)
+						qm_dc_ograph_add(cn, n, qm_dc_prio_int(&mp));
+				}
+				array_free(m);
+			}
+			array_deepfree(sel, qm_dcx_free);
+		}
+	}
+
+	{
+		size_t nroot = 0;
+
+		array_for_each(nodes, i, n)
+			if (array_cnt(n->parents) == 0)
+				nroot++;
+		if (nroot == array_cnt(nodes)) {
+			*ordered = false;
+			array_for_each(nodes, i, n)
+				array_append(out, n->pkg);
+		} else {
+			array *left = array_new();
+			static const int ignore_range[] = { -4, -3, -2, -1, 0 };
+
+			*ordered = true;
+			array_for_each(nodes, i, n)
+				array_append(left, n);
+			/* lowest reference count first (stable) */
+			{
+				array *tmp = array_new();
+
+				while (array_cnt(left) > 0) {
+					size_t best = 0;
+					size_t bc   = qm_dc_onode_nparents(array_get(left, 0));
+					size_t k;
+
+					array_for_each(left, k, n) {
+						size_t c = qm_dc_onode_nparents(n);
+
+						if (c < bc) {
+							bc   = c;
+							best = k;
+						}
+					}
+					array_append(tmp, array_remove(left, best));
+				}
+				array_move(left, tmp);
+				array_free(tmp);
+			}
+			while (array_cnt(left) > 0) {
+				array *roots = array_new();
+				size_t k;
+				int    ig = 0;
+				bool   ignored = false;
+
+				array_for_each(left, k, n)
+					if (qm_dc_onode_is_root(n, false, 0))
+						array_append(roots, n);
+				for (ig = 0; array_cnt(roots) == 0 && ig < 5; ig++) {
+					array_for_each(left, k, n)
+						if (qm_dc_onode_is_root(n, true, ignore_range[ig]))
+							array_append(roots, n);
+					if (array_cnt(roots) > 0)
+						ignored = true;
+				}
+				if (array_cnt(roots) == 0) {
+					warn("depclean: no root nodes in the removal graph");
+					array_free(roots);
+					break;
+				}
+				array_sort(roots, qm_dc_onode_cmp_rev_cb);
+				if (ignored)
+					while (array_cnt(roots) > 1)
+						array_remove(roots, array_cnt(roots) - 1);
+				array_for_each(roots, k, n) {
+					size_t q;
+					struct qm_dc_onode *ln;
+
+					n->removed = true;
+					array_append(out, n->pkg);
+					array_for_each(left, q, ln)
+						if (ln == n) {
+							array_remove(left, q);
+							break;
+						}
+				}
+				array_free(roots);
+			}
+			array_free(left);
+		}
+	}
+
+	array_for_each(nodes, i, n) {
+		array_deepfree(n->parents, free);
+		array_deepfree(n->children, free);
+		free(n);
+	}
+	array_free(nodes);
+	hash_free(bycpv);
+	return out;
+}
+
+/* universe, sets and the calculation */
+
+static void qm_dc_pkg_free(void *ptr);
+
+static int
+qm_dc_load_cb(tree_pkg_ctx *pkg, void *priv)
+{
+	array            *out = priv;
+	atom_ctx         *a   = tree_pkg_atom(pkg, true);
+	struct qm_dc_pkg *p;
+	char              buf[_Q_PATH_MAX];
+	char             *v;
+	int               di;
+
+	if (a == NULL || a->CATEGORY == NULL || a->PN == NULL || a->PF == NULL)
+		return 0;
+	p = xzalloc(sizeof(*p));
+	xasprintf(&p->cpv, "%s/%s", a->CATEGORY, a->PF);
+	xasprintf(&p->cp, "%s/%s", a->CATEGORY, a->PN);
+	p->cat     = xstrdup(a->CATEGORY);
+	p->pn      = xstrdup(a->PN);
+	p->slot    = xstrdup(a->SLOT != NULL && a->SLOT[0] != '\0' ? a->SLOT : "0");
+	p->subslot = xstrdup(a->SUBSLOT != NULL && a->SUBSLOT[0] != '\0'
+						 ? a->SUBSLOT : p->slot);
+	v = tree_pkg_meta(pkg, Q_repository);
+	p->repo = xstrdup(v ? : "");
+	snprintf(buf, sizeof(buf), "%s:%s/%s", p->cpv, p->slot, p->subslot);
+	p->atom = atom_explode(buf);
+	if (p->atom == NULL) {
+		snprintf(buf, sizeof(buf), "%s", p->cpv);
+		p->atom = atom_explode(buf);
+	}
+	if (p->atom == NULL) {
+		warn("skipping installed package %s: unparseable name", p->cpv);
+		qm_dc_pkg_free(p);
+		return 0;
+	}
+	p->use  = usedep_flags_to_set(tree_pkg_meta(pkg, Q_USE));
+	p->iuse = usedep_flags_to_set(tree_pkg_meta(pkg, Q_IUSE));
+	for (di = 0; di < QM_DC_NDEPS; di++) {
+		v = tree_pkg_meta(pkg, qm_dc_depkeys[di]);
+		p->deps[di] = xstrdup(v ? : "");
+	}
+	v = tree_pkg_meta(pkg, Q_RESTRICT);
+	p->restrict_ = xstrdup(v ? : "");
+	v = tree_pkg_meta(pkg, Q_BUILD_TIME);
+	p->build_time = v != NULL ? strtoull(v, NULL, 10) : 0;
+	p->pmask  = binpkg_masked(a);
+	p->kwmask = !binpkg_keywords_ok(pkg, a, true);
+	p->parents = array_new();
+	array_append(out, p);
+	return 0;
+}
+
+static void
+qm_dc_pkg_free(void *ptr)
+{
+	struct qm_dc_pkg *p = ptr;
+	int               di;
+
+	if (p == NULL)
+		return;
+	free(p->cpv);
+	free(p->cp);
+	free(p->cat);
+	free(p->pn);
+	free(p->slot);
+	free(p->subslot);
+	free(p->repo);
+	if (p->atom != NULL)
+		atom_implode(p->atom);
+	free_set(p->use);
+	free_set(p->iuse);
+	for (di = 0; di < QM_DC_NDEPS; di++)
+		free(p->deps[di]);
+	free(p->restrict_);
+	array_deepfree(p->parents, qm_dc_parent_free);
+	free(p);
+}
+
+static bool
+qm_dc_load(struct qm_dc *dc)
+{
+	tree_ctx *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+	size_t    i;
+	struct qm_dc_pkg *p;
+
+	memset(dc, 0, sizeof(*dc));
+	if (vdb == NULL)
+		return false;
+	dc->pkgs       = array_new();
+	dc->by_cpv     = hash_new();
+	dc->by_cp      = hash_new();
+	dc->setidx     = hash_new();
+	dc->setargs    = array_new();
+	dc->stack      = array_new();
+	dc->disj       = array_new();
+	dc->unsat      = array_new();
+	dc->init_unsat = array_new();
+	dc->masked_installed = create_set();
+	dc->virt_stack = create_set();
+	tree_foreach_pkg_fast(vdb, qm_dc_load_cb, dc->pkgs, NULL);
+	tree_close(vdb);
+	array_sort(dc->pkgs, qm_dc_cpvcmp_cb);
+	array_for_each(dc->pkgs, i, p) {
+		array *g;
+
+		if (p->atom == NULL)
+			continue;
+		hash_add(dc->by_cpv, p->cpv, p, NULL);
+		g = hash_get(dc->by_cp, p->cp);
+		if (g == NULL) {
+			g = array_new();
+			hash_add(dc->by_cp, p->cp, g, NULL);
+		}
+		array_append(g, p);
+	}
+	{
+		array *ks = hash_keys(dc->by_cp);
+		char  *k;
+
+		array_for_each(ks, i, k)
+			array_sort(hash_get(dc->by_cp, k), qm_dc_pkgcmp_cb);
+		array_free(ks);
+	}
+	return true;
+}
+
+static void
+qm_dc_setarg_free(void *ptr)
+{
+	struct qm_dc_setarg *sa = ptr;
+
+	if (sa == NULL)
+		return;
+	free(sa->name);
+	array_deepfree(sa->atoms, atom_implode_cb);
+	array_deepfree(sa->nested, free);
+	free(sa);
+}
+
+static void
+qm_dc_free(struct qm_dc *dc)
+{
+	array *ks;
+	size_t i;
+	char  *k;
+
+	ks = hash_keys(dc->by_cp);
+	array_for_each(ks, i, k)
+		array_free(hash_get(dc->by_cp, k));
+	array_free(ks);
+	hash_free(dc->by_cp);
+	hash_free(dc->by_cpv);
+	ks = hash_keys(dc->setidx);
+	array_for_each(ks, i, k)
+		array_deepfree(hash_get(dc->setidx, k), qm_dc_parent_free);
+	array_free(ks);
+	hash_free(dc->setidx);
+	array_deepfree(dc->setargs, qm_dc_setarg_free);
+	array_free(dc->stack);
+	array_deepfree(dc->disj, qm_dc_disj_free);
+	array_deepfree(dc->unsat, qm_dc_dep_free);
+	array_deepfree(dc->init_unsat, qm_dc_dep_free);
+	free_set(dc->masked_installed);
+	free_set(dc->virt_stack);
+	array_deepfree(dc->pkgs, qm_dc_pkg_free);
+}
+
+static struct qm_dc_setarg *
+qm_dc_setarg_new(struct qm_dc *dc, const char *name)
+{
+	struct qm_dc_setarg *sa = xzalloc(sizeof(*sa));
+
+	sa->name   = xstrdup(name);
+	sa->atoms  = array_new();
+	sa->nested = array_new();
+	array_append(dc->setargs, sa);
+	return sa;
+}
+
+static void
+qm_dc_setarg_add(struct qm_dc *dc, struct qm_dc_setarg *sa, const char *atomstr)
+{
+	atom_ctx *a = atom_explode(atomstr);
+	array    *idx;
+	struct qm_dc_parent *pa;
+	char      cp[512];
+
+	if (a == NULL || a->CATEGORY == NULL || a->PN == NULL) {
+		if (a != NULL)
+			atom_implode(a);
+		return;
+	}
+	array_append(sa->atoms, a);
+	snprintf(cp, sizeof(cp), "%s/%s", a->CATEGORY, a->PN);
+	idx = hash_get(dc->setidx, cp);
+	if (idx == NULL) {
+		idx = array_new();
+		hash_add(dc->setidx, cp, idx, NULL);
+	}
+	pa = xmalloc(sizeof(*pa));
+	xasprintf(&pa->name, "@%s", sa->name);
+	pa->atom = xstrdup(atom_to_string(a));
+	array_append(idx, pa);
+}
+
+static void
+qm_dc_setarg_done(struct qm_dc_setarg *sa)
+{
+	array_sort(sa->atoms, qm_dc_atomcmp_cb);
+	array_sort(sa->nested, qm_strcmp_cb);
+}
+
+static bool
+qm_dc_userset_exists(const char *name)
+{
+	char        path[_Q_PATH_MAX];
+	struct stat st;
+
+	if (qm_setname_builtin(name) ||
+			strcmp(name, "preserved-rebuild") == 0)
+		return true;
+	snprintf(path, sizeof(path), "%s/etc/portage/sets/%s", configroot, name);
+	return stat(path, &st) == 0;
+}
+
+/* argument atoms -> wildcards on the cp, bare names qualified
+ * from the vartree, anything else an ordinary atom */
+struct qm_dc_arg {
+	char     *raw;
+	atom_ctx *atom;
+	char     *catpat;
+	char     *pnpat;
+	char     *slot;
+};
+
+static bool
+qm_dc_glob(const char *pat, const char *s)
+{
+	return fnmatch(pat, s, 0) == 0;
+}
+
+static bool
+qm_dc_arg_matches(const struct qm_dc_arg *ar, const struct qm_dc_pkg *p)
+{
+	if (ar->catpat != NULL) {
+		if (!qm_dc_glob(ar->catpat, p->cat) || !qm_dc_glob(ar->pnpat, p->pn))
+			return false;
+		if (ar->slot != NULL && strcmp(ar->slot, p->slot) != 0)
+			return false;
+		return true;
+	}
+	if (ar->atom == NULL)
+		return false;
+	return qm_dc_atom_matches(ar->atom, p, NULL, true);
+}
+
+static void
+qm_dc_arg_free(void *ptr)
+{
+	struct qm_dc_arg *ar = ptr;
+
+	if (ar == NULL)
+		return;
+	free(ar->raw);
+	if (ar->atom != NULL)
+		atom_implode(ar->atom);
+	free(ar->catpat);
+	free(ar->pnpat);
+	free(ar->slot);
+	free(ar);
+}
+
+static struct qm_dc_arg *
+qm_dc_arg_parse(struct qm_dc *dc, const char *raw, int *rc)
+{
+	struct qm_dc_arg *ar = xzalloc(sizeof(*ar));
+	char              buf[_Q_PATH_MAX];
+	char             *sl;
+
+	ar->raw = xstrdup(raw);
+	snprintf(buf, sizeof(buf), "%s", raw);
+	sl = strstr(buf, "::");
+	if (sl != NULL)
+		*sl = '\0';
+	if (strchr(buf, '*') != NULL &&
+			!(buf[0] == '=' && strchr(buf, '*') == buf + strlen(buf) - 1)) {
+		char *slot = strchr(buf, ':');
+		char *slash;
+
+		if (slot != NULL) {
+			*slot++ = '\0';
+			ar->slot = xstrdup(slot);
+		}
+		slash = strchr(buf, '/');
+		if (slash != NULL) {
+			*slash = '\0';
+			ar->catpat = xstrdup(buf);
+			ar->pnpat  = xstrdup(slash + 1);
+		} else {
+			ar->catpat = xstrdup("*");
+			ar->pnpat  = xstrdup(buf);
+		}
+		return ar;
+	}
+	ar->atom = atom_explode(raw);
+	if (ar->atom == NULL) {
+		fprintf(stderr, "!!! '%s' is not a valid package atom.\n", raw);
+		fprintf(stderr, "!!! Please check ebuild(5) for full details.\n");
+		*rc = 1;
+		return ar;
+	}
+	if (ar->atom->CATEGORY == NULL) {
+		array  *ks   = hash_keys(dc->by_cp);
+		size_t  i;
+		char   *k;
+		array  *cats = array_new();
+
+		array_for_each(ks, i, k) {
+			const char *pn = strchr(k, '/');
+
+			if (pn != NULL && strcmp(pn + 1, ar->atom->PN) == 0)
+				array_append(cats, k);
+		}
+		array_free(ks);
+		if (array_cnt(cats) > 1) {
+			char *c;
+
+			printf("\n\n!!! The short ebuild name \"%s\" is ambiguous.  "
+				   "Please specify\n", raw);
+			printf("!!! one of the following fully-qualified ebuild names "
+				   "instead:\n\n");
+			array_sort(cats, qm_strcmp_cb);
+			array_for_each(cats, i, c)
+				printf("    %s%s%s\n", GREEN, c, NORM);
+			printf("\n");
+			*rc = 1;
+		} else if (array_cnt(cats) == 1) {
+			const char *cat = array_get(cats, 0);
+			char        nb[_Q_PATH_MAX];
+			const char *pos = raw;
+			size_t      pfx = 0;
+
+			while (*pos != '\0' && strchr("<>=~!", *pos) != NULL)
+				pos++;
+			pfx = (size_t)(pos - raw);
+			snprintf(nb, sizeof(nb), "%.*s%.*s/%s",
+					 (int)MIN(pfx, sizeof(nb) / 4), raw,
+					 (int)MIN((size_t)(strchr(cat, '/') - cat), sizeof(nb) / 4),
+					 cat, pos);
+			atom_implode(ar->atom);
+			ar->atom = atom_explode(nb);
+		}
+		array_free(cats);
+	}
+	return ar;
+}
+
+struct qm_dc_result {
+	int    rc;
+	array *cleanlist;
+	bool   ordered;
+	size_t required;
+};
+
+
+/* preparing for pruning support */
+static void
+qm_dc_prune_protect(struct qm_dc *dc, struct qm_dc_setarg *pr, array *args)
+{
+	array  *cps = hash_keys(dc->by_cp);
+	size_t  i;
+	char   *cp;
+
+	array_sort(cps, qm_strcmp_cb);
+	if (!dc->args_given) {
+		array_for_each(cps, i, cp) {
+			array *l = hash_get(dc->by_cp, cp);
+
+			if (array_cnt(l) > 1) {
+				int prc = 0;
+
+				array_append(args, qm_dc_arg_parse(dc, cp, &prc));
+			}
+		}
+		dc->args_given = array_cnt(args) > 0;
+	}
+	array_for_each(cps, i, cp) {
+		array            *l  = hash_get(dc->by_cp, cp);
+		struct qm_dc_pkg *hi = NULL;
+		struct qm_dc_pkg *p;
+		size_t            k;
+
+		qm_dc_setarg_add(dc, pr, cp);
+		array_for_each(l, k, p)
+			if (hi == NULL || qm_dc_vercmp(p, hi) > 0)
+				hi = p;
+		array_for_each(l, k, p) {
+			struct qm_dc_arg *ar;
+			size_t            a;
+			bool              hit = false;
+			char              eb[_Q_PATH_MAX];
+
+			if (p != hi)
+				array_for_each(args, a, ar)
+					if (qm_dc_arg_matches(ar, p))
+						hit = true;
+			if (p == hi || !hit) {
+				snprintf(eb, sizeof(eb), "=%s", p->cpv);
+				qm_dc_setarg_add(dc, pr, eb);
+			}
+		}
+	}
+	array_free(cps);
+}
+
+static void
+qm_dc_cleanlist(struct qm_dc *dc, array *args, array *cleanlist,
+				set *clean_set)
+{
+	size_t            i;
+	struct qm_dc_pkg *pkg;
+
+	array_for_each(dc->pkgs, i, pkg) {
+		bool hit = !dc->prune;
+
+		if (dc->args_given) {
+			size_t            k;
+			struct qm_dc_arg *ar;
+
+			hit = false;
+			array_for_each(args, k, ar)
+				if (qm_dc_arg_matches(ar, pkg))
+					hit = true;
+		}
+		if (!hit)
+			continue;
+		if (!pkg->in_graph) {
+			array_append(cleanlist, pkg);
+			add_set(pkg->cpv, clean_set);
+		} else if (verbose) {
+			qm_dc_show_parents(pkg);
+		}
+	}
+	if (array_cnt(cleanlist) == 0) {
+		printf(">>> No packages selected for removal by %s\n",
+			   dc->prune ? "prune" : "depclean");
+		if (!verbose)
+			printf(">>> To see reverse dependencies, use %s--verbose%s\n",
+				   GREEN, NORM);
+		if (dc->prune)
+			printf(">>> To ignore dependencies, use %s--nodeps%s\n",
+				   GREEN, NORM);
+	}
+}
+
+/* a built-in set named under Protocol Omega no longer protects its
+ * members;; @world covers all three */
+static bool
+qm_omega_drops(const char *name)
+{
+	if (qm_omega_sets == NULL)
+		return false;
+	return contains_set(name, qm_omega_sets) != NULL ||
+		   contains_set("world", qm_omega_sets) != NULL;
+}
+
+/* the packages owning the running qmerge, the installed q and the
+ * shell the pkg_* phases run with, plus whatever those binaries link
+ * against per the ELF linkage map;- pinned in every depclean run so a
+ * strip never takes the manager or its shell, their dependency closure
+ * follows through the keep graph */
+static bool
+qm_dc_survivors(struct qm_dc *dc, struct qm_dc_setarg *sv, char *desc,
+				size_t dlen)
+{
+	array  *paths  = array_new();
+	set    *owners = create_set();
+	size_t  i;
+	size_t  k;
+	char   *p;
+	struct qm_dc_pkg *pkg;
+	char    buf[_Q_PATH_MAX];
+	char    tgt[_Q_PATH_MAX];
+	ssize_t n;
+	size_t  off = 0;
+
+	if (strcmp(portroot, "/") == 0 &&
+			(n = readlink("/proc/self/exe", buf, sizeof(buf) - 1)) > 0) {
+		buf[n] = '\0';
+		array_append(paths, xstrdup(buf));
+	}
+	array_append(paths, xstrdup("/usr/bin/q"));
+	array_append(paths, xstrdup("/bin/sh"));
+	snprintf(buf, sizeof(buf), "%sbin/sh", portroot);
+	if ((n = readlink(buf, tgt, sizeof(tgt) - 1)) > 0) {
+		tgt[n] = '\0';
+		if (tgt[0] == '/')
+			array_append(paths, xstrdup(tgt));
+		else {
+			size_t boff = 0;
+
+			qm_dc_sapp(buf, sizeof(buf), &boff, "/bin/%s", tgt);
+			array_append(paths, xstrdup(buf));
+		}
+	}
+	/* merged-usr aliases */
+	for (i = array_cnt(paths); i > 0; i--) {
+		p = array_get(paths, i - 1);
+		if (strncmp(p, "/bin/", 5) == 0) {
+			snprintf(buf, sizeof(buf), "/usr%s", p);
+			array_append(paths, xstrdup(buf));
+		} else if (strncmp(p, "/usr/bin/", 9) == 0) {
+			array_append(paths, xstrdup(p + 4));
+		}
+	}
+
+	array_for_each(dc->pkgs, i, pkg) {
+		set *c = qm_dc_contents_paths(pkg);
+
+		array_for_each(paths, k, p)
+			if (contains_set(p, c) != NULL) {
+				add_set_unique(pkg->cpv, owners, NULL);
+				break;
+			}
+		free_set(c);
+	}
+
+	/* the dynamic linking of those binaries, transitively */
+	if (cnt_set(owners) > 0) {
+		struct qm_dc_lmap *lm   = qm_dc_lmap_build();
+		array             *work = array_new();
+		set               *seen = create_set();
+
+		array_for_each(paths, k, p) {
+			struct qm_dc_obj *o = hash_get(lm->path_obj, p);
+
+			if (o != NULL && contains_set(o->key, seen) == NULL) {
+				add_set(o->key, seen);
+				array_append(work, o);
+			}
+		}
+		while (array_cnt(work) > 0) {
+			struct qm_dc_obj *o = array_remove(work, array_cnt(work) - 1);
+			size_t            q;
+			char             *nd;
+
+			array_for_each(o->needed, q, nd) {
+				array *provs = qm_dc_find_providers(lm, o, nd);
+				size_t w;
+				char  *pp;
+
+				array_for_each(provs, w, pp) {
+					struct qm_dc_obj *po = hash_get(lm->path_obj, pp);
+
+					if (po == NULL)
+						continue;
+					if (po->owner != NULL &&
+							hash_get(dc->by_cpv, po->owner) != NULL)
+						add_set_unique(po->owner, owners, NULL);
+					if (contains_set(po->key, seen) == NULL) {
+						add_set(po->key, seen);
+						array_append(work, po);
+					}
+				}
+				array_deepfree(provs, free);
+			}
+		}
+		array_free(work);
+		free_set(seen);
+		qm_dc_lmap_free(lm);
+	}
+
+	desc[0] = '\0';
+	if (cnt_set(owners) == 0) {
+		array_for_each(paths, k, p)
+			qm_dc_sapp(desc, dlen, &off, "%s%s", k > 0 ? ", " : "", p);
+		array_deepfree(paths, free);
+		free_set(owners);
+		return false;
+	}
+	{
+		array *ok = set_keys(owners);
+		char  *o;
+
+		array_sort(ok, qm_strcmp_cb);
+		array_for_each(ok, k, o) {
+			char eb[_Q_PATH_MAX + 8];
+
+			snprintf(eb, sizeof(eb), "=%s", o);
+			qm_dc_setarg_add(dc, sv, eb);
+			qm_dc_sapp(desc, dlen, &off, "%s%s", k > 0 ? ", " : "", o);
+		}
+		array_free(ok);
+	}
+	qm_dc_setarg_done(sv);
+	array_deepfree(paths, free);
+	free_set(owners);
+	return true;
+}
+
+static void
+qm_dc_add_profile_sets(struct qm_dc *dc, bool with_selected, bool *set_error,
+					   size_t counts[3])
+{
+	set   *sys  = q_profile_follow("packages", qmerge_add_set_system, NULL);
+	set   *prof = qm_profile_set_enabled()
+			? q_profile_follow("packages", qmerge_add_set_profile, NULL) : NULL;
+	set   *world = qm_world_load("world");
+	set   *wsets = qm_world_load("world_sets");
+	array *ks;
+	size_t i;
+	char  *k;
+	struct qm_dc_setarg *sa;
+	array *nested = array_new();
+	set   *selall = create_set();
+
+	/* processing order mirrors _expand_set_args: system, selected, the
+	 * world_sets sets last first, profile, __excluded__, protected */
+	counts[0] = counts[1] = counts[2] = 0;
+
+	sa = qm_dc_setarg_new(dc, "system");
+	ks = sys != NULL ? set_keys(sys) : array_new();
+	array_for_each(ks, i, k)
+		if (!qm_omega_drops("system"))
+			qm_dc_setarg_add(dc, sa, k);
+	counts[1] = array_cnt(ks);
+	array_free(ks);
+	qm_dc_setarg_done(sa);
+
+	sa = qm_dc_setarg_new(dc, "selected");
+	ks = set_keys(world);
+	array_for_each(ks, i, k) {
+		if (k[0] == '@')
+			continue;
+		if (with_selected && !qm_omega_drops("selected"))
+			qm_dc_setarg_add(dc, sa, k);
+		add_set_unique(k, selall, NULL);
+	}
+	array_free(ks);
+	ks = set_keys(wsets);
+	array_for_each(ks, i, k) {
+		const char *n = k[0] == '@' ? k + 1 : k;
+
+		if (n[0] == '\0')
+			continue;
+		if (!qm_dc_userset_exists(n)) {
+			fprintf(stderr, "!!! The set 'selected' contains a non-existent "
+					"set named '%s'.\n", n);
+			fprintf(stderr, "!!! The set 'world' contains a non-existent "
+					"set named '%s'.\n", n);
+			*set_error = true;
+			continue;
+		}
+		array_append(sa->nested, xstrdup(n));
+	}
+	array_free(ks);
+	qm_dc_setarg_done(sa);
+	array_for_each_rev(sa->nested, i, k)
+		array_append(nested, k);
+	array_for_each(nested, i, k) {
+		set   *exp = qmerge_expand_setname(k, NULL);
+		array *eks = exp != NULL ? set_keys(exp) : array_new();
+		size_t q;
+		char  *ek;
+		struct qm_dc_setarg *ns = qm_dc_setarg_new(dc, k);
+
+		array_for_each(eks, q, ek) {
+			if (!qm_omega_drops("selected"))
+				qm_dc_setarg_add(dc, ns, ek);
+			add_set_unique(ek, selall, NULL);
+		}
+		array_free(eks);
+		if (exp != NULL)
+			free_set(exp);
+		qm_dc_setarg_done(ns);
+	}
+	array_free(nested);
+	counts[2] = cnt_set(selall);
+	free_set(selall);
+
+	sa = qm_dc_setarg_new(dc, "profile");
+	ks = prof != NULL ? set_keys(prof) : array_new();
+	array_for_each(ks, i, k)
+		if (!qm_omega_drops("profile"))
+			qm_dc_setarg_add(dc, sa, k);
+	counts[0] = array_cnt(ks);
+	array_free(ks);
+	qm_dc_setarg_done(sa);
+
+	if (sys != NULL)
+		free_set(sys);
+	if (prof != NULL)
+		free_set(prof);
+	free_set(world);
+	free_set(wsets);
+}
+
+static void
+qm_dc_banner(void)
+{
+	bool lib_n = qm_dc_libcheck == 0;
+
+	printf("\n");
+	if (!qm_preserve_active() && lib_n) {
+		printf("%s * %sDepclean may break link level dependencies. Thus, it is\n", YELLOW, NORM);
+		printf("%s * %srecommended to use a tool such as %s`revdep-rebuild`%s (from\n", YELLOW, NORM, GREEN, NORM);
+		printf("%s * %sapp-portage/gentoolkit) in order to detect such breakage.\n", YELLOW, NORM);
+		printf("%s * %s\n", YELLOW, NORM);
+	}
+	printf("%s * %sAlways study the list of packages to be cleaned for any obvious\n", YELLOW, NORM);
+	printf("%s * %smistakes. Packages that are part of the world set will always\n", YELLOW, NORM);
+	printf("%s * %sbe kept. They can be manually added to this set with\n", YELLOW, NORM);
+	printf("%s * %s%s`qmerge --noreplace <atom>`%s. Packages that are listed in\n", YELLOW, NORM, GREEN, NORM);
+	printf("%s * %spackage.provided (see portage(5)) will be removed by\n", YELLOW, NORM);
+	printf("%s * %sdepclean, even if they are part of the world set.\n", YELLOW, NORM);
+	printf("%s * %s\n", YELLOW, NORM);
+	printf("%s * %sAs a safety measure, depclean will not remove any packages\n", YELLOW, NORM);
+	printf("%s * %sunless *all* required dependencies have been resolved.  As a\n", YELLOW, NORM);
+	printf("%s * %sconsequence of this, it often becomes necessary to run \n", YELLOW, NORM);
+	printf("%s * %s%s`emerge --update --newuse --deep @world`%s prior to depclean.\n", YELLOW, NORM, GREEN, NORM);
+}
+
+/* _calc_depclean */
+static void
+qm_dc_calc(struct qm_dc *dc, array *args, struct qm_dc_result *res)
+{
+	bool   set_error = false;
+	size_t counts[3];
+	size_t i;
+	struct qm_dc_pkg *pkg;
+	array *cleanlist;
+	set   *clean_set;
+	bool   deselect = qm_deselect != 0;
+
+	res->rc        = 1;
+	res->cleanlist = NULL;
+	res->ordered   = false;
+	res->required  = 0;
+	dc->args_given = array_cnt(args) > 0;
+	dc->bdeps      = qm_dc_bdeps != 0;
+	dc->prune      = qm_prune != 0;
+
+	qm_dc_add_profile_sets(dc, dc->prune ? !deselect
+						   : !(dc->args_given && deselect), &set_error,
+						   counts);
+	if (counts[1] == 0 && counts[0] == 0)
+		fprintf(stderr, "!!! You have no system list.\n");
+	if (counts[2] == 0)
+		fprintf(stderr, "!!! You have no world file.\n");
+	if (counts[0] + counts[1] + counts[2] == 0 && !set_error) {
+		fprintf(stderr, "!!! Your @world set is empty.\n");
+		set_error = true;
+	}
+	if (set_error) {
+		fprintf(stderr, "!!! Aborting due to set configuration errors "
+				"displayed above.\n");
+		return;
+	}
+	if (!dc->prune)
+		qm_elog(" >>> depclean");
+
+	if (qm_exclude != NULL && array_cnt(qm_exclude) > 0) {
+		struct qm_dc_setarg *ex = qm_dc_setarg_new(dc, "__excluded__");
+
+		array_for_each(dc->pkgs, i, pkg)
+			if (qm_atom_excluded(pkg->atom)) {
+				char eb[_Q_PATH_MAX];
+
+				snprintf(eb, sizeof(eb), "=%s", pkg->cpv);
+				qm_dc_setarg_add(dc, ex, eb);
+			}
+		qm_dc_setarg_done(ex);
+	}
+	{
+		struct qm_dc_setarg *pr =
+				qm_dc_setarg_new(dc, "____depclean_protected_set____");
+
+		if (dc->prune)
+			qm_dc_prune_protect(dc, pr, args);
+		else if (dc->args_given)
+			array_for_each(dc->pkgs, i, pkg) {
+				size_t k;
+				struct qm_dc_arg *ar;
+				bool   hit = false;
+
+				array_for_each(args, k, ar)
+					if (qm_dc_arg_matches(ar, pkg))
+						hit = true;
+				if (!hit) {
+					char eb[_Q_PATH_MAX];
+
+					snprintf(eb, sizeof(eb), "=%s", pkg->cpv);
+					qm_dc_setarg_add(dc, pr, eb);
+				}
+			}
+		qm_dc_setarg_done(pr);
+	}
+	{
+		struct qm_dc_setarg *sv = qm_dc_setarg_new(dc, "____qmerge_imasurvivor____");
+		char   desc[_Q_PATH_MAX * 2];
+		bool   omega = qm_omega_sets != NULL && cnt_set(qm_omega_sets) > 0;
+		bool   have  = qm_dc_survivors(dc, sv, desc, sizeof(desc));
+
+		if (omega) {
+			array *names = set_keys(qm_omega_sets);
+			char   nb[512];
+			size_t off = 0;
+			char  *nm;
+
+			array_sort(names, qm_strcmp_cb);
+			array_for_each(names, i, nm)
+				qm_dc_sapp(nb, sizeof(nb), &off, "%s@%s", i > 0 ? " " : "", nm);
+			array_free(names);
+			if (!have) {
+				fprintf(stderr, "qmerge: Protocol Omega refused: no installed "
+						"package owns the package manager or its shell (%s)\n",
+						desc);
+				return;
+			}
+			fprintf(stderr, "%s!!! Protocol Omega: depcleaning %s; surviving "
+					"%s and their dependencies%s\n", RED, nb, desc, NORM);
+		}
+	}
+
+	if (!quiet)
+		printf("\nCalculating dependencies ...");
+	qm_dc_complete_graph(dc);
+	if (!quiet)
+		printf(" done!\n");
+	if (qm_dc_unresolved(dc))
+		return;
+
+	cleanlist = array_new();
+	clean_set = create_set();
+	qm_dc_cleanlist(dc, args, cleanlist, clean_set);
+
+	if (array_cnt(cleanlist) > 0 && qm_dc_libcheck != 0) {
+		bool preserve = qm_preserve_active();
+		bool restrict_ = false;
+
+		if (preserve)
+			array_for_each(cleanlist, i, pkg)
+				if (qm_dc_restrict_has(pkg, "preserve-libs"))
+					restrict_ = true;
+		if (restrict_ || !preserve) {
+			if (qm_dc_libcheck_run(dc, cleanlist, clean_set)) {
+				if (!quiet)
+					printf("\nCalculating dependencies ...");
+				qm_dc_complete_graph(dc);
+				if (!quiet)
+					printf(" done!\n");
+				if (qm_dc_unresolved(dc)) {
+					array_free(cleanlist);
+					free_set(clean_set);
+					return;
+				}
+				array_free(cleanlist);
+				free_set(clean_set);
+				cleanlist = array_new();
+				clean_set = create_set();
+				qm_dc_cleanlist(dc, args, cleanlist, clean_set);
+				if (array_cnt(cleanlist) == 0) {
+					res->rc        = 0;
+					res->cleanlist = cleanlist;
+					res->required  = dc->ngraph;
+					free_set(clean_set);
+					return;
+				}
+			}
+		}
+	}
+
+	res->required = dc->ngraph;
+	if (array_cnt(cleanlist) > 0) {
+		array *ordered = qm_dc_removal_order(dc, cleanlist, clean_set,
+											 &res->ordered);
+
+		array_free(cleanlist);
+		cleanlist = ordered;
+	} else if (dc->args_given && !pretend) {
+		array_free(cleanlist);
+		free_set(clean_set);
+		res->cleanlist = array_new();
+		return;
+	}
+	free_set(clean_set);
+	res->rc        = 0;
+	res->cleanlist = cleanlist;
+}
+
+/* _unmerge_display / unmerge for the clean list */
+
+struct qm_dc_ugroup {
+	char  *cp;
+	array *selected;
+	array *protected_;
+	array *omitted;
+};
+
+static void
+qm_dc_ugroup_free(void *ptr)
+{
+	struct qm_dc_ugroup *g = ptr;
+
+	if (g == NULL)
+		return;
+	free(g->cp);
+	array_free(g->selected);
+	array_free(g->protected_);
+	array_free(g->omitted);
+	free(g);
+}
+
+static bool
+qm_dc_pkg_in(array *l, struct qm_dc_pkg *p)
+{
+	size_t            i;
+	struct qm_dc_pkg *q;
+
+	array_for_each(l, i, q)
+		if (q == p)
+			return true;
+	return false;
+}
+
+static void
+qm_dc_eerror(const char *msg)
+{
+	array *lines = array_new();
+	size_t i;
+	char  *s;
+
+	qm_dc_wrap(lines, msg, 75);
+	array_for_each(lines, i, s)
+		fprintf(stderr, "%s * %s%s\n", RED, NORM, s);
+	array_deepfree(lines, free);
+}
+
+static void
+qm_dc_print_versions(array *l, const char *color)
+{
+	size_t            i;
+	struct qm_dc_pkg *p;
+
+	if (array_cnt(l) == 0) {
+		printf("none ");
+		return;
+	}
+	array_sort(l, qm_dc_pkgcmp_cb);
+	array_for_each(l, i, p)
+		printf("%s%s %s", color, p->atom->PVR ? : "", NORM);
+}
+
+/* returns 0 = go on, 1 = nothing left/error, 130 = declined */
+static int
+qm_dc_unmerge(struct qm_dc *dc, array *cleanlist, bool ordered,
+			  set *active_sets)
+{
+	array  *groups = array_new();
+	array  *all_selected = array_new();
+	size_t  i;
+	struct qm_dc_pkg *p;
+	set    *syslist = create_set();
+	hash_t *sysvirt = hash_new();
+	int     rc = 0;
+
+	/* @system through new-style virtuals */
+	{
+		set   *sys = q_profile_follow("packages", qmerge_add_set_system, NULL);
+		array *ks  = sys != NULL ? set_keys(sys) : array_new();
+		char  *k;
+
+		array_for_each(ks, i, k) {
+			atom_ctx *a = atom_explode(k);
+			char      cp[512];
+
+			if (a == NULL || a->CATEGORY == NULL || a->PN == NULL) {
+				if (a != NULL)
+					atom_implode(a);
+				continue;
+			}
+			snprintf(cp, sizeof(cp), "%s/%s", a->CATEGORY, a->PN);
+			if (strcmp(a->CATEGORY, "virtual") == 0) {
+				array *m = qm_dc_match(dc, a, NULL, true);
+
+				if (array_cnt(m) > 0) {
+					struct qm_dc_pkg *vp = array_get(m, array_cnt(m) - 1);
+					dep_node_t *t = dep_grow_tree(vp->deps[QM_DC_RDEPEND]);
+
+					if (t != NULL) {
+						array *fl;
+						size_t q;
+						atom_ctx *fa;
+
+						dep_prune_use(t, vp->use);
+						fl = dep_flatten_tree(t);
+						array_for_each(fl, q, fa) {
+							char vcp[512];
+
+							if (fa->blocker != ATOM_BL_NONE ||
+									fa->CATEGORY == NULL || fa->PN == NULL)
+								continue;
+							snprintf(vcp, sizeof(vcp), "%s/%s",
+									 fa->CATEGORY, fa->PN);
+							add_set_unique(vcp, syslist, NULL);
+							if (hash_get(sysvirt, vcp) == NULL)
+								hash_add(sysvirt, vcp, xstrdup(cp), NULL);
+						}
+						array_free(fl);
+						dep_burn_tree(t);
+					}
+				} else {
+					add_set_unique(cp, syslist, NULL);
+				}
+				array_free(m);
+			} else {
+				add_set_unique(cp, syslist, NULL);
+			}
+			atom_implode(a);
+		}
+		array_free(ks);
+		if (sys != NULL)
+			free_set(sys);
+	}
+
+	if (strcmp(portroot, "/") != 0)
+		printf("%s%s>>> Using system located in ROOT tree %s%s\n", DKGREEN,
+			   quiet ? "" : "\n", portroot, NORM);
+	if ((pretend || interactive) && !quiet)
+		printf("%s%s>>> These are the packages that would be unmerged:%s\n",
+			   DKGREEN, quiet ? "" : "\n", NORM);
+
+	array_for_each(cleanlist, i, p) {
+		struct qm_dc_ugroup *g;
+
+		if (qm_dc_pkg_in(all_selected, p))
+			continue;
+		g = xzalloc(sizeof(*g));
+		g->cp         = xstrdup(p->cp);
+		g->selected   = array_new();
+		g->protected_ = array_new();
+		g->omitted    = array_new();
+		array_append(g->selected, p);
+		array_append(all_selected, p);
+		array_append(groups, g);
+	}
+
+	/* self protection and membership in user-editable sets */
+	{
+		char   exe[_Q_PATH_MAX];
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+		set   *wsets = qm_world_load("world_sets");
+		array *wk    = set_keys(wsets);
+		set   *unknown = create_set();
+		size_t gi;
+		struct qm_dc_ugroup *g;
+
+		if (n < 0)
+			exe[0] = '\0';
+		else
+			exe[n] = '\0';
+		array_sort(wk, qm_strcmp_cb);
+		array_for_each(groups, gi, g) {
+			size_t si;
+
+			for (si = 0; si < array_cnt(g->selected); si++) {
+				struct qm_dc_pkg *sp = array_get(g->selected, si);
+				array  *parents = array_new();
+				size_t  wi;
+				char   *wn;
+
+				if (strcmp(portroot, "/") == 0 && exe[0] != '\0') {
+					set *contents = qm_dc_contents_paths(sp);
+					bool own = contains_set(exe, contents) != NULL;
+
+					free_set(contents);
+					if (own) {
+						char msg[_Q_PATH_MAX];
+
+						snprintf(msg, sizeof(msg), "Not unmerging package %s "
+								 "since there is no valid reason for qmerge "
+								 "to unmerge itself.", sp->cpv);
+						qm_dc_eerror(msg);
+						array_remove(g->selected, si);
+						si--;
+						{
+							size_t ai;
+							struct qm_dc_pkg *ap;
+
+							array_for_each(all_selected, ai, ap)
+								if (ap == sp) {
+									array_remove(all_selected, ai);
+									break;
+								}
+						}
+						array_append(g->protected_, sp);
+						array_free(parents);
+						continue;
+					}
+				}
+				array_for_each(wk, wi, wn) {
+					const char *sn = wn[0] == '@' ? wn + 1 : wn;
+					char        path[_Q_PATH_MAX];
+					set        *members;
+					array      *mk;
+					size_t      mi;
+					char       *ma;
+					bool        listed = false;
+
+					if (sn[0] == '\0' || contains_set(sn, active_sets) != NULL)
+						continue;
+					if (!qm_dc_userset_exists(sn)) {
+						if (contains_set(sn, unknown) == NULL) {
+							char msg[_Q_PATH_MAX];
+
+							add_set(sn, unknown);
+							snprintf(msg, sizeof(msg), "Unknown set '@%s' in "
+									 "%s%s/var/lib/portage/world_sets",
+									 sn, portroot, CONFIG_EPREFIX);
+							qm_dc_eerror(msg);
+						}
+						continue;
+					}
+					snprintf(path, sizeof(path), "%s/etc/portage/sets/%s",
+							 configroot, sn);
+					if (access(path, F_OK) != 0)
+						continue;
+					members = qmerge_expand_setname(sn, NULL);
+					mk = members != NULL ? set_keys(members) : array_new();
+					array_for_each(mk, mi, ma) {
+						atom_ctx *a = atom_explode(ma);
+						array    *inst;
+						size_t    ii;
+						struct qm_dc_pkg *ip;
+						bool      higher = false;
+
+						if (a == NULL)
+							continue;
+						if (!qm_dc_atom_matches(a, sp, NULL, true)) {
+							atom_implode(a);
+							continue;
+						}
+						inst = qm_dc_match(dc, a, NULL, true);
+						array_for_each_rev(inst, ii, ip) {
+							if (strcmp(ip->cp, sp->cp) != 0)
+								continue;
+							if (qm_dc_pkgcmp(sp, ip) >= 0)
+								break;
+							if (strcmp(sp->slot, ip->slot) != 0) {
+								higher = true;
+								break;
+							}
+						}
+						array_free(inst);
+						atom_implode(a);
+						if (!higher) {
+							listed = true;
+							break;
+						}
+					}
+					array_free(mk);
+					if (members != NULL)
+						free_set(members);
+					if (listed)
+						array_append(parents, q_deconst_p(sn));
+				}
+				if (array_cnt(parents) > 0) {
+					size_t pi;
+					char  *pn;
+
+					printf("%sPackage %s is going to be unmerged,%s\n",
+						   YELLOW, sp->cpv, NORM);
+					printf("%sbut still listed in the following package sets:%s\n",
+						   YELLOW, NORM);
+					printf("    ");
+					array_for_each(parents, pi, pn)
+						printf("%s%s", pi > 0 ? ", " : "", pn);
+					printf("\n\n");
+				}
+				array_free(parents);
+			}
+		}
+		array_free(wk);
+		free_set(wsets);
+		free_set(unknown);
+	}
+
+	if (array_cnt(all_selected) == 0) {
+		printf("\n>>> No packages selected for removal by unmerge\n");
+		rc = 1;
+		goto out;
+	}
+
+	if (!ordered) {
+		array *merged = array_new();
+		size_t gi;
+		struct qm_dc_ugroup *g;
+
+		array_for_each(groups, gi, g) {
+			size_t mi;
+			struct qm_dc_ugroup *m = NULL;
+			struct qm_dc_ugroup *c;
+
+			if (array_cnt(g->selected) == 0) {
+				qm_dc_ugroup_free(g);
+				continue;
+			}
+			array_for_each(merged, mi, c)
+				if (strcmp(c->cp, g->cp) == 0)
+					m = c;
+			if (m == NULL) {
+				array_append(merged, g);
+				continue;
+			}
+			array_move(m->selected, g->selected);
+			array_move(m->protected_, g->protected_);
+			array_move(m->omitted, g->omitted);
+			qm_dc_ugroup_free(g);
+		}
+		array_free(groups);
+		groups = merged;
+		{
+			array *tmp = array_new();
+
+			while (array_cnt(groups) > 0) {
+				size_t best = 0;
+				size_t k;
+
+				array_for_each(groups, k, g)
+					if (strcmp(g->cp, ((struct qm_dc_ugroup *)
+									   array_get(groups, best))->cp) < 0)
+						best = k;
+				array_append(tmp, array_remove(groups, best));
+			}
+			array_move(groups, tmp);
+			array_free(tmp);
+		}
+	}
+
+	{
+		size_t gi;
+		struct qm_dc_ugroup *g;
+
+		array_for_each(groups, gi, g) {
+			array *cpg;
+			size_t k;
+
+			if (array_cnt(g->selected) == 0)
+				continue;
+			for (k = 0; k < array_cnt(g->protected_); k++)
+				if (qm_dc_pkg_in(all_selected, array_get(g->protected_, k))) {
+					array_remove(g->protected_, k);
+					k--;
+				}
+			cpg = hash_get(dc->by_cp, g->cp);
+			array_for_each(cpg, k, p)
+				if (!qm_dc_pkg_in(g->omitted, p) &&
+						!qm_dc_pkg_in(g->selected, p) &&
+						!qm_dc_pkg_in(g->protected_, p) &&
+						!qm_dc_pkg_in(all_selected, p))
+					array_append(g->omitted, p);
+			if (array_cnt(g->protected_) == 0 && array_cnt(g->omitted) == 0 &&
+					contains_set(g->cp, syslist) != NULL) {
+				const char *vcp = hash_get(sysvirt, g->cp);
+
+				if (vcp == NULL)
+					fprintf(stderr, "%s\n\n!!! '%s' is part of your system "
+							"profile.%s\n", RED, g->cp, NORM);
+				else
+					fprintf(stderr, "%s\n\n!!! '%s' (%s) is part of your "
+							"system profile.%s\n", RED, g->cp, vcp, NORM);
+				fprintf(stderr, "%s!!! Unmerging it may be damaging to your "
+						"system.%s\n\n", YELLOW, NORM);
+			}
+			if (!quiet)
+				printf("\n %s%s%s\n", BOLD, g->cp, NORM);
+			else
+				printf("%s%s%s: ", BOLD, g->cp, NORM);
+			if (!quiet)
+				printf("%14s", "selected: ");
+			qm_dc_print_versions(g->selected, RED);
+			if (!quiet)
+				printf("\n%14s", "protected: ");
+			qm_dc_print_versions(g->protected_, GREEN);
+			if (!quiet)
+				printf("\n%14s", "omitted: ");
+			qm_dc_print_versions(g->omitted, GREEN);
+			printf("\n");
+		}
+	}
+
+	printf("\nAll selected packages:");
+	array_for_each(all_selected, i, p)
+		printf(" =%s", p->cpv);
+	printf("\n");
+	printf("\n>>> %s'Selected'%s packages are slated for removal.\n", RED, NORM);
+	printf(">>> %s'Protected'%s and %s'omitted'%s packages will not be "
+		   "removed.\n\n", GREEN, NORM, GREEN, NORM);
+
+	if (pretend)
+		goto out;
+
+	if (interactive) {
+		char  line[64];
+		char *r;
+
+		printf("Would you like to unmerge these packages? [%sYes%s/%sNo%s] ",
+			   GREEN, NORM, RED, NORM);
+		fflush(stdout);
+		r = fgets(line, sizeof(line), stdin);
+		if (r != NULL) {
+			size_t l = strlen(line);
+
+			while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r'))
+				line[--l] = '\0';
+			if (l > 0 && strncasecmp("Yes", line, l) != 0) {
+				printf("\nQuitting.\n\n");
+				rc = 130;
+				goto out;
+			}
+		}
+	}
+
+	{
+		int    cp_argc;
+		int    cpm_argc;
+		char **cp_argv;
+		char **cpm_argv;
+		size_t n   = 1;
+		size_t max = array_cnt(all_selected);
+		size_t gi;
+		struct qm_dc_ugroup *g;
+		hash_t *counts;
+
+		makeargv(config_protect, &cp_argc, &cp_argv);
+		makeargv(config_protect_mask, &cpm_argc, &cpm_argv);
+		qm_vdb_lock();
+		{
+			set              *interest = create_set();
+			size_t            bi;
+			struct qm_dc_pkg *bp;
+			preserved_entry  *pe;
+
+			array_for_each(all_selected, bi, bp) {
+				char   cpath[_Q_PATH_MAX];
+				char  *cbuf = NULL;
+				size_t clen = 0;
+
+				snprintf(cpath, sizeof(cpath), "%s%s/%s/CONTENTS",
+						 portroot, portvdb, bp->cpv);
+				if (eat_file(cpath, &cbuf, &clen) && cbuf != NULL) {
+					char *line;
+					char *sp;
+
+					for (line = strtok_r(cbuf, "\n", &sp); line != NULL;
+						 line = strtok_r(NULL, "\n", &sp)) {
+						contents_entry *ce = contents_parse_line(line);
+
+						if (ce != NULL && (ce->type == CONTENTS_OBJ ||
+								ce->type == CONTENTS_SYM))
+							add_set(ce->name, interest);
+					}
+				}
+				free(cbuf);
+			}
+			array_for_each(preserved_entries(qm_preserved_get()), bi, pe) {
+				size_t k;
+				char  *pt;
+
+				array_for_each(pe->paths, k, pt)
+					add_set(pt, interest);
+			}
+			counts = qm_owner_counts(interest);
+			free_set(interest);
+		}
+		array_for_each(groups, gi, g) {
+			size_t si;
+
+			array_for_each(g->selected, si, p) {
+				tree_ctx     *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+				atom_ctx     *ea;
+				array        *m;
+				tree_pkg_ctx *pc = NULL;
+				char          exact[_Q_PATH_MAX];
+
+				printf(">>> Unmerging (%s%zu%s of %s%zu%s) %s...\n",
+					   YELLOW, n, NORM, YELLOW, max, NORM, p->cpv);
+				n++;
+				if (vdb == NULL)
+					continue;
+				snprintf(exact, sizeof(exact), "=%s", p->cpv);
+				ea = atom_explode(exact);
+				m  = ea != NULL ? tree_match_atom(vdb, ea,
+						TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT) : array_new();
+				if (array_cnt(m) > 0)
+					pc = array_get(m, 0);
+				if (pc != NULL) {
+					array *paths = qm_owned_paths(pc);
+					set   *keep  = qm_keep_for(counts, paths);
+					array *pres  = NULL;
+					char   ucnt[64];
+					char   cpath[_Q_PATH_MAX];
+					char  *cbuf = NULL;
+					size_t clen = 0;
+
+					ucnt[0] = '\0';
+					snprintf(cpath, sizeof(cpath), "%s%s/%s/COUNTER",
+							 portroot, portvdb, p->cpv);
+					if (eat_file(cpath, &cbuf, &clen) && cbuf != NULL)
+						snprintf(ucnt, sizeof(ucnt), "%s", cbuf);
+					free(cbuf);
+					if (qm_preserve_active()) {
+						array *one = array_new();
+
+						array_append(one, pc);
+						pres = qm_preserve_compute(one, NULL, keep);
+						array_free(one);
+					}
+					if (qm_backup_wanted(NOT_EQUAL, true))
+						qm_backup_instance(pc);
+					if (pkg_unmerge(pc, NULL, keep, cp_argc, cp_argv,
+									cpm_argc, cpm_argv) != 0) {
+						qm_elog(" !!! unmerge FAILURE: %s", p->cpv);
+						rc = 1;
+					}
+					free_set(keep);
+					qm_owner_counts_drop(counts, paths);
+					array_deepfree(paths, free);
+					preserved_unregister(qm_preserved_get(), p->cpv, p->slot,
+										 ucnt);
+					if (pres != NULL) {
+						preserved_register(qm_preserved_get(), p->cpv,
+										   p->slot, ucnt, pres);
+						array_deepfree(pres, free);
+					}
+					qm_unmerged_cps = add_set_unique(p->cp, qm_unmerged_cps,
+													 NULL);
+				}
+				array_free(m);
+				if (ea != NULL)
+					atom_implode(ea);
+				tree_close(vdb);
+				if (rc == 1)
+					break;
+			}
+			if (rc == 1)
+				break;
+		}
+		hash_free(counts);
+		freeargv(cp_argc, cp_argv);
+		freeargv(cpm_argc, cpm_argv);
+		qm_preserved_gc();
+		qm_preserved_finish();
+		if (qm_deselect != 0)
+			qm_world_clean_unmerged();
+		qm_vdb_unlock();
+	}
+
+ out:
+	array_deepfree(groups, qm_dc_ugroup_free);
+	array_free(all_selected);
+	free_set(syslist);
+	{
+		array *ks = hash_keys(sysvirt);
+		char  *k;
+
+		array_for_each(ks, i, k)
+			free(hash_get(sysvirt, k));
+		array_free(ks);
+		hash_free(sysvirt);
+	}
+	return rc;
+}
+
+static long
+qm_vdb_counter_of(const char *cpv)
+{
+	char   path[_Q_PATH_MAX];
+	char  *buf = NULL;
+	size_t len = 0;
+	long   v   = -1;
+
+	snprintf(path, sizeof(path), "%s%s/%s/COUNTER", portroot, portvdb, cpv);
+	if (eat_file(path, &buf, &len) && buf != NULL)
+		v = strtol(buf, NULL, 10);
+	free(buf);
+	return v;
+}
+
+/* --prune --nodeps, clone from unmerge prune display rule, per package the
+ * best version stays (highest, the newer counter within one slot) */
+static int
+qm_prune_nodeps(set *todo)
+{
+	struct qm_dc dc;
+	set         *sel = create_set();
+	array       *keys;
+	size_t       i;
+	char        *k;
+	int          rc = 0;
+
+	if (todo == NULL || cnt_set(todo) == 0) {
+		printf("\nNo packages to prune have been provided.\n\n");
+		free_set(sel);
+		return 1;
+	}
+	if (!qm_dc_load(&dc)) {
+		warn("cannot open the vdb");
+		free_set(sel);
+		return 1;
+	}
+	keys = set_keys(todo);
+	array_sort(keys, qm_strcmp_cb);
+	array_for_each(keys, i, k) {
+		struct qm_dc_arg *ar = qm_dc_arg_parse(&dc, k, &rc);
+		array            *cps;
+		size_t            c;
+		char             *cp;
+		bool              matched = false;
+
+		if (rc != 0) {
+			qm_dc_arg_free(ar);
+			break;
+		}
+		cps = hash_keys(dc.by_cp);
+		array_sort(cps, qm_strcmp_cb);
+		array_for_each(cps, c, cp) {
+			array            *l = hash_get(dc.by_cp, cp);
+			array            *m = array_new();
+			struct qm_dc_pkg *p;
+			struct qm_dc_pkg *best;
+			size_t            q;
+
+			array_for_each(l, q, p)
+				if (qm_dc_arg_matches(ar, p))
+					array_append(m, p);
+			if (array_cnt(m) > 0)
+				matched = true;
+			if (array_cnt(m) < 2) {
+				array_free(m);
+				continue;
+			}
+			array_sort(m, qm_dc_pkgcmp_cb);
+			best = array_get(m, 0);
+			for (q = 1; q < array_cnt(m); q++) {
+				bool same;
+				long pc;
+				long bc;
+
+				p    = array_get(m, q);
+				same = strcmp(p->slot, best->slot) == 0;
+				pc   = same ? qm_vdb_counter_of(p->cpv) : 0;
+				bc   = same ? qm_vdb_counter_of(best->cpv) : 0;
+				if ((same && pc > bc) || qm_dc_vercmp(p, best) > 0) {
+					if (same && pc < bc)
+						continue;
+					best = p;
+				}
+			}
+			array_for_each(m, q, p)
+				if (p != best) {
+					char eb[_Q_PATH_MAX];
+
+					snprintf(eb, sizeof(eb), "=%s", p->cpv);
+					add_set_unique(eb, sel, NULL);
+				}
+			array_free(m);
+		}
+		array_free(cps);
+		if (!matched)
+			fprintf(stderr, "\n--- Couldn't find '%s' to prune.\n", k);
+		qm_dc_arg_free(ar);
+	}
+	array_free(keys);
+	qm_dc_free(&dc);
+	if (rc != 0) {
+		free_set(sel);
+		return 1;
+	}
+	if (cnt_set(sel) == 0) {
+		printf("\n>>> No packages selected for removal by prune\n");
+		free_set(sel);
+		return 1;
+	}
+	rc = unmerge_packages(sel);
+	free_set(sel);
+	return rc;
+}
+
+/* action_depclean */
+static int
+qm_depclean_run(set *todo)
+{
+	struct qm_dc        dc;
+	struct qm_dc_result res;
+	array              *args = array_new();
+	int                 rc   = 0;
+	size_t              i;
+	set                *active = create_set();
+	size_t              counts[3];
+	size_t              installed;
+	const char         *act = qm_prune ? "prune" : "depclean";
+
+	if (qm_prune && follow_rdepends == 0) {
+		array_free(args);
+		free_set(active);
+		return qm_prune_nodeps(todo);
+	}
+	if (qm_vdb_writable())
+		qm_vdb_lock();
+	if (todo != NULL) {
+		array *keys = set_keys(todo);
+		char  *k;
+		bool   matched = false;
+
+		array_sort(keys, qm_strcmp_cb);
+		if (!qm_dc_load(&dc)) {
+			warn("cannot open the vdb");
+			array_free(keys);
+			array_free(args);
+			free_set(active);
+			qm_vdb_unlock();
+			return 1;
+		}
+		array_for_each(keys, i, k) {
+			struct qm_dc_arg *ar;
+			size_t            q;
+			struct qm_dc_pkg *p;
+			bool              hit = false;
+
+			rc = 0;
+			ar = qm_dc_arg_parse(&dc, k, &rc);
+			if (rc != 0) {
+				qm_dc_arg_free(ar);
+				array_free(keys);
+				array_deepfree(args, qm_dc_arg_free);
+				qm_dc_free(&dc);
+				free_set(active);
+				qm_vdb_unlock();
+				return 1;
+			}
+			array_for_each(dc.pkgs, q, p)
+				if (qm_dc_arg_matches(ar, p))
+					hit = true;
+			if (hit)
+				matched = true;
+			else
+				fprintf(stderr, "--- Couldn't find '%s' to %s.\n", k, act);
+			array_append(args, ar);
+		}
+		array_free(keys);
+		if (!matched) {
+			printf(">>> No packages selected for removal by %s\n", act);
+			array_deepfree(args, qm_dc_arg_free);
+			qm_dc_free(&dc);
+			free_set(active);
+			qm_vdb_unlock();
+			return 1;
+		}
+		qm_dc_free(&dc);
+	} else if (!quiet && !qm_prune) {
+		qm_dc_banner();
+	}
+	if (qm_worldset_select != NULL) {
+		array *ks = set_keys(qm_worldset_select);
+		char  *k;
+
+		array_for_each(ks, i, k)
+			add_set_unique(k[0] == '@' ? k + 1 : k, active, NULL);
+		array_free(ks);
+	}
+
+	if (!qm_dc_load(&dc)) {
+		warn("cannot open the vdb");
+		array_deepfree(args, qm_dc_arg_free);
+		free_set(active);
+		qm_vdb_unlock();
+		return 1;
+	}
+	qm_dc_calc(&dc, args, &res);
+	qm_vdb_unlock();
+	if (res.rc != 0) {
+		if (res.cleanlist != NULL)
+			array_free(res.cleanlist);
+		qm_dc_free(&dc);
+		array_deepfree(args, qm_dc_arg_free);
+		free_set(active);
+		return res.rc;
+	}
+
+	rc = 0;
+	if (array_cnt(res.cleanlist) > 0)
+		rc = qm_dc_unmerge(&dc, res.cleanlist, res.ordered, active);
+
+	if (rc != 0 && rc != 130)
+		goto done;
+	if (qm_prune)
+		goto done;
+	if (array_cnt(res.cleanlist) == 0 && quiet)
+		goto done;
+	{
+		bool   se = false;
+		struct qm_dc dc2;
+
+		installed = array_cnt(dc.pkgs);
+		if (qm_dc_load(&dc2)) {
+			installed = array_cnt(dc2.pkgs);
+			qm_dc_add_profile_sets(&dc2, true, &se, counts);
+			qm_dc_free(&dc2);
+		} else {
+			counts[0] = counts[1] = counts[2] = 0;
+		}
+	}
+	printf("Packages installed:   %zu\n", installed);
+	printf("Packages in world:    %zu\n", counts[2]);
+	printf("Packages in system:   %zu\n", counts[1]);
+	if (counts[0] > 0)
+		printf("Packages in profile:  %zu\n", counts[0]);
+	printf("Required packages:    %zu\n", res.required);
+	if (pretend)
+		printf("Number to remove:     %zu\n", array_cnt(res.cleanlist));
+	else
+		printf("Number removed:       %zu\n", array_cnt(res.cleanlist));
+
+ done:
+	array_free(res.cleanlist);
+	qm_dc_free(&dc);
+	array_deepfree(args, qm_dc_arg_free);
+	free_set(active);
+	return rc;
 }
 
 static int
@@ -18227,7 +25319,7 @@ qm_world_clean_unmerged(void)
 
 	/* uninstall only and for the future: a merge-run soft-blocker unmerge reaches here
 	 * too, and there qm_worldset_select holds sets being RECORDED */
-	if (uninstall &&
+	if ((uninstall || qm_depclean) &&
 			qm_worldset_select != NULL && cnt_set(qm_worldset_select) > 0) {
 		set   *wsets = qm_world_load("world_sets");
 		array *args  = set_keys(qm_worldset_select);
@@ -18551,6 +25643,17 @@ int qmerge_main(int argc, char **argv)
 									   *optarg == 't' || *optarg == 'T')
 									   ? 1 : 0;
 					  break;
+			case 'c': qm_depclean = 1;     break;
+			case 'P': qm_depclean = 1;
+					  qm_prune = 1;        break;
+			case 148: qm_dc_bdeps = (*optarg == 'n' || *optarg == 'N' ||
+									 *optarg == '0' || *optarg == 'f' ||
+									 *optarg == 'F') ? 0 : 1;
+					  break;
+			case 149: qm_dc_libcheck = (*optarg == 'n' || *optarg == 'N' ||
+										*optarg == '0' || *optarg == 'f' ||
+										*optarg == 'F') ? 0 : 1;
+					  break;
 			case 127: keep_work = true;    break;
 			case 128: debug = true;        break;
 			COMMON_GETOPTS_CASES(qmerge)
@@ -18723,7 +25826,7 @@ int qmerge_main(int argc, char **argv)
 			rebuilt_bins = deep ? 1 : 0;
 	}
 
-	/* --binpkg-respect-use beats $QMERGE_BINPKG_RESPECT_USE (env prio over
+	/* --binpkg-respect-use prio over $QMERGE_BINPKG_RESPECT_USE (env prio over
 	 * make.conf, per the config framework) */
 	if (qm_respect_use < 0) {
 		const char *ru = qmerge_respect_use_conf;
@@ -18735,10 +25838,40 @@ int qmerge_main(int argc, char **argv)
 
 	/* copy pasta from portage. the --deselect with no explicit action is its own
 	 * action, prune world entries and merge nuffin. */
-	deselect_action = (qm_deselect == 1 && !install && !uninstall);
+	deselect_action = (qm_deselect == 1 && !install && !uninstall &&
+					   !qm_depclean);
+
+	/* QMERGE_WITH_BDEPS / QMERGE_DEPCLEAN_LIB_CHECK: CLI prio over env prio over
+	 * make.conf which in the end has prio over  the portage default (both y) */
+	if (qm_dc_bdeps < 0) {
+		const char *v = getenv("QMERGE_WITH_BDEPS");
+
+		if (v == NULL || *v == '\0')
+			v = qm_config_var("QMERGE_WITH_BDEPS");
+		qm_dc_bdeps = v != NULL && (*v == 'n' || *v == 'N' || *v == '0' ||
+									*v == 'f' || *v == 'F') ? 0 : 1;
+	}
+	if (qm_dc_libcheck < 0) {
+		const char *v = getenv("QMERGE_DEPCLEAN_LIB_CHECK");
+
+		if (v == NULL || *v == '\0')
+			v = qm_config_var("QMERGE_DEPCLEAN_LIB_CHECK");
+		qm_dc_libcheck = v != NULL && (*v == 'n' || *v == 'N' || *v == '0' ||
+									   *v == 'f' || *v == 'F') ? 0 : 1;
+	}
+	/* QMERGE_PROTOCOL_OMEGA (default 0) :: built-in sets as depclean
+	 * arguments */
+	if (qm_omega < 0) {
+		const char *v = getenv("QMERGE_PROTOCOL_OMEGA");
+
+		if (v == NULL || *v == '\0')
+			v = qm_config_var("QMERGE_PROTOCOL_OMEGA");
+		qm_omega = v != NULL && (*v == 'y' || *v == 'Y' || *v == '1' ||
+								 *v == 't' || *v == 'T') ? 1 : 0;
+	}
 
 	/* default to install if no action given */
-	if (!install && !uninstall)
+	if (!install && !uninstall && !qm_depclean)
 		install = 1;
 
 	if (uninstall_force)
@@ -18753,7 +25886,42 @@ int qmerge_main(int argc, char **argv)
 	todo = NULL;
 	if (!search_pkgs && !show_phases)
 		for (i = optind; i < argc; ++i) {
-			if ((!uninstall && !oneshot) || deselect_action)
+			if (qm_depclean) {
+				const char *sn = argv[i][0] == '@' ? argv[i] + 1 :
+						(strcmp(argv[i], "world") == 0 ||
+						 strcmp(argv[i], "system") == 0 ||
+						 strcmp(argv[i], "all") == 0) ? argv[i] : NULL;
+
+				if (sn != NULL) {
+					char        sp[_Q_PATH_MAX];
+					struct stat sst;
+					size_t      before = todo != NULL ? cnt_set(todo) : 0;
+					bool        builtin = strcmp(sn, "world") == 0 ||
+							strcmp(sn, "system") == 0 ||
+							strcmp(sn, "selected") == 0 ||
+							strcmp(sn, "profile") == 0;
+
+					snprintf(sp, sizeof(sp), "%s/etc/portage/sets/%s",
+							 configroot, sn);
+					if (builtin && qm_omega == 1) {
+						qm_omega_sets = add_set_unique(sn, qm_omega_sets, NULL);
+					} else if (sn[0] == '\0' || strchr(sn, '@') != NULL ||
+							(strcmp(sn, "preserved-rebuild") != 0 &&
+							 stat(sp, &sst) != 0)) {
+						fprintf(stderr, "qmerge: the given set '%s' does "
+								"not support unmerge operations\n", sn);
+						if (builtin)
+							fprintf(stderr, "qmerge: QMERGE_PROTOCOL_OMEGA=1 "
+									"allows depcleaning the built-in sets\n");
+						return EXIT_FAILURE;
+					}
+					qm_world_capture(argv[i]);
+					todo = qmerge_add_set(argv[i], todo);
+					if ((todo != NULL ? cnt_set(todo) : 0) == before)
+						printf("qmerge: '%s' is an empty set\n", sn);
+					continue;
+				}
+			} else if ((!uninstall && !oneshot) || deselect_action)
 				qm_world_capture(argv[i]);
 			else if (uninstall && argv[i][0] == '@')
 				/* for the implied world_sets deselect */
@@ -18762,9 +25930,14 @@ int qmerge_main(int argc, char **argv)
 		}
 
 	if (search_pkgs == 0 && show_phases == 0 && todo == NULL &&
-			force_download != 1) {
+			force_download != 1 && !qm_depclean) {
 		warn("need package names to work with");
 		return EXIT_FAILURE;
+	}
+
+	if ((uninstall || qm_depclean || deselect_action) && qm_vdb_writable()) {
+		binrepos_load();
+		qm_apply_moves_all();
 	}
 
 	if (deselect_action) {
@@ -18774,6 +25947,11 @@ int qmerge_main(int argc, char **argv)
 
 	if (show_info) {
 		ret = qm_info_run(todo);
+		goto cleanup;
+	}
+
+	if (qm_depclean) {
+		ret = qm_depclean_run(todo);
 		goto cleanup;
 	}
 
@@ -18968,7 +26146,13 @@ int qmerge_main(int argc, char **argv)
 		free(qm_binrepos[qm_nbinrepos].name);
 		free(qm_binrepos[qm_nbinrepos].uri);
 		free(qm_binrepos[qm_nbinrepos].loc);
+		free(qm_binrepos[qm_nbinrepos].key_pkg);
+		qm_gb_atoms_free(qm_binrepos[qm_nbinrepos].gb_excl);
+		qm_gb_atoms_free(qm_binrepos[qm_nbinrepos].gb_incl);
 	}
+	qm_gb_atoms_free(qm_gb_excl_cli);
+	qm_gb_atoms_free(qm_gb_incl_cli);
+	qm_gb_excl_cli = qm_gb_incl_cli = NULL;
 	free(qm_binrepos);
 	qm_binrepos = NULL;
 

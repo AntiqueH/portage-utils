@@ -1,0 +1,12 @@
+check: |
+    Report problems for the given module without changing anything. No
+    output together with a successful exit status means no problems were
+    found.
+fix: |
+    Repair the problems that the corresponding \fB\-\-check\fR would
+    report. \fB\-\-check\fR and \fB\-\-fix\fR are mutually exclusive.
+no-ldconfig: |
+    \fIenv\fR module only: regenerate the environment files but do not
+    run \fBldconfig\fR to rebuild \fIld.so.cache\fR,matching
+    portage's \fBenv\-update\ \-\-no\-ldconfig\fR. Rejected for the
+    other modules.

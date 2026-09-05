@@ -18,8 +18,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
-#ifndef _XASPRINTF_H
-#define _XASPRINTF_H 1
+#ifndef XASPRINTF_H
+#define XASPRINTF_H 1
 
 #include <stdio.h>
 #include "main.h"

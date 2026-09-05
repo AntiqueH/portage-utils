@@ -7,9 +7,9 @@
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _MOVE_FILE_H
+#ifndef MOVE_FILE_H
 
-#define _MOVE_FILE_H 1
+#define MOVE_FILE_H 1
 
 #include <sys/types.h>
 #include <sys/stat.h>

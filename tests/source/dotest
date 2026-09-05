@@ -86,3 +86,44 @@ find ${ats} "${src_files[@]}" -print0 | xargs -0 \
 	grep -n -E -e "(${funcs}|${hdrs})" \
 	| sed -e "s:^\.\./\.\./::g" > src.obsolete.funcs.hdrs
 testit src.obsolete.funcs.hdrs
+
+
+
+#
+# every mutating qmerge/qpkg invocation in the qmerge suite must be followed
+# by a check of what it actually did, not just its exit code: a merge that
+# writes nothing still exits 0. add a state assertion (files, vdb, CONTENTS,
+# index) or the qm_merged/qm_unmerged helpers; annotate a deliberate
+# exception with "noverify".
+#
+awk -v FN=tests/qmerge/dotest '
+BEGIN {
+	st="\\$\\{ROOT\\}|var/db/pkg|qlist -I|qlist -kI|stat -c|md5sum|sha512sum|cmp -s|Packages\"|readlink|getfattr|preserved_libs_registry|wtfile|recf|vmf|REGP|tar tf|tar xOf|tar t |zstd -dc|qxpak -l|qxpak -x|tail -c|treedir|find \"|CPV:|qm_merged|qm_unmerged|noverify"
+}
+{ b[NR]=$0; n=NR }
+END {
+	for (i = 1; i <= n; i++) {
+		l = b[i]
+		if (l ~ /^[ \t]*(tend|#|\|\||&&|\[\[|rm |cp |mv |mkdir|printf|echo |touch)/) continue
+		if (i > 1 && b[i-1] ~ /\\[ \t]*$/) continue
+		if (l !~ /(^|[ \t;(|]|\$\()(qmerge|qpkg)[ \t]/) continue
+		if (l ~ /-p[a-zA-Z]*[ "]|--pretend|--list-set|--info|--repos|[ \t]-s[ \t]|-ev|--deselect|--exact/) continue
+		if (l !~ /(qmerge[^|]*(-F|-1|--keep-going|--no-phases|@|=)|qpkg[ \t]+-[gx])/) continue
+		if (l ~ />\/dev\/null 2>&1|>\/dev\/null$/) continue
+		mut[++m] = i
+	}
+	for (k = 1; k <= m; k++) {
+		i = mut[k]
+		stop = (k < m) ? mut[k+1] : n
+		if (stop - i > 45) stop = i + 45
+		seg = ""
+		for (j = i; j < stop; j++) seg = seg " " b[j]
+		if (seg !~ st) {
+			cmd = b[i]
+			gsub(/^[ \t]+/, "", cmd)
+			printf "%s:%d: mutating command with no post-verification: %s\n", \
+				FN, i, substr(cmd, 1, 80)
+		}
+	}
+}' "${ats}/tests/qmerge/dotest" > src.unverified.merges
+testit src.unverified.merges

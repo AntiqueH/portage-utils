@@ -28,7 +28,7 @@ jobs:
         run: >
           emerge --oneshot --noreplace
           dev-vcs/git dev-util/pkgconf
-          dev-libs/openssl sys-libs/zlib
+          net-misc/curl sys-libs/zlib
           app-crypt/gpgme app-arch/libarchive app-crypt/libb2
           dev-python/pyyaml
 

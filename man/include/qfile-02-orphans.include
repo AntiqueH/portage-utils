@@ -1,5 +1,4 @@
 .SH "FINDING ORPHAN FILES"
-.PP
 \fBqfile\fP can also, with the \fB\-\-orphans\fP option, find files
 which are not owned by any package.  This behaviour is the opposite of
 the usual file owner search: the output is the list of query items for
@@ -9,15 +8,14 @@ just a silent test command, which returns \fI0\fP if and only if there
 was no orphan in your query items.
 .PP
 Find the orphan libtool files of your system:
-.nf\fI
+.nf
 	$ qfile -o $(find /lib /usr/lib -name "*.la")
 	/usr/lib/libGL.la
 .fi
 .PP
 Find the libraries needed by the binary "foo" which have not been installed by
 any package:
-.nf\fI
+.nf
 	$ qfile -o $(scanelf -nq -F%n#F /path/to/foo | tr , '\\n')
 	libinstalledmanually.so.2
 .fi
-.PP

@@ -7,8 +7,8 @@
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _ATOM_COMPARE_H
-#define _ATOM_COMPARE_H 1
+#ifndef ATOM_COMPARE_H
+#define ATOM_COMPARE_H 1
 
 typedef enum {
   VER_ALPHA = 1,
@@ -62,7 +62,7 @@ extern const char * const atom_op_str[];
 
 typedef struct {
   atom_suffixes suffix;
-  uint64_t sint;
+  int64_t sint;
 } atom_suffix;
 
 typedef struct _atom_usedep {
@@ -116,6 +116,7 @@ atom_ctx *atom_explode_cat(const char *atom, const char *cat);
 #define atom_explode(A) atom_explode_cat(A, NULL)
 atom_ctx *atom_clone(atom_ctx *atom);
 void atom_implode(atom_ctx *atom);
+void atom_implode_cb(void *atom);
 atom_equality atom_compare_flg(const atom_ctx *d, const atom_ctx *q, int flags);
 #define atom_compare(D,Q) atom_compare_flg(D, Q, ATOM_COMP_DEFAULT)
 atom_equality atom_compare_str(const char * const d, const char * const q);

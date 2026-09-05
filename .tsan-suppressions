@@ -1,0 +1,3 @@
+race:hash_multiple
+race:blake2b_
+race:verify_dir

@@ -1,0 +1,13 @@
+ACCEPT_KEYWORDS: amd64
+ARCH: amd64
+PACKAGES: 1
+TIMESTAMP: 1753000000
+VERSION: 0
+
+CPV: app-misc/tmux-3.5a
+SLOT: 0
+MD5: d41d8cd98f00b204e9800998ecf8427e
+SIZE: 240
+PATH: app-misc/tmux-3.5a.gpkg.tar
+RDEPEND: >=sys-libs/ncurses-5.9:0=
+

@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -191,7 +192,7 @@ static int qfile_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	if (state->exclude_pkg) {
 		/* see if CATEGORY matches */
 		if (state->exclude_atom->CATEGORY &&
-		    strcmp(state->exclude_atom->CATEGORY, catname))
+		    strcmp(state->exclude_atom->CATEGORY, catname) != 0)
 			goto dont_skip_pkg;
 		atom = tree_pkg_atom(pkg_ctx,
 				state->exclude_atom->SLOT != NULL ||
@@ -360,7 +361,8 @@ static void destroy_qfile_args(qfile_args_t *qfile_args)
 }
 
 static int
-prepare_qfile_args(const int argc, const char **argv, struct qfile_opt_state *state)
+prepare_qfile_args(const int argc, const char * const *argv,
+		struct qfile_opt_state *state)
 {
 	qfile_args_t *args = &state->args;
 	int i;
@@ -393,7 +395,8 @@ prepare_qfile_args(const int argc, const char **argv, struct qfile_opt_state *st
 		len = strlen(argv[i]);
 		if (len > 1 && argv[i][len - 1] == '/')
 			len--;
-		snprintf(tmppath, sizeof(tmppath), "%.*s", (int)len, argv[i]);
+		snprintf(tmppath, sizeof(tmppath), "%.*s",
+				(int)MIN(len, sizeof(tmppath) - 1), argv[i]);
 		p = basename(tmppath);
 
 		/* record basename, but if it is ".", ".." or "/" */
@@ -591,7 +594,8 @@ int qfile_main(int argc, char **argv)
 	state.real_root_len = strlen(p);
 
 	/* Prepare the qfile(...) arguments structure */
-	nb_of_queries = prepare_qfile_args(argc, (const char **) argv, &state);
+	nb_of_queries = prepare_qfile_args(argc,
+			(const char * const *)argv, &state);
 
 	/* Now do the actual `qfile` checking by looking at CONTENTS of all pkgs */
 	if (nb_of_queries > 0) {

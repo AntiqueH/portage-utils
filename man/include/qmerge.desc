@@ -1,6 +1,37 @@
-\fIqmerge\fR retrieves and installs Gentoo binary packages.  Simple
-dependency checking is performed, after which \fIqmerge\fR just unpacks
-the binpkg onto the filesystem and registers the package in the VDB.
-
-Retrieval of packages from a remote binhost is currently performed using
-\fBwget\fR(1).  More specifically, \fIFETCHCOMMAND\fR is ignored.
+\fIqmerge\fR retrieves Gentoo binary packages from a local \fIPKGDIR\fR
+and/or one or more remote binhosts and installs them onto the system,
+registering each package in the VDB. It is a binary\-package manager,
+it does not build from source.
+.P
+Both the \fBxpak\fR (\fI.tbz2\fR) and the GLEP\ 78 \fBgpkg\fR
+(\fI.gpkg.tar\fR) archive formats are supported, including OpenPGP
+signature verification of signed \fBgpkg\fR packages (see \fBqetuto\fR(1)
+for keyring setup). Remote indexes are described by
+\fIbinrepos.conf\fR; several binhosts may be consulted, in priority
+order.
+.P
+Package downloads use a built\-in \fBlibcurl\fR fetcher by default, or
+the command named in \fIQFETCHCOMMAND\fR when it is set. Fetched binhost
+indexes are cached and refreshed subject to their TTL and
+If\-Modified\-Since headers.
+.P
+\fBQFETCH_WRAPPER\fR is the \fBFETCH_WRAPPER\fR of \fBmake.conf\fR(5)
+for \fBQFETCHCOMMAND\fR and \fBQRESUMECOMMAND\fR: a command prefix,
+most commonly \fBssh\fR(1), that receives the expanded fetch command
+as one shell\-quoted argument, so a wrapper that re\-interprets its
+arguments through a shell runs   it. When   unset,  portage's
+\fBFETCH_WRAPPER\fR applies. Only the command fetch path is wrapped;
+the built\-in \fBlibcurl\fR fetcher runs in\-process.
+.P
+.nf
+QFETCH_WRAPPER="ssh \-i ~/.ssh/id_ed25519 user@host"
+.fi
+.P
+Dependency resolution follows \fBemerge\fR(1) closely enough for binary
+updates: \fB\-u\fR, \fB\-D\fR and \fB\-N\fR select updates the same way,
+sets such as \fB@world\fR and \fB@system\fR are understood, and
+\fB\-\-rebuilt\-binaries\fR reinstalls same\-version rebuilds advertised
+by a binhost.
+.P
+\fIqmerge\fR maintains only the local \fIPKGDIR/Packages\fR index (see
+\fB\-\-index\fR); remote binhost indexes are fetched and cached.

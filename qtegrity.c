@@ -6,6 +6,7 @@
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2017-2018 Sam Besselink
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -57,10 +58,11 @@ struct qtegrity_opt_state {
 #define FILE_EMPTY 2
 #define FILE_RELATIVE 3
 
-static void
+static int
 check_sha(char *ret_digest, char *path, char *algo)
 {
 	int hashes = 0;
+	int ret;
 	size_t flen = 0;
 
 	if (strcmp(algo, "sha256") == 0) {
@@ -69,13 +71,16 @@ check_sha(char *ret_digest, char *path, char *algo)
 		hashes |= HASH_SHA512;
 	} else {
 		/* no matching hash? (we could support whirlpool and blake2b) */
-		return;
+		return -1;
 	}
 
-	hash_compute_file(path, ret_digest, ret_digest, NULL, &flen, hashes);
+	ret = hash_compute_file(path,
+			(hashes & HASH_SHA256) ? ret_digest : NULL,
+			(hashes & HASH_SHA512) ? ret_digest : NULL,
+			NULL, &flen, hashes);
 	(void)flen;  /* we don't use the file size */
 
-	return;
+	return ret;
 }
 
 static void get_fname_from_line(char * line, char **ret, int digest_size, int offset)
@@ -412,11 +417,14 @@ int qtegrity_main(int argc, char **argv)
 			err("File '%s' is not executable\n", state.add_file);
 
 		/* add digest */
-		char *hash_algo = (char *)"sha256";
+		char *hash_algo = q_deconst("sha256");
 		char *file_digest;
 		file_digest = xmalloc(SHA256_DIGEST_LENGTH+1);
 		file_digest[0] = '\0';
-		check_sha(file_digest, state.add_file, hash_algo);
+		if (check_sha(file_digest, state.add_file, hash_algo) != 0 ||
+				file_digest[0] == '\0')
+			err("Failed to compute %s digest for '%s'",
+					hash_algo, state.add_file);
 
 		/* Iterate over lines; if fname matches, exit-loop */
 		char *line, *fname;

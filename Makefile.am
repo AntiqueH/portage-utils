@@ -1,19 +1,26 @@
 ACLOCAL_AMFLAGS = -I autotools/m4
 
-if SYSTEM_LIBCURL
-CURL_SUBDIR   =
-CURL_CPPFLAGS = $(LIBCURL_CFLAGS)
-CURL_LIBS     = $(LIBCURL_LIBS)
-else
-CURL_SUBDIR   = src/curl
+if INTERNAL_CURL
 CURL_CPPFLAGS = -I$(top_srcdir)/src/curl/include -DCURL_STATICLIB
-CURL_LIBS     = $(top_builddir)/src/curl/libqcurl.a $(VCURL_DEPS_LIBS)
+INTERNAL_CURL_BUILD = $(top_builddir)/internal-libs/curl
+INTERNAL_CURL_LIB = $(INTERNAL_CURL_BUILD)/lib/.libs/libcurl.a
+CURL_LIBS = $(INTERNAL_CURL_LIB) $(INTERNAL_CURL_LIBS)
+BUILT_SOURCES = internal-curl
+INTERNAL_CURL_CLEAN = $(MAKE) $(AM_MAKEFLAGS) -C $(INTERNAL_CURL_BUILD)/lib clean
+INTERNAL_CURL_DISTCLEAN = rm -rf $(top_builddir)/internal-libs
+internal-curl:
+	$(MAKE) $(AM_MAKEFLAGS) -C $(INTERNAL_CURL_BUILD)/lib
+.PHONY: internal-curl
+else
+CURL_CPPFLAGS = $(LIBCURL_CFLAGS)
+CURL_LIBS = $(LIBCURL_LIBS)
+INTERNAL_CURL_CLEAN = :
+INTERNAL_CURL_DISTCLEAN = :
 endif
 
 SUBDIRS = \
 	autotools/gnulib \
 	libq \
-	$(CURL_SUBDIR) \
 	. \
 	tests \
 	$(NULL)
@@ -24,10 +31,12 @@ APPLETS = \
 	qcheck \
 	qdepends \
 	qfile \
+	qgpkg-sign \
 	qgrep \
 	qkeyword \
 	qlist \
 	qlop \
+	qmaint \
 	qnews \
 	qetuto \
 	qmerge \
@@ -41,28 +50,13 @@ APPLETS = \
 	qxpak \
 	$(NULL)
 
-dist_man_MANS = \
-	man/q.1 \
-	man/qatom.1 \
-	man/qcheck.1 \
-	man/qdepends.1 \
-	man/qfile.1 \
-	man/qgrep.1 \
-	man/qkeyword.1 \
-	man/qlist.1 \
-	man/qlop.1 \
-	man/qmerge.1 \
-	man/qpkg.1 \
-	man/qsearch.1 \
-	man/qsize.1 \
-	man/qtbz2.1 \
-	man/qtegrity.1 \
-	man/quse.1 \
-	man/qwhich.1 \
-	man/qxpak.1 \
-	$(NULL)
+# man/*.1 are generated out-of-band by man/mkman.py and installed per applet
+dist_man1_MANS = $(APPLETS:%=man/%.1) man/qetc-update.1
 
 bin_PROGRAMS = q
+
+dist_sbin_SCRIPTS = qetc-update
+
 q_SOURCES = \
 	main.c \
 	q.c \
@@ -70,10 +64,12 @@ q_SOURCES = \
 	qcheck.c \
 	qdepends.c \
 	qfile.c \
+	qgpkg-sign.c \
 	qgrep.c \
 	qkeyword.c \
 	qlist.c \
 	qlop.c \
+	qmaint.c \
 	qnews.c \
 	qetuto.c \
 	qmerge.c \
@@ -116,12 +112,8 @@ if QMANIFEST_ENABLED
 q_SOURCES += qmanifest.c
 q_CPPFLAGS += \
 	$(GPGME_CFLAGS)
-dist_man_MANS += man/qmanifest.1
 APPLETS += qmanifest
 endif
-
-man/%.1: %.c applets.h man/include/%.optdesc.yaml man/include/%.desc | q
-	man/mkman.py $@
 
 install-exec-hook:
 	cd $(DESTDIR)$(bindir); \
@@ -131,6 +123,10 @@ install-exec-hook:
 
 clean-local:
 	rm -f $(APPLETS)
+	-$(INTERNAL_CURL_CLEAN)
+
+distclean-local:
+	-$(INTERNAL_CURL_DISTCLEAN)
 
 EXTRA_DIST = \
 	autotools/m4/gnulib-cache.m4 \

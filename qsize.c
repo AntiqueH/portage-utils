@@ -278,7 +278,7 @@ int qsize_main(int argc, char **argv)
 			   state.disp_units ? state.str_disp_units : "");
 	}
 
-	array_deepfree(state.atoms, (array_free_cb *)atom_implode);
+	array_deepfree(state.atoms, atom_implode_cb);
 	array_deepfree(state.ignore_regexp, NULL);
 	free_set(state.uniq_files);
 

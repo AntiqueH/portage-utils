@@ -4,6 +4,7 @@
  *
  * Copyright 2006      Thomas A. Cort - <tcort@gentoo.org>
  * Copyright 2019-     Fabian Groffen - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.      - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -116,7 +117,7 @@ static int
 decode_arch(const char *arch)
 {
 	char *q;
-	int a;
+	size_t a;
 	const char *p;
 
 	p = arch;
@@ -126,7 +127,7 @@ decode_arch(const char *arch)
 	array_for_each(archlist, a, q)
 	{
 		if (strcmp(q, p) == 0)
-			return a;
+			return (int)a;
 	}
 
 	return -1;
@@ -154,6 +155,8 @@ print_keywords(const char *category, const char *ebuild, int *keywords)
 				break;
 			case testing:
 				printf("%s%c%s%s ", YELLOW, status[keywords[a]], arch, NORM);
+				break;
+			default:
 				break;
 		}
 	}
@@ -716,8 +719,8 @@ qkeyword_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 static int
 keyword_sort(const void *l, const void *r)
 {
-	const char **ls = (const char **)l;
-	const char **rs = (const char **)r;
+	const char * const *ls = l;
+	const char * const *rs = r;
 	const char *ld  = strchr(*ls, '-');
 	const char *rd  = strchr(*rs, '-');
 

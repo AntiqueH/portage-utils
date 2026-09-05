@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]] ; do
 		(
 		echo " - expected result was: ${exp}"
 		echo " - actual result was:   ${res}"
-		) > /dev/stderr
+		) >&2
 	fi
 done
 

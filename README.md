@@ -108,20 +108,24 @@ Signed off: antiq, francoisb, xx36x, marbit, 0times
 
 ### Build
 
-By default the bundled libcurl in `src/curl` is compiled in statically; pass
-`--with-system-libcurl` to link the system libcurl instead. Before opening a
+By default q links the system libcurl. `--enable-internal-libs` builds the
+curl source tree found in `src/curl` (its own configure, HTTP(S) only, OpenSSL
+and zlib) into q, so the dynamic and static builds alike. Empty
+`src/curl` we skipped and the system libcurl is used. `--enable-static` links
+the system libraries statically (libcurl.a from `net-misc/curl[static-libs]`).
+Before opening a
 pull request, we CRUCIALLY recommend going through `./testmycode.sh` from the source root: it runs the gcc/clang
 warnings gates (`--enable-werror` plus the modern-C flags), an ASan+UBSan
 `make check`, and cppcheck, all from a clean tree.
 Yes, we know this libcurl in the source directly has been somewhat of a overhaul, but honestly
 maintaining dependencies in Gentoo has been a terrifying experience.
 We don't want that again happening with libcurl. Hopefully this is the only one problematic.
-Hence, the --system-libcurl from above.
+Hence, the --enable-internal-libs from above.
 
 ## Some details regarding the expansion of portage-utils for qmerge
 
 Our work here extends portage-utils with a near-complete rewrite of the `qmerge`
-applet into a proper consumer and installer for Portage's binary prebuilt
+applet into a proper eater and installer for Portage's binary prebuilt
 package (binpkg) repositories.
 The rest of the applets (qlist, qfile, qcheck, qmanifest, qlop, ...)
 mostly track upstream; we didn't change them.
@@ -172,9 +176,9 @@ items are still open.
 * ~~Soft-blocker auto-unmerge (`QMERGE_BLOCKERS`, designed, not yet enabled)~~
 * Long-tail resolver constructs (PDEPEND blockers, `^^` antislot, perl `:=` generalization)? Needed?
 
-### GLEP parity
+### GLEP complete implementation
 
-We audited 37 GLEPs for what a binhost consumer must honor.
+We audited 37 GLEPs for what a binhost eater must implement.
 Implemented:
 
 * ~~GLEP 78 : gpkg binary package format~~
@@ -187,6 +191,14 @@ Implemented:
 * ~~GLEP 64 : VDB (installed-package database) layout~~
 * ~~GLEP 81 : `acct-user` / `acct-group` packages~~
 * ~~GLEP 84 : `package.mask` / `package.unmask`~~
+
+* `ACCEPT_CHOSTS` masking of built packages
+* `unmerge-backup` / `downgrade-backup`
+* signed-package immutability guard
+* builder-side signing (`binpkg-signing`, `gpkg-sign`, `BINPKG_GPG_SIGNING_*`)
+* in-place binpkg metadata update
+* depclean, slot-operator rebuilds, pipelined prefetch (paused)
+* `--quickpkg-direct`, `--useoldpkg-atoms`, `--nobindeps`, `binhost-snapshot`, `REPO_REVISIONS`
 
 The rest are probably much less relevant for binary host & prebuilt stuff.
 
@@ -216,7 +228,7 @@ These go in `/etc/portage/make.conf`, same format as the general usual flags fro
   The published `Moves` file is the binhost maintainer's sole
   responsibility. Be careful not to delete the Moves file from your
   main repository of prebuilt binaries, else the users that don't have
-  your directive anymore will probably not have enough time to
+  your instruction anymore will probably not have enough time to
   change to your ordered new CAT/PNs.
 
 * enable the GLEP 42 news transport (fetch/emit/apply); off by default, the `qnews` reader works regardless<br>
@@ -334,7 +346,7 @@ It prepares and refreshes the OpenPGP trust keyring at
 (GLEP 78/63/79). On first run it generates a machine-local trust anchor key,
 imports the release keys and locally signs them so gpg reports them as
 trusted; later runs refresh the keyring at most once a day. Needs root.
-The point: a binhost consumer gets a working trust setup from `q` alone,
+The point: a binhost eater gets a working trust setup from `q` alone,
 without installing getuto or anything it drags in.
 
 * keyservers `qetuto` refreshes the binpkg trust keyring from (space/comma list; default: keys.openpgp.org + keys.gentoo.org)<br>

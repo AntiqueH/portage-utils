@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2020-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -98,7 +99,7 @@ tbz2_compose(int dir_fd, const char *tarbz2, const char *xpak, const char *tbz2)
 		fclose(in_tarbz2);
 		return ret;
 	}
-	if (pread(fd, buf, 8, 0) != 8 || memcmp(buf, "XPAKPACK", 8))
+	if (pread(fd, buf, 8, 0) != 8 || memcmp(buf, "XPAKPACK", 8) != 0)
 		warn("%s: does not appear to be a .xpak", xpak);
 	in_xpak = fdopen(fd, "r");
 	if (in_xpak == NULL) {
@@ -115,33 +116,47 @@ tbz2_compose(int dir_fd, const char *tarbz2, const char *xpak, const char *tbz2)
 	}
 
 	/* save [tarball] */
-	copy_file(in_tarbz2, out);
+	if (copy_file(in_tarbz2, out) != 0) {
+		fclose(in_tarbz2);
+		fclose(in_xpak);
+		fclose(out);
+		return ret;
+	}
 	fclose(in_tarbz2);
 	/* save [xpak] */
-	copy_file(in_xpak, out);
+	if (copy_file(in_xpak, out) != 0) {
+		fclose(in_xpak);
+		fclose(out);
+		return ret;
+	}
 	fclose(in_xpak);
 
 	/* save tbz2 tail: OOOOSTOP */
 	WRITE_BE_INT32(buf, st.st_size);
-	fwrite(buf, 1, 4, out);
-	fwrite(TBZ2_END_MSG, 1, TBZ2_END_MSG_LEN, out);
+	if (fwrite(buf, 1, 4, out) != 4 ||
+			fwrite(TBZ2_END_MSG, 1, TBZ2_END_MSG_LEN, out) != TBZ2_END_MSG_LEN) {
+		fclose(out);
+		return ret;
+	}
 
-	fclose(out);
+	if (fclose(out) != 0)
+		return ret;
 	ret = 0;
 	return ret;
 }
 
-static void
+static int
 _tbz2_write_file(FILE *src, int dir_fd, const char *dst, size_t len)
 {
 	unsigned char buffer[BUFSIZE*32];
 	size_t this_write;
 	FILE *out;
+	int ret = 0;
 
 	if (!dst) {
 		if (fseek(src, len, SEEK_CUR) == -1)
 			errp("cannot seek to pos %zd: %s", len, strerror(errno));
-		return;
+		return 0;
 	}
 
 	if (!tbz2_stdout) {
@@ -158,12 +173,24 @@ _tbz2_write_file(FILE *src, int dir_fd, const char *dst, size_t len)
 
 	do {
 		this_write = fread(buffer, 1, MIN(len, sizeof(buffer)), src);
-		fwrite(buffer, 1, this_write, out);
+		if (fwrite(buffer, 1, this_write, out) != this_write) {
+			ret = -1;
+			break;
+		}
 		len -= this_write;
 	} while (len && this_write);
 
-	if (out != stdout)
-		fclose(out);
+	if (ferror(src))
+		ret = -1;
+	if (len != 0)
+		ret = -1;
+
+	if (out != stdout) {
+		if (fclose(out) != 0)
+			ret = -1;
+	}
+
+	return ret;
 }
 
 static int
@@ -191,7 +218,7 @@ tbz2_decompose(int dir_fd, const char *tbz2, const char *tarbz2, const char *xpa
 		goto close_in_and_ret;
 	if (fread(tbz2_tail, 1, TBZ2_END_LEN, in) != TBZ2_END_LEN)
 		goto close_in_and_ret;
-	if (memcmp(tbz2_tail + 4, TBZ2_END_MSG, TBZ2_END_MSG_LEN)) {
+	if (memcmp(tbz2_tail + 4, TBZ2_END_MSG, TBZ2_END_MSG_LEN) != 0) {
 		warn("%s: Invalid tbz2", tbz2);
 		goto close_in_and_ret;
 	}
@@ -213,17 +240,20 @@ tbz2_decompose(int dir_fd, const char *tbz2, const char *tarbz2, const char *xpa
 	}
 
 	/* reset to the start of the tbz2 */
-	rewind(in);
+	if (fseek(in, 0, SEEK_SET) != 0)
+		goto close_in_and_ret;
 	/* dump the tar.bz2 */
 	if (verbose)
 		printf("output tar.bz2: %s (%s)\n", tarbz2,
 				make_human_readable_str(tarbz2_size, 1, 0));
-	_tbz2_write_file(in, dir_fd, tarbz2, tarbz2_size);
+	if (_tbz2_write_file(in, dir_fd, tarbz2, tarbz2_size) != 0)
+		goto close_in_and_ret;
 	/* dump the xpak */
 	if (verbose)
 		printf("output xpak: %s (%s)\n", xpak,
 				make_human_readable_str(xpak_size, 1, 0));
-	_tbz2_write_file(in, dir_fd, xpak, xpak_size);
+	if (_tbz2_write_file(in, dir_fd, xpak, xpak_size) != 0)
+		goto close_in_and_ret;
 
 	ret = 0;
  close_in_and_ret:

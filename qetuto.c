@@ -6,8 +6,8 @@
  *
  * qetuto: a C reimplementation of app-portage/getuto (getuto 1.18),
  * maintaining ${ROOT}/etc/portage/gnupg so the Gentoo release keys are
- * trusted for binary-package signatures.  Same behaviour, no bash, no
- * dependency on getuto being installed, it still drives gpg/gpgconf.
+ * trusted for binary-package signatures. Same behaviour that goes by
+ * gpg/gpgconf.
  */
 
 #include "main.h"
@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -24,6 +25,7 @@
 #include "array.h"
 #include "eat_file.h"
 #include "rmspace.h"
+#include "safe_io.h"
 #include "set.h"
 #include "xasprintf.h"
 #include "xmkdir.h"
@@ -59,7 +61,8 @@ static char **qet_keyservers;
 static char **qet_keyfiles;
 
 /* split a whitespace/comma separated config value into a NULL-terminated
- * argv of xstrdup'd tokens */
+ * argv of xstrdup'd tokens.
+ * TBD other details. */
 static char **
 qet_split_list(const char *s)
 {
@@ -147,7 +150,7 @@ qet_free_lists(void)
 }
 
 /* fork/exec argv; optional stdin feed, optional stdout capture (malloc'd
- * into *out).  Returns the child exit status, or -1 on spawn failure. */
+ * into *out). Returns the child exit status, or -1 on spawn failure. */
 static int
 qet_spawn(char *const argv[], const char *input, char **out)
 {
@@ -196,7 +199,7 @@ qet_spawn(char *const argv[], const char *input, char **out)
 	if (input != NULL) {
 		close(inpipe[0]);
 		/* child may have died; it is reaped below regardless */
-		if (write(inpipe[1], input, strlen(input)) < 0)
+		if (safe_write(inpipe[1], input, strlen(input)) < 0)
 			(void)0;
 		close(inpipe[1]);
 	}
@@ -233,16 +236,16 @@ qet_gpg_argv(char **av, size_t avlen, const char *first, ...)
 	size_t  n = 0;
 	const char *a;
 
-	av[n++] = (char *)"gpg";
+	av[n++] = q_deconst("gpg");
 	if (qet_quiet) {
-		av[n++] = (char *)"--quiet";
-		av[n++] = (char *)"--no-permission-warning";
+		av[n++] = q_deconst("--quiet");
+		av[n++] = q_deconst("--no-permission-warning");
 	}
 	if (first != NULL) {
-		av[n++] = (char *)first;
+		av[n++] = q_deconst(first);
 		va_start(ap, first);
 		while ((a = va_arg(ap, const char *)) != NULL && n < avlen - 1)
-			av[n++] = (char *)a;
+			av[n++] = q_deconst(a);
 		va_end(ap);
 	}
 	av[n] = NULL;
@@ -268,8 +271,8 @@ qet_colon_fields(char *line, char **fields, int maxf)
 static void
 qet_gpgconf_kill(void)
 {
-	char *av[] = { (char *)"gpgconf", (char *)"--kill", (char *)"all",
-				   NULL };
+	char *av[] = { q_deconst("gpgconf"), q_deconst("--kill"),
+				   q_deconst("all"), NULL };
 
 	(void)qet_spawn(av, NULL, NULL);
 }
@@ -333,13 +336,13 @@ qet_wkd_locate(void)
 
 	loc = xmalloc(sizeof(*loc) * (nloc + 6));
 	nloc = 0;
-	loc[nloc++] = (char *)"gpg";
+	loc[nloc++] = q_deconst("gpg");
 	if (qet_quiet) {
-		loc[nloc++] = (char *)"--quiet";
-		loc[nloc++] = (char *)"--no-permission-warning";
+		loc[nloc++] = q_deconst("--quiet");
+		loc[nloc++] = q_deconst("--no-permission-warning");
 	}
-	loc[nloc++] = (char *)"--auto-key-locate=clear,nodefault,wkd";
-	loc[nloc++] = (char *)"--locate-key";
+	loc[nloc++] = q_deconst("--auto-key-locate=clear,nodefault,wkd");
+	loc[nloc++] = q_deconst("--locate-key");
 	array_for_each(ekeys, i, e)
 		loc[nloc++] = e;
 	loc[nloc] = NULL;
@@ -416,19 +419,19 @@ qet_refresh(const char *lastrun)
 		char *tav[16];
 		size_t n = 0;
 
-		tav[n++] = (char *)"timeout";
-		tav[n++] = (char *)"-k";
-		tav[n++] = (char *)QET_GPG_KILL;
-		tav[n++] = (char *)QET_GPG_TERM;
-		tav[n++] = (char *)"gpg";
+		tav[n++] = q_deconst("timeout");
+		tav[n++] = q_deconst("-k");
+		tav[n++] = q_deconst(QET_GPG_KILL);
+		tav[n++] = q_deconst(QET_GPG_TERM);
+		tav[n++] = q_deconst("gpg");
 		if (qet_quiet) {
-			tav[n++] = (char *)"--quiet";
-			tav[n++] = (char *)"--no-permission-warning";
+			tav[n++] = q_deconst("--quiet");
+			tav[n++] = q_deconst("--no-permission-warning");
 		}
-		tav[n++] = (char *)"--batch";
-		tav[n++] = (char *)"--keyserver";
+		tav[n++] = q_deconst("--batch");
+		tav[n++] = q_deconst("--keyserver");
 		tav[n++] = (char *)qet_keyservers[k];
-		tav[n++] = (char *)"--refresh-keys";
+		tav[n++] = q_deconst("--refresh-keys");
 		tav[n] = NULL;
 		(void)qet_spawn(tav, NULL, NULL);
 	}
@@ -463,8 +466,8 @@ qet_bootstrap(const char *lastrun)
 	snprintf(orig, sizeof(orig), "%s", qet_home);
 	snprintf(staging, sizeof(staging), "%s.getuto.tmp", qet_home);
 
-	rmav[0] = (char *)"rm";
-	rmav[1] = (char *)"-rf";
+	rmav[0] = q_deconst("rm");
+	rmav[1] = q_deconst("-rf");
 	rmav[2] = staging;
 	rmav[3] = NULL;
 	(void)qet_spawn(rmav, NULL, NULL);
@@ -476,29 +479,33 @@ qet_bootstrap(const char *lastrun)
 	chmod(staging, 0755);
 	setenv("GNUPGHOME", staging, 1);
 
-	snprintf(path, sizeof(path), "%s/dirmngr.conf", staging);
+	strcpy(path, staging);
+	strcat(path, "/dirmngr.conf");
 	f = fopen(path, "w");
 	if (f != NULL) {
 		fputs("honor-http-proxy\nno-use-tor\nstandard-resolver\n"
 			  "resolver-timeout 90\nconnect-timeout 90\n", f);
 		fclose(f);
 	}
-	snprintf(path, sizeof(path), "%s/gpg-agent.conf", staging);
+	strcpy(path, staging);
+	strcat(path, "/gpg-agent.conf");
 	f = fopen(path, "w");
 	if (f != NULL) {
 		fputs("disable-scdaemon\n", f);
 		fclose(f);
 	}
-	snprintf(path, sizeof(path), "%s/gpg.conf", staging);
+	strcpy(path, staging);
+	strcat(path, "/gpg.conf");
 	f = fopen(path, "w");
 	if (f != NULL) {
 		fputs("no-greeting\n", f);
+		fputs("no-auto-check-trustdb\n", f);
 		fclose(f);
 	}
 
 	{
-		char *oav[] = { (char *)"openssl", (char *)"rand",
-						(char *)"-base64", (char *)"32", NULL };
+		char *oav[] = { q_deconst("openssl"), q_deconst("rand"),
+						q_deconst("-base64"), q_deconst("32"), NULL };
 
 		if (qet_spawn(oav, NULL, &pass) != 0 || pass == NULL) {
 			warn("could not generate a passphrase (openssl)");
@@ -512,7 +519,8 @@ qet_bootstrap(const char *lastrun)
 		char *cfgbuf;
 		int   fd;
 
-		snprintf(keycfg, sizeof(keycfg), "%s/.keycfg.XXXXXX", staging);
+		strcpy(keycfg, staging);
+		strcat(keycfg, "/.keycfg.XXXXXX");
 		fd = mkstemp(keycfg);
 		if (fd < 0) {
 			warnp("mkstemp failed");
@@ -528,7 +536,7 @@ qet_bootstrap(const char *lastrun)
 			"Name-Email: portage@localhost\n"
 			"Expire-Date: 0\nPassphrase: %s\n%%commit\n%%echo done\n",
 			pass);
-		if (write(fd, cfgbuf, strlen(cfgbuf)) < 0)
+		if (safe_write(fd, cfgbuf, strlen(cfgbuf)) < 0)
 			warnp("writing key config");
 		close(fd);
 		free(cfgbuf);
@@ -542,7 +550,8 @@ qet_bootstrap(const char *lastrun)
 		unlink(keycfg);
 	}
 
-	snprintf(path, sizeof(path), "%s/pass", staging);
+	strcpy(path, staging);
+	strcat(path, "/pass");
 	f = fopen(path, "w");
 	if (f == NULL) {
 		warnp("cannot write %s", path);
@@ -565,7 +574,8 @@ qet_bootstrap(const char *lastrun)
 		warn("could not determine local trust key fingerprint");
 		goto fail;
 	}
-	snprintf(path, sizeof(path), "%s/mykeyid", staging);
+	strcpy(path, staging);
+	strcat(path, "/mykeyid");
 	f = fopen(path, "w");
 	if (f != NULL) {
 		fprintf(f, "%s\n", mykeyid);
@@ -599,19 +609,19 @@ qet_bootstrap(const char *lastrun)
 		char  *tav[64];
 		size_t n = 0;
 
-		tav[n++] = (char *)"timeout";
-		tav[n++] = (char *)"-k";
-		tav[n++] = (char *)QET_GPG_KILL;
-		tav[n++] = (char *)QET_GPG_TERM;
-		tav[n++] = (char *)"gpg";
+		tav[n++] = q_deconst("timeout");
+		tav[n++] = q_deconst("-k");
+		tav[n++] = q_deconst(QET_GPG_KILL);
+		tav[n++] = q_deconst(QET_GPG_TERM);
+		tav[n++] = q_deconst("gpg");
 		if (qet_quiet) {
-			tav[n++] = (char *)"--quiet";
-			tav[n++] = (char *)"--no-permission-warning";
+			tav[n++] = q_deconst("--quiet");
+			tav[n++] = q_deconst("--no-permission-warning");
 		}
-		tav[n++] = (char *)"--batch";
-		tav[n++] = (char *)"--keyserver";
+		tav[n++] = q_deconst("--batch");
+		tav[n++] = q_deconst("--keyserver");
 		tav[n++] = (char *)qet_keyservers[k];
-		tav[n++] = (char *)"--recv-keys";
+		tav[n++] = q_deconst("--recv-keys");
 		array_for_each(relarr, i, fp)
 			if (n < 62)
 				tav[n++] = fp;
@@ -624,44 +634,45 @@ qet_bootstrap(const char *lastrun)
 	{
 		char passfile[_Q_PATH_MAX + 48];
 
-		snprintf(passfile, sizeof(passfile), "%s/pass", staging);
+		strcpy(passfile, staging);
+		strcat(passfile, "/pass");
 		array_for_each(relarr, i, fp) {
 			char *lav[16];
 			size_t n = 0;
 
-			lav[n++] = (char *)"gpg";
+			lav[n++] = q_deconst("gpg");
 			if (qet_quiet) {
-				lav[n++] = (char *)"--quiet";
-				lav[n++] = (char *)"--no-permission-warning";
+				lav[n++] = q_deconst("--quiet");
+				lav[n++] = q_deconst("--no-permission-warning");
 			}
-			lav[n++] = (char *)"--batch";
-			lav[n++] = (char *)"--yes";
-			lav[n++] = (char *)"--no-tty";
-			lav[n++] = (char *)"--passphrase-file";
+			lav[n++] = q_deconst("--batch");
+			lav[n++] = q_deconst("--yes");
+			lav[n++] = q_deconst("--no-tty");
+			lav[n++] = q_deconst("--passphrase-file");
 			lav[n++] = passfile;
-			lav[n++] = (char *)"--pinentry-mode";
-			lav[n++] = (char *)"loopback";
-			lav[n++] = (char *)"--quick-lsign-key";
+			lav[n++] = q_deconst("--pinentry-mode");
+			lav[n++] = q_deconst("loopback");
+			lav[n++] = q_deconst("--quick-lsign-key");
 			lav[n++] = fp;
 			lav[n] = NULL;
 			if (qet_spawn(lav, NULL, NULL) != 0) {
 				char *fav[18];
 				size_t m = 0;
 
-				fav[m++] = (char *)"gpg";
+				fav[m++] = q_deconst("gpg");
 				if (qet_quiet) {
-					fav[m++] = (char *)"--quiet";
-					fav[m++] = (char *)"--no-permission-warning";
+					fav[m++] = q_deconst("--quiet");
+					fav[m++] = q_deconst("--no-permission-warning");
 				}
-				fav[m++] = (char *)"--command-fd";
-				fav[m++] = (char *)"0";
-				fav[m++] = (char *)"--yes";
-				fav[m++] = (char *)"--no-tty";
-				fav[m++] = (char *)"--passphrase-file";
+				fav[m++] = q_deconst("--command-fd");
+				fav[m++] = q_deconst("0");
+				fav[m++] = q_deconst("--yes");
+				fav[m++] = q_deconst("--no-tty");
+				fav[m++] = q_deconst("--passphrase-file");
 				fav[m++] = passfile;
-				fav[m++] = (char *)"--pinentry-mode";
-				fav[m++] = (char *)"loopback";
-				fav[m++] = (char *)"--lsign-key";
+				fav[m++] = q_deconst("--pinentry-mode");
+				fav[m++] = q_deconst("loopback");
+				fav[m++] = q_deconst("--lsign-key");
 				fav[m++] = fp;
 				fav[m] = NULL;
 				(void)qet_spawn(fav, "y\ny\n", NULL);
@@ -674,7 +685,8 @@ qet_bootstrap(const char *lastrun)
 	qet_gpg_argv(av, 24, "--batch", "--check-trustdb", NULL);
 	(void)qet_spawn(av, NULL, NULL);
 
-	snprintf(path, sizeof(path), "%s/trustdb.gpg", staging);
+	strcpy(path, staging);
+	strcat(path, "/trustdb.gpg");
 	chmod(path, 0644);
 
 	if (rename(staging, orig) != 0) {

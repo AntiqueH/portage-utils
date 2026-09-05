@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _PRELINK_H
-#define _PRELINK_H 1
+#ifndef PRELINK_H
+#define PRELINK_H 1
 
 #include <stdbool.h>
 

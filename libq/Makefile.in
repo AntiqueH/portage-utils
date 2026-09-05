@@ -150,6 +150,7 @@ am__aclocal_m4_deps = $(top_srcdir)/autotools/m4/00gnulib.m4 \
 	$(top_srcdir)/autotools/m4/gnulib-i18n.m4 \
 	$(top_srcdir)/autotools/m4/group-member.m4 \
 	$(top_srcdir)/autotools/m4/include_next.m4 \
+	$(top_srcdir)/autotools/m4/internal-libs.m4 \
 	$(top_srcdir)/autotools/m4/inttypes.m4 \
 	$(top_srcdir)/autotools/m4/largefile.m4 \
 	$(top_srcdir)/autotools/m4/limits-h.m4 \
@@ -250,15 +251,21 @@ libq_a_AR = $(AR) $(ARFLAGS)
 libq_a_RANLIB = $(RANLIB)
 libq_a_LIBADD =
 am__objects_1 = libq_a-array.$(OBJEXT) libq_a-atom.$(OBJEXT) \
-	libq_a-basename.$(OBJEXT) libq_a-colors.$(OBJEXT) \
+	libq_a-basename.$(OBJEXT) libq_a-binpath.$(OBJEXT) \
+	libq_a-binrepos.$(OBJEXT) libq_a-colors.$(OBJEXT) \
 	libq_a-contents.$(OBJEXT) libq_a-copy_file.$(OBJEXT) \
 	libq_a-dep.$(OBJEXT) libq_a-eat_file.$(OBJEXT) \
-	libq_a-file_magic.$(OBJEXT) libq_a-hash.$(OBJEXT) \
-	libq_a-human_readable.$(OBJEXT) libq_a-move_file.$(OBJEXT) \
+	libq_a-elfneeded.$(OBJEXT) libq_a-envd.$(OBJEXT) \
+	libq_a-file_magic.$(OBJEXT) libq_a-gpgsign.$(OBJEXT) \
+	libq_a-gpkg.$(OBJEXT) libq_a-hash.$(OBJEXT) \
+	libq_a-human_readable.$(OBJEXT) libq_a-mfline.$(OBJEXT) \
+	libq_a-move_file.$(OBJEXT) libq_a-moves.$(OBJEXT) \
 	libq_a-prelink.$(OBJEXT) libq_a-profile.$(OBJEXT) \
 	libq_a-rmspace.$(OBJEXT) libq_a-safe_io.$(OBJEXT) \
 	libq_a-scandirat.$(OBJEXT) libq_a-set.$(OBJEXT) \
-	libq_a-tree.$(OBJEXT) libq_a-xchdir.$(OBJEXT) \
+	libq_a-tree.$(OBJEXT) libq_a-usedep.$(OBJEXT) \
+	libq_a-preserved.$(OBJEXT) libq_a-linkage.$(OBJEXT) \
+	libq_a-useflags.$(OBJEXT) libq_a-xchdir.$(OBJEXT) \
 	libq_a-xmkdir.$(OBJEXT) libq_a-xpak.$(OBJEXT) \
 	libq_a-xregex.$(OBJEXT) libq_a-xsystem.$(OBJEXT)
 am_libq_a_OBJECTS = $(am__objects_1)
@@ -280,15 +287,21 @@ depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/libq_a-array.Po \
 	./$(DEPDIR)/libq_a-atom.Po ./$(DEPDIR)/libq_a-basename.Po \
+	./$(DEPDIR)/libq_a-binpath.Po ./$(DEPDIR)/libq_a-binrepos.Po \
 	./$(DEPDIR)/libq_a-colors.Po ./$(DEPDIR)/libq_a-contents.Po \
 	./$(DEPDIR)/libq_a-copy_file.Po ./$(DEPDIR)/libq_a-dep.Po \
-	./$(DEPDIR)/libq_a-eat_file.Po \
-	./$(DEPDIR)/libq_a-file_magic.Po ./$(DEPDIR)/libq_a-hash.Po \
+	./$(DEPDIR)/libq_a-eat_file.Po ./$(DEPDIR)/libq_a-elfneeded.Po \
+	./$(DEPDIR)/libq_a-envd.Po ./$(DEPDIR)/libq_a-file_magic.Po \
+	./$(DEPDIR)/libq_a-gpgsign.Po ./$(DEPDIR)/libq_a-gpkg.Po \
+	./$(DEPDIR)/libq_a-hash.Po \
 	./$(DEPDIR)/libq_a-human_readable.Po \
-	./$(DEPDIR)/libq_a-move_file.Po ./$(DEPDIR)/libq_a-prelink.Po \
+	./$(DEPDIR)/libq_a-linkage.Po ./$(DEPDIR)/libq_a-mfline.Po \
+	./$(DEPDIR)/libq_a-move_file.Po ./$(DEPDIR)/libq_a-moves.Po \
+	./$(DEPDIR)/libq_a-prelink.Po ./$(DEPDIR)/libq_a-preserved.Po \
 	./$(DEPDIR)/libq_a-profile.Po ./$(DEPDIR)/libq_a-rmspace.Po \
 	./$(DEPDIR)/libq_a-safe_io.Po ./$(DEPDIR)/libq_a-scandirat.Po \
 	./$(DEPDIR)/libq_a-set.Po ./$(DEPDIR)/libq_a-tree.Po \
+	./$(DEPDIR)/libq_a-usedep.Po ./$(DEPDIR)/libq_a-useflags.Po \
 	./$(DEPDIR)/libq_a-xchdir.Po ./$(DEPDIR)/libq_a-xmkdir.Po \
 	./$(DEPDIR)/libq_a-xpak.Po ./$(DEPDIR)/libq_a-xregex.Po \
 	./$(DEPDIR)/libq_a-xsystem.Po
@@ -761,6 +774,7 @@ GNULIB_LOCALEDIR = @GNULIB_LOCALEDIR@
 GNULIB_LOCALEDIR_c = @GNULIB_LOCALEDIR_c@
 GNULIB_LOCALEDIR_c_make = @GNULIB_LOCALEDIR_c_make@
 GPGME_CFLAGS = @GPGME_CFLAGS@
+GPGME_ENABLED = @GPGME_ENABLED@
 GPGME_LIBS = @GPGME_LIBS@
 GPKG_ENABLED = @GPKG_ENABLED@
 GTREE_ENABLED = @GTREE_ENABLED@
@@ -1048,6 +1062,10 @@ INSTALL_SCRIPT = @INSTALL_SCRIPT@
 INSTALL_STRIP_PROGRAM = @INSTALL_STRIP_PROGRAM@
 INT32_MAX_LT_INTMAX_MAX = @INT32_MAX_LT_INTMAX_MAX@
 INT64_MAX_EQ_LONG_MAX = @INT64_MAX_EQ_LONG_MAX@
+INTERNAL_CFLAGS = @INTERNAL_CFLAGS@
+INTERNAL_CPPFLAGS = @INTERNAL_CPPFLAGS@
+INTERNAL_CURL_LIBS = @INTERNAL_CURL_LIBS@
+INTERNAL_LDFLAGS = @INTERNAL_LDFLAGS@
 LDFLAGS = @LDFLAGS@
 LIBARCHIVE_CFLAGS = @LIBARCHIVE_CFLAGS@
 LIBARCHIVE_LIBS = @LIBARCHIVE_LIBS@
@@ -1374,6 +1392,8 @@ SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 SIG_ATOMIC_T_SUFFIX = @SIG_ATOMIC_T_SUFFIX@
 SIZE_T_SUFFIX = @SIZE_T_SUFFIX@
+STATICXML2_CFLAGS = @STATICXML2_CFLAGS@
+STATICXML2_LIBS = @STATICXML2_LIBS@
 STDCKDINT_H = @STDCKDINT_H@
 STDDEF_H = @STDDEF_H@
 STDDEF_NOT_IDEMPOTENT = @STDDEF_NOT_IDEMPOTENT@
@@ -1389,8 +1409,6 @@ UNISTD_H_DEFINES_STRUCT_TIMESPEC = @UNISTD_H_DEFINES_STRUCT_TIMESPEC@
 UNISTD_H_HAVE_SYS_RANDOM_H = @UNISTD_H_HAVE_SYS_RANDOM_H@
 UNISTD_H_HAVE_WINSOCK2_H = @UNISTD_H_HAVE_WINSOCK2_H@
 UNISTD_H_HAVE_WINSOCK2_H_AND_USE_SOCKETS = @UNISTD_H_HAVE_WINSOCK2_H_AND_USE_SOCKETS@
-VCURL_DEPS_CFLAGS = @VCURL_DEPS_CFLAGS@
-VCURL_DEPS_LIBS = @VCURL_DEPS_LIBS@
 VERSION = @VERSION@
 WCHAR_T_SUFFIX = @WCHAR_T_SUFFIX@
 WINDOWS_64_BIT_OFF_T = @WINDOWS_64_BIT_OFF_T@
@@ -1469,17 +1487,24 @@ QFILES = \
 	array.c array.h \
 	atom.c atom.h \
 	basename.c basename.h \
+	binpath.c binpath.h \
+	binrepos.c binrepos.h \
 	busybox.h \
 	colors.c colors.h \
 	contents.c contents.h \
 	copy_file.c copy_file.h \
 	dep.c dep.h \
 	eat_file.c eat_file.h \
+	elfneeded.c elfneeded.h \
+	envd.c envd.h \
 	file_magic.c file_magic.h \
+	gpgsign.c gpgsign.h \
+	gpkg.c gpkg.h \
 	hash.c hash.h \
 	human_readable.c human_readable.h \
-	i18n.h \
+	mfline.c mfline.h \
 	move_file.c move_file.h \
+	moves.c moves.h \
 	prelink.c prelink.h \
 	profile.c profile.h \
 	rmspace.c rmspace.h \
@@ -1487,6 +1512,10 @@ QFILES = \
 	scandirat.c scandirat.h \
 	set.c set.h \
 	tree.c tree.h \
+	usedep.c usedep.h \
+	preserved.c preserved.h \
+	linkage.c linkage.h \
+	useflags.c useflags.h \
 	xasprintf.h \
 	xchdir.c xchdir.h \
 	xmkdir.c xmkdir.h \
@@ -1555,22 +1584,34 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-array.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-atom.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-basename.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-binpath.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-binrepos.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-colors.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-contents.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-copy_file.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-dep.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-eat_file.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-elfneeded.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-envd.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-file_magic.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-gpgsign.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-gpkg.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-hash.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-human_readable.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-linkage.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-mfline.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-move_file.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-moves.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-prelink.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-preserved.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-profile.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-rmspace.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-safe_io.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-scandirat.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-set.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-tree.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-usedep.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-useflags.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-xchdir.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-xmkdir.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libq_a-xpak.Po@am__quote@ # am--include-marker
@@ -1638,6 +1679,34 @@ libq_a-basename.obj: basename.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='basename.c' object='libq_a-basename.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-basename.obj `if test -f 'basename.c'; then $(CYGPATH_W) 'basename.c'; else $(CYGPATH_W) '$(srcdir)/basename.c'; fi`
+
+libq_a-binpath.o: binpath.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-binpath.o -MD -MP -MF $(DEPDIR)/libq_a-binpath.Tpo -c -o libq_a-binpath.o `test -f 'binpath.c' || echo '$(srcdir)/'`binpath.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-binpath.Tpo $(DEPDIR)/libq_a-binpath.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='binpath.c' object='libq_a-binpath.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-binpath.o `test -f 'binpath.c' || echo '$(srcdir)/'`binpath.c
+
+libq_a-binpath.obj: binpath.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-binpath.obj -MD -MP -MF $(DEPDIR)/libq_a-binpath.Tpo -c -o libq_a-binpath.obj `if test -f 'binpath.c'; then $(CYGPATH_W) 'binpath.c'; else $(CYGPATH_W) '$(srcdir)/binpath.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-binpath.Tpo $(DEPDIR)/libq_a-binpath.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='binpath.c' object='libq_a-binpath.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-binpath.obj `if test -f 'binpath.c'; then $(CYGPATH_W) 'binpath.c'; else $(CYGPATH_W) '$(srcdir)/binpath.c'; fi`
+
+libq_a-binrepos.o: binrepos.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-binrepos.o -MD -MP -MF $(DEPDIR)/libq_a-binrepos.Tpo -c -o libq_a-binrepos.o `test -f 'binrepos.c' || echo '$(srcdir)/'`binrepos.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-binrepos.Tpo $(DEPDIR)/libq_a-binrepos.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='binrepos.c' object='libq_a-binrepos.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-binrepos.o `test -f 'binrepos.c' || echo '$(srcdir)/'`binrepos.c
+
+libq_a-binrepos.obj: binrepos.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-binrepos.obj -MD -MP -MF $(DEPDIR)/libq_a-binrepos.Tpo -c -o libq_a-binrepos.obj `if test -f 'binrepos.c'; then $(CYGPATH_W) 'binrepos.c'; else $(CYGPATH_W) '$(srcdir)/binrepos.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-binrepos.Tpo $(DEPDIR)/libq_a-binrepos.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='binrepos.c' object='libq_a-binrepos.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-binrepos.obj `if test -f 'binrepos.c'; then $(CYGPATH_W) 'binrepos.c'; else $(CYGPATH_W) '$(srcdir)/binrepos.c'; fi`
 
 libq_a-colors.o: colors.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-colors.o -MD -MP -MF $(DEPDIR)/libq_a-colors.Tpo -c -o libq_a-colors.o `test -f 'colors.c' || echo '$(srcdir)/'`colors.c
@@ -1709,6 +1778,34 @@ libq_a-eat_file.obj: eat_file.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-eat_file.obj `if test -f 'eat_file.c'; then $(CYGPATH_W) 'eat_file.c'; else $(CYGPATH_W) '$(srcdir)/eat_file.c'; fi`
 
+libq_a-elfneeded.o: elfneeded.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-elfneeded.o -MD -MP -MF $(DEPDIR)/libq_a-elfneeded.Tpo -c -o libq_a-elfneeded.o `test -f 'elfneeded.c' || echo '$(srcdir)/'`elfneeded.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-elfneeded.Tpo $(DEPDIR)/libq_a-elfneeded.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='elfneeded.c' object='libq_a-elfneeded.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-elfneeded.o `test -f 'elfneeded.c' || echo '$(srcdir)/'`elfneeded.c
+
+libq_a-elfneeded.obj: elfneeded.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-elfneeded.obj -MD -MP -MF $(DEPDIR)/libq_a-elfneeded.Tpo -c -o libq_a-elfneeded.obj `if test -f 'elfneeded.c'; then $(CYGPATH_W) 'elfneeded.c'; else $(CYGPATH_W) '$(srcdir)/elfneeded.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-elfneeded.Tpo $(DEPDIR)/libq_a-elfneeded.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='elfneeded.c' object='libq_a-elfneeded.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-elfneeded.obj `if test -f 'elfneeded.c'; then $(CYGPATH_W) 'elfneeded.c'; else $(CYGPATH_W) '$(srcdir)/elfneeded.c'; fi`
+
+libq_a-envd.o: envd.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-envd.o -MD -MP -MF $(DEPDIR)/libq_a-envd.Tpo -c -o libq_a-envd.o `test -f 'envd.c' || echo '$(srcdir)/'`envd.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-envd.Tpo $(DEPDIR)/libq_a-envd.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='envd.c' object='libq_a-envd.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-envd.o `test -f 'envd.c' || echo '$(srcdir)/'`envd.c
+
+libq_a-envd.obj: envd.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-envd.obj -MD -MP -MF $(DEPDIR)/libq_a-envd.Tpo -c -o libq_a-envd.obj `if test -f 'envd.c'; then $(CYGPATH_W) 'envd.c'; else $(CYGPATH_W) '$(srcdir)/envd.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-envd.Tpo $(DEPDIR)/libq_a-envd.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='envd.c' object='libq_a-envd.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-envd.obj `if test -f 'envd.c'; then $(CYGPATH_W) 'envd.c'; else $(CYGPATH_W) '$(srcdir)/envd.c'; fi`
+
 libq_a-file_magic.o: file_magic.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-file_magic.o -MD -MP -MF $(DEPDIR)/libq_a-file_magic.Tpo -c -o libq_a-file_magic.o `test -f 'file_magic.c' || echo '$(srcdir)/'`file_magic.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-file_magic.Tpo $(DEPDIR)/libq_a-file_magic.Po
@@ -1722,6 +1819,34 @@ libq_a-file_magic.obj: file_magic.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='file_magic.c' object='libq_a-file_magic.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-file_magic.obj `if test -f 'file_magic.c'; then $(CYGPATH_W) 'file_magic.c'; else $(CYGPATH_W) '$(srcdir)/file_magic.c'; fi`
+
+libq_a-gpgsign.o: gpgsign.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-gpgsign.o -MD -MP -MF $(DEPDIR)/libq_a-gpgsign.Tpo -c -o libq_a-gpgsign.o `test -f 'gpgsign.c' || echo '$(srcdir)/'`gpgsign.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-gpgsign.Tpo $(DEPDIR)/libq_a-gpgsign.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='gpgsign.c' object='libq_a-gpgsign.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-gpgsign.o `test -f 'gpgsign.c' || echo '$(srcdir)/'`gpgsign.c
+
+libq_a-gpgsign.obj: gpgsign.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-gpgsign.obj -MD -MP -MF $(DEPDIR)/libq_a-gpgsign.Tpo -c -o libq_a-gpgsign.obj `if test -f 'gpgsign.c'; then $(CYGPATH_W) 'gpgsign.c'; else $(CYGPATH_W) '$(srcdir)/gpgsign.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-gpgsign.Tpo $(DEPDIR)/libq_a-gpgsign.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='gpgsign.c' object='libq_a-gpgsign.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-gpgsign.obj `if test -f 'gpgsign.c'; then $(CYGPATH_W) 'gpgsign.c'; else $(CYGPATH_W) '$(srcdir)/gpgsign.c'; fi`
+
+libq_a-gpkg.o: gpkg.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-gpkg.o -MD -MP -MF $(DEPDIR)/libq_a-gpkg.Tpo -c -o libq_a-gpkg.o `test -f 'gpkg.c' || echo '$(srcdir)/'`gpkg.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-gpkg.Tpo $(DEPDIR)/libq_a-gpkg.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='gpkg.c' object='libq_a-gpkg.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-gpkg.o `test -f 'gpkg.c' || echo '$(srcdir)/'`gpkg.c
+
+libq_a-gpkg.obj: gpkg.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-gpkg.obj -MD -MP -MF $(DEPDIR)/libq_a-gpkg.Tpo -c -o libq_a-gpkg.obj `if test -f 'gpkg.c'; then $(CYGPATH_W) 'gpkg.c'; else $(CYGPATH_W) '$(srcdir)/gpkg.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-gpkg.Tpo $(DEPDIR)/libq_a-gpkg.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='gpkg.c' object='libq_a-gpkg.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-gpkg.obj `if test -f 'gpkg.c'; then $(CYGPATH_W) 'gpkg.c'; else $(CYGPATH_W) '$(srcdir)/gpkg.c'; fi`
 
 libq_a-hash.o: hash.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-hash.o -MD -MP -MF $(DEPDIR)/libq_a-hash.Tpo -c -o libq_a-hash.o `test -f 'hash.c' || echo '$(srcdir)/'`hash.c
@@ -1751,6 +1876,20 @@ libq_a-human_readable.obj: human_readable.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-human_readable.obj `if test -f 'human_readable.c'; then $(CYGPATH_W) 'human_readable.c'; else $(CYGPATH_W) '$(srcdir)/human_readable.c'; fi`
 
+libq_a-mfline.o: mfline.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-mfline.o -MD -MP -MF $(DEPDIR)/libq_a-mfline.Tpo -c -o libq_a-mfline.o `test -f 'mfline.c' || echo '$(srcdir)/'`mfline.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-mfline.Tpo $(DEPDIR)/libq_a-mfline.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='mfline.c' object='libq_a-mfline.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-mfline.o `test -f 'mfline.c' || echo '$(srcdir)/'`mfline.c
+
+libq_a-mfline.obj: mfline.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-mfline.obj -MD -MP -MF $(DEPDIR)/libq_a-mfline.Tpo -c -o libq_a-mfline.obj `if test -f 'mfline.c'; then $(CYGPATH_W) 'mfline.c'; else $(CYGPATH_W) '$(srcdir)/mfline.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-mfline.Tpo $(DEPDIR)/libq_a-mfline.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='mfline.c' object='libq_a-mfline.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-mfline.obj `if test -f 'mfline.c'; then $(CYGPATH_W) 'mfline.c'; else $(CYGPATH_W) '$(srcdir)/mfline.c'; fi`
+
 libq_a-move_file.o: move_file.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-move_file.o -MD -MP -MF $(DEPDIR)/libq_a-move_file.Tpo -c -o libq_a-move_file.o `test -f 'move_file.c' || echo '$(srcdir)/'`move_file.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-move_file.Tpo $(DEPDIR)/libq_a-move_file.Po
@@ -1764,6 +1903,20 @@ libq_a-move_file.obj: move_file.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='move_file.c' object='libq_a-move_file.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-move_file.obj `if test -f 'move_file.c'; then $(CYGPATH_W) 'move_file.c'; else $(CYGPATH_W) '$(srcdir)/move_file.c'; fi`
+
+libq_a-moves.o: moves.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-moves.o -MD -MP -MF $(DEPDIR)/libq_a-moves.Tpo -c -o libq_a-moves.o `test -f 'moves.c' || echo '$(srcdir)/'`moves.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-moves.Tpo $(DEPDIR)/libq_a-moves.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='moves.c' object='libq_a-moves.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-moves.o `test -f 'moves.c' || echo '$(srcdir)/'`moves.c
+
+libq_a-moves.obj: moves.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-moves.obj -MD -MP -MF $(DEPDIR)/libq_a-moves.Tpo -c -o libq_a-moves.obj `if test -f 'moves.c'; then $(CYGPATH_W) 'moves.c'; else $(CYGPATH_W) '$(srcdir)/moves.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-moves.Tpo $(DEPDIR)/libq_a-moves.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='moves.c' object='libq_a-moves.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-moves.obj `if test -f 'moves.c'; then $(CYGPATH_W) 'moves.c'; else $(CYGPATH_W) '$(srcdir)/moves.c'; fi`
 
 libq_a-prelink.o: prelink.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-prelink.o -MD -MP -MF $(DEPDIR)/libq_a-prelink.Tpo -c -o libq_a-prelink.o `test -f 'prelink.c' || echo '$(srcdir)/'`prelink.c
@@ -1862,6 +2015,62 @@ libq_a-tree.obj: tree.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='tree.c' object='libq_a-tree.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-tree.obj `if test -f 'tree.c'; then $(CYGPATH_W) 'tree.c'; else $(CYGPATH_W) '$(srcdir)/tree.c'; fi`
+
+libq_a-usedep.o: usedep.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-usedep.o -MD -MP -MF $(DEPDIR)/libq_a-usedep.Tpo -c -o libq_a-usedep.o `test -f 'usedep.c' || echo '$(srcdir)/'`usedep.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-usedep.Tpo $(DEPDIR)/libq_a-usedep.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='usedep.c' object='libq_a-usedep.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-usedep.o `test -f 'usedep.c' || echo '$(srcdir)/'`usedep.c
+
+libq_a-usedep.obj: usedep.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-usedep.obj -MD -MP -MF $(DEPDIR)/libq_a-usedep.Tpo -c -o libq_a-usedep.obj `if test -f 'usedep.c'; then $(CYGPATH_W) 'usedep.c'; else $(CYGPATH_W) '$(srcdir)/usedep.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-usedep.Tpo $(DEPDIR)/libq_a-usedep.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='usedep.c' object='libq_a-usedep.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-usedep.obj `if test -f 'usedep.c'; then $(CYGPATH_W) 'usedep.c'; else $(CYGPATH_W) '$(srcdir)/usedep.c'; fi`
+
+libq_a-preserved.o: preserved.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-preserved.o -MD -MP -MF $(DEPDIR)/libq_a-preserved.Tpo -c -o libq_a-preserved.o `test -f 'preserved.c' || echo '$(srcdir)/'`preserved.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-preserved.Tpo $(DEPDIR)/libq_a-preserved.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='preserved.c' object='libq_a-preserved.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-preserved.o `test -f 'preserved.c' || echo '$(srcdir)/'`preserved.c
+
+libq_a-preserved.obj: preserved.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-preserved.obj -MD -MP -MF $(DEPDIR)/libq_a-preserved.Tpo -c -o libq_a-preserved.obj `if test -f 'preserved.c'; then $(CYGPATH_W) 'preserved.c'; else $(CYGPATH_W) '$(srcdir)/preserved.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-preserved.Tpo $(DEPDIR)/libq_a-preserved.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='preserved.c' object='libq_a-preserved.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-preserved.obj `if test -f 'preserved.c'; then $(CYGPATH_W) 'preserved.c'; else $(CYGPATH_W) '$(srcdir)/preserved.c'; fi`
+
+libq_a-linkage.o: linkage.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-linkage.o -MD -MP -MF $(DEPDIR)/libq_a-linkage.Tpo -c -o libq_a-linkage.o `test -f 'linkage.c' || echo '$(srcdir)/'`linkage.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-linkage.Tpo $(DEPDIR)/libq_a-linkage.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='linkage.c' object='libq_a-linkage.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-linkage.o `test -f 'linkage.c' || echo '$(srcdir)/'`linkage.c
+
+libq_a-linkage.obj: linkage.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-linkage.obj -MD -MP -MF $(DEPDIR)/libq_a-linkage.Tpo -c -o libq_a-linkage.obj `if test -f 'linkage.c'; then $(CYGPATH_W) 'linkage.c'; else $(CYGPATH_W) '$(srcdir)/linkage.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-linkage.Tpo $(DEPDIR)/libq_a-linkage.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='linkage.c' object='libq_a-linkage.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-linkage.obj `if test -f 'linkage.c'; then $(CYGPATH_W) 'linkage.c'; else $(CYGPATH_W) '$(srcdir)/linkage.c'; fi`
+
+libq_a-useflags.o: useflags.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-useflags.o -MD -MP -MF $(DEPDIR)/libq_a-useflags.Tpo -c -o libq_a-useflags.o `test -f 'useflags.c' || echo '$(srcdir)/'`useflags.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-useflags.Tpo $(DEPDIR)/libq_a-useflags.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='useflags.c' object='libq_a-useflags.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-useflags.o `test -f 'useflags.c' || echo '$(srcdir)/'`useflags.c
+
+libq_a-useflags.obj: useflags.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-useflags.obj -MD -MP -MF $(DEPDIR)/libq_a-useflags.Tpo -c -o libq_a-useflags.obj `if test -f 'useflags.c'; then $(CYGPATH_W) 'useflags.c'; else $(CYGPATH_W) '$(srcdir)/useflags.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libq_a-useflags.Tpo $(DEPDIR)/libq_a-useflags.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='useflags.c' object='libq_a-useflags.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libq_a-useflags.obj `if test -f 'useflags.c'; then $(CYGPATH_W) 'useflags.c'; else $(CYGPATH_W) '$(srcdir)/useflags.c'; fi`
 
 libq_a-xchdir.o: xchdir.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libq_a_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libq_a-xchdir.o -MD -MP -MF $(DEPDIR)/libq_a-xchdir.Tpo -c -o libq_a-xchdir.o `test -f 'xchdir.c' || echo '$(srcdir)/'`xchdir.c
@@ -2060,22 +2269,34 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libq_a-array.Po
 	-rm -f ./$(DEPDIR)/libq_a-atom.Po
 	-rm -f ./$(DEPDIR)/libq_a-basename.Po
+	-rm -f ./$(DEPDIR)/libq_a-binpath.Po
+	-rm -f ./$(DEPDIR)/libq_a-binrepos.Po
 	-rm -f ./$(DEPDIR)/libq_a-colors.Po
 	-rm -f ./$(DEPDIR)/libq_a-contents.Po
 	-rm -f ./$(DEPDIR)/libq_a-copy_file.Po
 	-rm -f ./$(DEPDIR)/libq_a-dep.Po
 	-rm -f ./$(DEPDIR)/libq_a-eat_file.Po
+	-rm -f ./$(DEPDIR)/libq_a-elfneeded.Po
+	-rm -f ./$(DEPDIR)/libq_a-envd.Po
 	-rm -f ./$(DEPDIR)/libq_a-file_magic.Po
+	-rm -f ./$(DEPDIR)/libq_a-gpgsign.Po
+	-rm -f ./$(DEPDIR)/libq_a-gpkg.Po
 	-rm -f ./$(DEPDIR)/libq_a-hash.Po
 	-rm -f ./$(DEPDIR)/libq_a-human_readable.Po
+	-rm -f ./$(DEPDIR)/libq_a-linkage.Po
+	-rm -f ./$(DEPDIR)/libq_a-mfline.Po
 	-rm -f ./$(DEPDIR)/libq_a-move_file.Po
+	-rm -f ./$(DEPDIR)/libq_a-moves.Po
 	-rm -f ./$(DEPDIR)/libq_a-prelink.Po
+	-rm -f ./$(DEPDIR)/libq_a-preserved.Po
 	-rm -f ./$(DEPDIR)/libq_a-profile.Po
 	-rm -f ./$(DEPDIR)/libq_a-rmspace.Po
 	-rm -f ./$(DEPDIR)/libq_a-safe_io.Po
 	-rm -f ./$(DEPDIR)/libq_a-scandirat.Po
 	-rm -f ./$(DEPDIR)/libq_a-set.Po
 	-rm -f ./$(DEPDIR)/libq_a-tree.Po
+	-rm -f ./$(DEPDIR)/libq_a-usedep.Po
+	-rm -f ./$(DEPDIR)/libq_a-useflags.Po
 	-rm -f ./$(DEPDIR)/libq_a-xchdir.Po
 	-rm -f ./$(DEPDIR)/libq_a-xmkdir.Po
 	-rm -f ./$(DEPDIR)/libq_a-xpak.Po
@@ -2129,22 +2350,34 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libq_a-array.Po
 	-rm -f ./$(DEPDIR)/libq_a-atom.Po
 	-rm -f ./$(DEPDIR)/libq_a-basename.Po
+	-rm -f ./$(DEPDIR)/libq_a-binpath.Po
+	-rm -f ./$(DEPDIR)/libq_a-binrepos.Po
 	-rm -f ./$(DEPDIR)/libq_a-colors.Po
 	-rm -f ./$(DEPDIR)/libq_a-contents.Po
 	-rm -f ./$(DEPDIR)/libq_a-copy_file.Po
 	-rm -f ./$(DEPDIR)/libq_a-dep.Po
 	-rm -f ./$(DEPDIR)/libq_a-eat_file.Po
+	-rm -f ./$(DEPDIR)/libq_a-elfneeded.Po
+	-rm -f ./$(DEPDIR)/libq_a-envd.Po
 	-rm -f ./$(DEPDIR)/libq_a-file_magic.Po
+	-rm -f ./$(DEPDIR)/libq_a-gpgsign.Po
+	-rm -f ./$(DEPDIR)/libq_a-gpkg.Po
 	-rm -f ./$(DEPDIR)/libq_a-hash.Po
 	-rm -f ./$(DEPDIR)/libq_a-human_readable.Po
+	-rm -f ./$(DEPDIR)/libq_a-linkage.Po
+	-rm -f ./$(DEPDIR)/libq_a-mfline.Po
 	-rm -f ./$(DEPDIR)/libq_a-move_file.Po
+	-rm -f ./$(DEPDIR)/libq_a-moves.Po
 	-rm -f ./$(DEPDIR)/libq_a-prelink.Po
+	-rm -f ./$(DEPDIR)/libq_a-preserved.Po
 	-rm -f ./$(DEPDIR)/libq_a-profile.Po
 	-rm -f ./$(DEPDIR)/libq_a-rmspace.Po
 	-rm -f ./$(DEPDIR)/libq_a-safe_io.Po
 	-rm -f ./$(DEPDIR)/libq_a-scandirat.Po
 	-rm -f ./$(DEPDIR)/libq_a-set.Po
 	-rm -f ./$(DEPDIR)/libq_a-tree.Po
+	-rm -f ./$(DEPDIR)/libq_a-usedep.Po
+	-rm -f ./$(DEPDIR)/libq_a-useflags.Po
 	-rm -f ./$(DEPDIR)/libq_a-xchdir.Po
 	-rm -f ./$(DEPDIR)/libq_a-xmkdir.Po
 	-rm -f ./$(DEPDIR)/libq_a-xpak.Po

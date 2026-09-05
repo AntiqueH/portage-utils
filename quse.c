@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -70,7 +71,7 @@ struct quse_state {
 	const char *fmt;
 };
 
-static const atom_ctx *quse_last_atom;
+static const depend_atom *quse_last_atom;
 static char *_quse_getline_buf = NULL;
 static size_t _quse_getline_buflen = 0;
 #define GETLINE(FD, BUF, LEN) \
@@ -421,6 +422,14 @@ quse_describe_flag(const char *root, const char *overlay,
 	return ret;
 }
 
+static char *
+quse_advance(char *v, char *end, int n)
+{
+	if (n < 0)
+		return v;
+	return (size_t)n < (size_t)(end - v) ? v + n : end;
+}
+
 static int
 quse_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 {
@@ -507,8 +516,9 @@ quse_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 						*p = '\0';
 						if (regexec(&state->pregv[i], q, 0, NULL, 0) == 0) {
 							*p = r;
-							v += snprintf(v, w - v, "%s%.*s%s%c",
-									RED, (int)(p - s), s, NORM, *p);
+							v = quse_advance(v, w,
+									snprintf(v, w - v, "%s%.*s%s%c",
+									RED, (int)(p - s), s, NORM, *p));
 							match = true;
 							break;
 						}
@@ -520,15 +530,17 @@ quse_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 						if (len == (int)(p - q) &&
 								strncmp(q, state->argv[i], len) == 0)
 						{
-							v += snprintf(v, w - v, "%s%.*s%s%c",
-									RED, (int)(p - s), s, NORM, *p);
+							v = quse_advance(v, w,
+									snprintf(v, w - v, "%s%.*s%s%c",
+									RED, (int)(p - s), s, NORM, *p));
 							match = true;
 							break;
 						}
 					}
 				}
 				if (i == state->argc)
-					v += snprintf(v, w - v, "%.*s%c", (int)(p - s), s, *p);
+					v = quse_advance(v, w,
+							snprintf(v, w - v, "%.*s%c", (int)(p - s), s, *p));
 
 				if (maxlen < p - q)
 					maxlen = p - q;
@@ -576,8 +588,9 @@ quse_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 					/* pre-padd everything such that we always refer to
 					 * the char before the USE-flag */
 					us.argv[i++] = v + 1;
-					v += snprintf(v, w - v, "%c%.*s",
-							s == q ? ' ' : *s, (int)(p - q), q) + 1;
+					v = quse_advance(v, w,
+							snprintf(v, w - v, "%c%.*s",
+							s == q ? ' ' : *s, (int)(p - q), q) + 1);
 
 					q = p + 1;
 				}

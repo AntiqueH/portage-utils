@@ -4,6 +4,7 @@
  *
  * Copyright 2011-2016 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2021-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -30,7 +31,7 @@ int copy_file_fd(int fd_src, int fd_dst)
 	defined(HAVE_SENDFILE6_SUPPORT) || \
 	defined(HAVE_SENDFILE7_SUPPORT)
 	struct stat stat_buf;
-	ssize_t     ret;
+	ssize_t     ret = 0;
 	size_t      len;
 	off_t       offset = 0;
 
@@ -39,10 +40,23 @@ int copy_file_fd(int fd_src, int fd_dst)
 
 #if defined(HAVE_SENDFILE4_SUPPORT)
 		/* Linux/Solaris */
-		ret = sendfile(fd_dst, fd_src, &offset, len);
-		/* everything looks fine, return success */
-		if (ret == (ssize_t)len)
-			return 0;
+		{
+			size_t remaining = len;
+
+			while (remaining > 0) {
+				ret = sendfile(fd_dst, fd_src, &offset, remaining);
+				if (ret > 0) {
+					remaining -= (size_t)ret;
+					continue;
+				}
+				if (ret == -1 && errno == EINTR)
+					continue;
+				break;
+			}
+			/* everything looks fine, return success */
+			if (remaining == 0)
+				return 0;
+		}
 #elif defined(HAVE_SENDFILE6_SUPPORT)
 		/* macOS (since Darwin 9) */
 		offset = len;
@@ -60,7 +74,10 @@ int copy_file_fd(int fd_src, int fd_dst)
 		(void)ret;  /* ignore ret, we fall back */
 
 		/* fall back to read/write, rewind the fd */
-		lseek(fd_src, 0, SEEK_SET);
+		if (lseek(fd_src, 0, SEEK_SET) == (off_t)-1 ||
+			lseek(fd_dst, 0, SEEK_SET) == (off_t)-1 ||
+			ftruncate(fd_dst, 0) != 0)
+			return -1;
 	}
 #endif /* HAVE_SENDFILE */
 
@@ -93,8 +110,11 @@ int copy_file(FILE *src, FILE *dst)
 		rcnt = fread(buf, 1, sizeof(buf), src);
 		if (rcnt < 0)
 			return -1;
-		else if (rcnt == 0)
+		else if (rcnt == 0) {
+			if (ferror(src))
+				return -1;
 			return 0;
+		}
 
 		wcnt = fwrite(buf, 1, rcnt, dst);
 		if (wcnt == -1 || wcnt != rcnt)

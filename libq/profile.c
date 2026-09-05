@@ -20,7 +20,7 @@
 #include "profile.h"
 
 static void *
-q_profile_walk_at(int dir_fd, const char *dir, const char *file,
+q_profile_follow_at(int dir_fd, const char *dir, const char *file,
                   q_profile_callback_t callback, void *data)
 {
 	FILE *fp;
@@ -37,12 +37,12 @@ q_profile_walk_at(int dir_fd, const char *dir, const char *file,
 	/* Then open the file */
 	fd = openat(subdir_fd, file, O_RDONLY|O_CLOEXEC);
 	if (fd < 0)
-		goto walk_parent;
+		goto follow_parent;
 
 	fp = fdopen(fd, "r");
 	if (!fp) {
 		close(fd);
-		goto walk_parent;
+		goto follow_parent;
 	}
 
 	/* hand feed the file to the callback */
@@ -54,8 +54,8 @@ q_profile_walk_at(int dir_fd, const char *dir, const char *file,
 	/* does close(fd) for us */
 	fclose(fp);
 
-	/* Now walk the parents */
- walk_parent:
+	/* Now follow the parents */
+ follow_parent:
 	fd = openat(subdir_fd, "parent", O_RDONLY|O_CLOEXEC);
 	if (fd < 0)
 		goto done;
@@ -75,7 +75,7 @@ q_profile_walk_at(int dir_fd, const char *dir, const char *file,
 		if (s)
 			*s = '\0';
 
-		data = q_profile_walk_at(subdir_fd, buf, file, callback, data);
+		data = q_profile_follow_at(subdir_fd, buf, file, callback, data);
 	}
 	free(buf);
 
@@ -90,9 +90,9 @@ q_profile_walk_at(int dir_fd, const char *dir, const char *file,
 }
 
 void *
-q_profile_walk(const char *file, q_profile_callback_t callback, void *data)
+q_profile_follow(const char *file, q_profile_callback_t callback, void *data)
 {
 	/* Walk the profiles and read the file in question */
-	data = q_profile_walk_at(AT_FDCWD, CONFIG_EPREFIX "etc/make.profile", file, callback, data);
-	return q_profile_walk_at(AT_FDCWD, CONFIG_EPREFIX "etc/portage/make.profile", file, callback, data);
+	data = q_profile_follow_at(AT_FDCWD, CONFIG_EPREFIX "etc/make.profile", file, callback, data);
+	return q_profile_follow_at(AT_FDCWD, CONFIG_EPREFIX "etc/portage/make.profile", file, callback, data);
 }

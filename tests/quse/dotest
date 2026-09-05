@@ -71,5 +71,75 @@ diff -u ${as}/list01.good x
 rm x
 tpass "multi file match"
 
+# gtree cache: q -c compression knob + cache-consumer checks
+if [[ -n ${GTREE_ENABLED} ]] ; then
+	unset QGTREE_COMPRESS
+
+	mkdir -p gportdir/profiles gportdir/my-cat/apkg gportdir/my-cat/bpkg
+	echo gtreetest > gportdir/profiles/repo_name
+	printf 'EAPI=7\nDESCRIPTION="alpha package"\nSLOT="0"\nKEYWORDS="~amd64"\nIUSE="gtflag other"\n' \
+		> gportdir/my-cat/apkg/apkg-1.ebuild
+	printf 'EAPI=7\nDESCRIPTION="beta package"\nSLOT="0"\nKEYWORDS="~amd64"\nIUSE="other"\n' \
+		> gportdir/my-cat/bpkg/bpkg-2.ebuild
+	mkportdir "${PWD}/gportdir"
+
+	gt=gportdir/metadata/repo.gtree.tar
+
+	[[ $(q -ev QGTREE_COMPRESS) == "zstd:3 [built-in default]" ]]
+	tpass "gtree: QGTREE_COMPRESS default zstd:3"
+
+	quse -C gtflag > gtflag.good
+	grep -q "^my-cat/apkg" gtflag.good
+	quse -C other | LC_ALL=C sort > gtother.good
+	[[ $(wc -l < gtother.good) -eq 2 ]]
+
+	q -c
+	tar tf "${gt}" > gtl
+	printf 'gtree-1\nrepo.tar.zst\n' > gtl.good
+	diff -u gtl.good gtl
+	[[ $(tar xOf "${gt}" repo.tar.zst | od -An -tx1 -N4 | tr -d ' ') == 28b52ffd ]]
+	[[ ! -e ${gt}.old && ! -e ${gt}.qtmp ]]
+	tpass "gtree: default cache is zstd"
+
+	QGTREE_COMPRESS=none q -c
+	tar tf "${gt}" > gtl
+	printf 'gtree-1\nrepo.tar\n' > gtl.good
+	diff -u gtl.good gtl
+	[[ $(tar xOf "${gt}" repo.tar | od -An -c -j257 -N5 | tr -d ' ') == ustar ]]
+	tar xOf "${gt}" repo.tar | tar tf - | LC_ALL=C sort > gtm.none
+	grep -q "^caches/my-cat/apkg-1$" gtm.none
+	grep -q "^ebuilds/my-cat/bpkg/bpkg-2.ebuild$" gtm.none
+	tpass "gtree: QGTREE_COMPRESS=none uncompressed ustar with full payload"
+
+	QGTREE_COMPRESS=zstd:19 q -c
+	[[ $(tar xOf "${gt}" repo.tar.zst | od -An -tx1 -N4 | tr -d ' ') == 28b52ffd ]]
+	if command -v zstd >/dev/null 2>&1 ; then
+		tar xOf "${gt}" repo.tar.zst | zstd -dc | tar tf - \
+			| LC_ALL=C sort > gtm.zstd
+		diff -u gtm.none gtm.zstd
+	fi
+	tpass "gtree: QGTREE_COMPRESS=zstd:19, external decode matches"
+
+	out=$(QGTREE_COMPRESS=bogus q -c 2>&1)
+	[[ ${out} == *"unsupported value 'bogus'"* ]]
+	[[ $(tar xOf "${gt}" repo.tar.zst | od -An -tx1 -N4 | tr -d ' ') == 28b52ffd ]]
+	out=$(QGTREE_COMPRESS=zstd:99 q -c 2>&1)
+	[[ ${out} == *"invalid zstd level '99'"* ]]
+	[[ $(tar xOf "${gt}" repo.tar.zst | od -An -tx1 -N4 | tr -d ' ') == 28b52ffd ]]
+	tpass "gtree: invalid QGTREE_COMPRESS values warn and fall back"
+
+	q -c
+	rm -rf gportdir/my-cat
+	quse -C gtflag > gtq
+	diff -u gtflag.good gtq
+	quse -C other | LC_ALL=C sort > gtq
+	diff -u gtother.good gtq
+	tpass "gtree: reader answers from cache alone, tree payload removed"
+
+	rm -rf gportdir gtl gtl.good gtq gtflag.good gtother.good \
+		gtm.none gtm.zstd
+	mkportdir "${as}/portdir"
+fi
+
 cleantmpdir
 

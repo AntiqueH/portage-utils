@@ -5,8 +5,8 @@
  * Copyright 2011-2016 Mike Frysinger  - <vapier@gentoo.org>
  */
 
-#ifndef _XREGEX_H
-#define _XREGEX_H 1
+#ifndef XREGEX_H
+#define XREGEX_H 1
 
 #include <regex.h>
 

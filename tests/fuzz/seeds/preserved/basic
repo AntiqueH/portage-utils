@@ -1,0 +1,9 @@
+{
+	"dev-libs/foo:0": [
+		"dev-libs/foo-2.0",
+		"41",
+		[
+			"/usr/lib64/libfoo.so.1"
+		]
+	]
+}

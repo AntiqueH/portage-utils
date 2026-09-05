@@ -181,6 +181,7 @@ typedef struct {
 	const char     *default_value;
 	char           *src;
 	bool            fromenv;
+	bool            from_cli;
 } env_vars;
 extern env_vars vars_to_read[];
 extern set *package_masks;

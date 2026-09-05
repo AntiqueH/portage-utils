@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -380,29 +381,52 @@ qcheck_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	}
 
 	if (state->qc_update) {
-		int fd_contents;
+		int fd_tmp;
 		FILE *fp_contents;
 		char path[_Q_PATH_MAX];
+		char tmppath[_Q_PATH_MAX + 32];
+		struct stat cst;
+		int copy_ret;
+		int close_ret;
 
 		snprintf(path, sizeof(path), "%s/CONTENTS",
 				 tree_pkg_get_path(pkg_ctx));
-		/* O_TRUNC truncates, but file owner and mode are unchanged */
-		fd_contents = openat(portroot_fd, path, O_WRONLY | O_TRUNC);
-		if (fd_contents < 0 ||
-				(fp_contents = fdopen(fd_contents, "w")) == NULL)
+		snprintf(tmppath, sizeof(tmppath), "%s.qcheck.%d",
+				 path, (int)getpid());
+
+		if (fstatat(portroot_fd, path, &cst, 0) != 0) {
+			fclose(fp_contents_update);
+			warn("could not stat CONTENTS");
+			return EXIT_FAILURE;
+		}
+		fd_tmp = openat(portroot_fd, tmppath,
+				O_WRONLY | O_CREAT | O_TRUNC, cst.st_mode & 07777);
+		if (fd_tmp < 0 ||
+				(fp_contents = fdopen(fd_tmp, "w")) == NULL)
 		{
+			if (fd_tmp >= 0) {
+				close(fd_tmp);
+				unlinkat(portroot_fd, tmppath, 0);
+			}
 			fclose(fp_contents_update);
 			warn("could not open CONTENTS for writing");
 			return EXIT_FAILURE;
 		}
+		if (fchown(fd_tmp, cst.st_uid, cst.st_gid) != 0 && errno != EPERM)
+			warn("could not preserve CONTENTS ownership");
 
 		/* rewind tempfile */
 		fseek(fp_contents_update, 0, SEEK_SET);
 
-		copy_file(fp_contents_update, fp_contents);
-
+		copy_ret = copy_file(fp_contents_update, fp_contents);
 		fclose(fp_contents_update);
-		fclose(fp_contents);
+		close_ret = fclose(fp_contents);
+		if (copy_ret != 0 || close_ret != 0 ||
+				renameat(portroot_fd, tmppath, portroot_fd, path) != 0) {
+			warn("could not write updated CONTENTS");
+			unlinkat(portroot_fd, tmppath, 0);
+			return EXIT_FAILURE;
+		}
 
 		if (!verbose)
 			return EXIT_SUCCESS;
@@ -501,6 +525,6 @@ int qcheck_main(int argc, char **argv)
             regfree(preg);
     }
 	array_deepfree(state.regex_arr, NULL);
-	array_deepfree(state.atoms, (array_free_cb *)atom_implode);
+	array_deepfree(state.atoms, atom_implode_cb);
 	return ret != 0;
 }

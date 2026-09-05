@@ -195,11 +195,12 @@ qlist_match(
 			uslot[0] = '\0';
 			urepo++;
 		} else {
-			usslot = (char *)urepo;
+			usslot = q_deconst(urepo);
 			urepo = strstr(urepo, "::");
 			if (urepo != NULL) {
 				snprintf(uslot, sizeof(uslot), "%.*s",
-						(int)(urepo - usslot), usslot);
+						(int)MIN((size_t)(urepo - usslot),
+								 sizeof(uslot) - 1), usslot);
 				urepo += 2;
 			} else {
 				snprintf(uslot, sizeof(uslot), "%s", usslot);
@@ -229,6 +230,8 @@ qlist_match(
 		}
 
 		return atom_compare(atom, *name_atom) == EQUAL;
+	default:
+		break;
 	}
 
 	if (uslot[0] != '\0') {
@@ -297,10 +300,14 @@ qlist_match(
 
 		/* let's try exact matching w/out the PV */
 		i = snprintf(buf, sizeof(buf), "%s/%s", atom->CATEGORY, atom->PN);
-		if (uslot[0] != '\0' && i < (int)sizeof(buf))
-			i += snprintf(buf + i, sizeof(buf) - i, ":%s", atom->SLOT);
-		if (urepo && i < (int)sizeof(buf))
-			i += snprintf(buf + i, sizeof(buf) - i, "::%s", atom->REPO);
+		if (uslot[0] != '\0' && i < (int)sizeof(buf) - 2) {
+			snprintf(buf + i, sizeof(buf) - i, ":%s", atom->SLOT);
+			i += strlen(buf + i);
+		}
+		if (urepo && i < (int)sizeof(buf) - 3) {
+			snprintf(buf + i, sizeof(buf) - i, "::%s", atom->REPO);
+			i += strlen(buf + i);
+		}
 
 		/* exact match: CAT/PN[:SLOT][::REPO] */
 		if (strcmp(name, buf) == 0)

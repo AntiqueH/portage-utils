@@ -1,0 +1,13 @@
+\fIqgpkg-sign\fR signs a \fBgpkg\fR binary package file, as a C
+reimplementation of Portage's \fBgpkg\-sign\fR.
+.P
+Binary packages will be signed by given GnuPG command. The base
+command is defined in the \fIBINPKG_GPG_SIGNING_BASE_COMMAND\fR
+variable and will be used for all signing operations;
+\fB[PORTAGE_CONFIG]\fR is replaced under different operations.  The
+GnuPG key ID used to sign binary packages is set in
+\fIBINPKG_GPG_SIGNING_KEY\fR and must exist in
+\fIBINPKG_GPG_SIGNING_GPG_HOME\fR. See \fBmake.conf\fR(5).
+.P
+The \fBPackages\fR index is not updated; run \fBemaint binhost
+\-\-fix\fR or \fBqmaint\fR(1) \fIbinhost \-f\fR afterwards.

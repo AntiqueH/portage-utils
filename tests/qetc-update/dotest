@@ -1,0 +1,165 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+mktmpdir
+
+QEU="${atb}/qetc-update"
+
+mkroot() {
+	R="${PWD}/$1"
+	rm -rf "${R}"
+	mkdir -p "${R}/etc" "${R}/var/lib/portage" "${R}/tmp"
+	cat > "${R}/etc/etc-update.conf" <<-EOF
+		using_editor=0
+		diff_command="diff -uN %file1 %file2"
+		pager="cat"
+		mode="0"
+		eu_automerge_unmodified="no"
+	EOF
+}
+
+qeu() {
+	local root=$1; shift
+	ETC_UPDATE_OS_FAMILY=gentoo \
+	CONFIG_PROTECT="/etc" CONFIG_PROTECT_MASK="${QEU_MASK:-}" \
+	PORTAGE_CONFIGROOT="${root}/" EROOT="${root}" ROOT="${root}" \
+	PORTAGE_TMPDIR="${root}/tmp" \
+	FEATURES="" USERLAND=GNU NO_COLOR=1 NOCOLOR=true \
+	bash "${QEU}" "$@" </dev/null
+}
+
+mkroot r0
+out=$(qeu "${R}" --help 2>&1)
+rc=$?
+[[ ${rc} -eq 0 && ${out} == *"Handle configuration file updates"* ]]
+tend $? "qetc-update: --help prints usage and exits 0" || die "rc=${rc} ${out}"
+
+out=$(qeu "${R}" --bogus 2>&1)
+rc=$?
+[[ ${rc} -eq 1 && ${out} == *"Invalid option '--bogus'"* ]]
+tend $? "qetc-update: invalid option rejected with exit 1" \
+	|| die "rc=${rc} ${out}"
+
+mkroot r1
+printf 'keep=old\n' > "${R}/etc/foo.conf"
+printf 'keep=new\n' > "${R}/etc/._cfg0000_foo.conf"
+out=$(qeu "${R}" -p 2>&1)
+rc=$?
+[[ ${rc} -eq 0 && -f ${R}/etc/._cfg0000_foo.conf ]] && \
+	grep -q 'keep=old' "${R}/etc/foo.conf"
+tend $? "qetc-update: preen leaves a non-trivial update pending" \
+	|| die "rc=${rc} ${out}"
+
+mkroot r2
+printf 'same=1\n' > "${R}/etc/bar.conf"
+printf 'same=1\n' > "${R}/etc/._cfg0000_bar.conf"
+out=$(qeu "${R}" -p 2>&1)
+[[ ${out} == *"Automerging trivial changes in:"* && \
+   ! -e ${R}/etc/._cfg0000_bar.conf ]] && \
+	grep -q 'same=1' "${R}/etc/bar.conf"
+tend $? "qetc-update: identical update automerged away" || die "${out}"
+
+mkroot r3
+echo 'eu_automerge="yes"' >> "${R}/etc/etc-update.conf"
+printf 'val=7\n' > "${R}/etc/com.conf"
+printf '# just a comment\nval=7\n' > "${R}/etc/._cfg0000_com.conf"
+out=$(qeu "${R}" -p 2>&1)
+[[ ${out} == *"Automerging trivial changes in:"* && \
+   ! -e ${R}/etc/._cfg0000_com.conf ]] && \
+	grep -q 'just a comment' "${R}/etc/com.conf"
+tend $? "qetc-update: eu_automerge merges comment-only changes" \
+	|| die "${out}"
+
+mkroot r4
+printf 'v=old\n' > "${R}/etc/ow.conf"
+printf 'v=new\n' > "${R}/etc/._cfg0000_ow.conf"
+out=$(qeu "${R}" --automode -3 2>&1)
+rc=$?
+[[ ${rc} -eq 0 && ! -e ${R}/etc/._cfg0000_ow.conf ]] && \
+	grep -q 'v=new' "${R}/etc/ow.conf"
+tend $? "qetc-update: automode -3 overwrites with the update" \
+	|| die "rc=${rc} ${out}"
+
+mkroot r5
+printf 'v=old\n' > "${R}/etc/del.conf"
+printf 'v=new\n' > "${R}/etc/._cfg0000_del.conf"
+out=$(qeu "${R}" --automode -7 2>&1)
+rc=$?
+[[ ${rc} -eq 0 && ! -e ${R}/etc/._cfg0000_del.conf ]] && \
+	grep -q 'v=old' "${R}/etc/del.conf"
+tend $? "qetc-update: automode -7 deletes updates, live untouched" \
+	|| die "rc=${rc} ${out}"
+
+mkroot r6
+sed -i 's/eu_automerge_unmodified="no"/eu_automerge_unmodified="yes"/' \
+	"${R}/etc/etc-update.conf"
+printf 'v=old\n' > "${R}/etc/cm.conf"
+printf 'v=new\n' > "${R}/etc/._cfg0000_cm.conf"
+cmmd5=$(md5sum "${R}/etc/cm.conf" | cut -d' ' -f1)
+printf '%s %s\n' "${R}/etc/cm.conf" "${cmmd5}" \
+	> "${R}/var/lib/portage/config"
+newmd5=$(md5sum "${R}/etc/._cfg0000_cm.conf" | cut -d' ' -f1)
+out=$(qeu "${R}" -p 2>&1)
+[[ ${out} == *"Auto-replacing unmodified:"* && \
+   ! -e ${R}/etc/._cfg0000_cm.conf ]] && \
+	grep -q 'v=new' "${R}/etc/cm.conf" && \
+	grep -q "${newmd5}" "${R}/var/lib/portage/config"
+tend $? "qetc-update: unmodified live auto-replaced via confmem" \
+	|| die "${out} $(cat "${R}/var/lib/portage/config" 2>/dev/null)"
+
+mkroot r7
+sed -i 's/eu_automerge_unmodified="no"/eu_automerge_unmodified="yes"/' \
+	"${R}/etc/etc-update.conf"
+printf 'v=edited\n' > "${R}/etc/cm.conf"
+printf 'v=new\n' > "${R}/etc/._cfg0000_cm.conf"
+printf '%s %s\n' "${R}/etc/cm.conf" "0123456789abcdef0123456789abcdef" \
+	> "${R}/var/lib/portage/config"
+out=$(qeu "${R}" -p 2>&1)
+[[ ${out} != *"Auto-replacing unmodified:"* && \
+   -f ${R}/etc/._cfg0000_cm.conf ]] && \
+	grep -q 'v=edited' "${R}/etc/cm.conf"
+tend $? "qetc-update: modified live stays pending despite confmem" \
+	|| die "${out}"
+
+mkroot r8
+echo "archive_dir=\"${R}/arch\"" >> "${R}/etc/etc-update.conf"
+printf 'gen=1\n' > "${R}/etc/ar.conf"
+printf 'gen=2\n' > "${R}/etc/._cfg0000_ar.conf"
+out=$(qeu "${R}" --automode -3 2>&1)
+grep -q 'gen=1' "${R}/arch${R}/etc/ar.conf" && \
+	grep -q 'gen=2' "${R}/etc/ar.conf"
+tend $? "qetc-update: replaced file archived under archive_dir" \
+	|| die "${out} $(ls -R "${R}/arch" 2>/dev/null)"
+
+printf 'gen=3\n' > "${R}/etc/._cfg0000_ar.conf"
+out=$(qeu "${R}" --automode -3 2>&1)
+grep -q 'gen=1' "${R}/arch${R}/etc/ar.conf.0" && \
+	grep -q 'gen=2' "${R}/arch${R}/etc/ar.conf" && \
+	grep -q 'gen=3' "${R}/etc/ar.conf"
+tend $? "qetc-update: archive rotates previous copy to .0" \
+	|| die "${out} $(ls -R "${R}/arch" 2>/dev/null)"
+
+mkroot r9
+echo "frozen_files=\"${R}/etc/fr.conf\"" >> "${R}/etc/etc-update.conf"
+printf 'v=old\n' > "${R}/etc/fr.conf"
+printf 'v=new\n' > "${R}/etc/._cfg0000_fr.conf"
+out=$(qeu "${R}" -p 2>&1)
+[[ ${out} == *"Discarding update for frozen:"* && \
+   ! -e ${R}/etc/._cfg0000_fr.conf ]] && \
+	grep -q 'v=old' "${R}/etc/fr.conf"
+tend $? "qetc-update: frozen file discards its update" || die "${out}"
+
+mkroot r10
+mkdir -p "${R}/etc/masked"
+printf 'v=old\n' > "${R}/etc/masked/mk.conf"
+printf 'v=new\n' > "${R}/etc/masked/._cfg0000_mk.conf"
+out=$(QEU_MASK="/etc/masked" qeu "${R}" -p 2>&1)
+[[ ${out} == *"Updating masked file:"* && \
+   ! -e ${R}/etc/masked/._cfg0000_mk.conf ]] && \
+	grep -q 'v=new' "${R}/etc/masked/mk.conf"
+tend $? "qetc-update: masked path updated immediately" || die "${out}"
+
+cleantmpdir
+
+end

@@ -53,3 +53,8 @@ a-1_alpha1 =a-1*
 a-1 =a-1_alpha1*
 a-1_alpha-r1 =a-1_alpha*
 a-3.10.5 >=a-3.10.0_p1_r1
+a-1_p1 a-1-r5
+a-1 a-1_p0
+a-1-r1 a-1_p0
+a-3.11.13_p1 a-3.11.13-r1
+a-1_beta1 a-1_beta1_p0

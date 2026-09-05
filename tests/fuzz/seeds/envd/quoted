@@ -1,0 +1,3 @@
+FOO="bar baz"
+BAR='single'
+SPACE_SEPARATED="A B C"

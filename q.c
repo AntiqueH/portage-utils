@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2017-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -119,6 +120,7 @@ struct q_cache_ctx {
 	size_t          cbufsiz;
 	size_t          cbuflen;
 	char            last_pkg[_Q_PATH_MAX];
+	bool            gerr;
 };
 static int q_build_gtree_pkg_process_dir(struct q_cache_ctx *ctx,
 										 char               *path,
@@ -168,7 +170,12 @@ static int q_build_gtree_pkg_process_dir(struct q_cache_ctx *ctx,
 		archive_entry_set_perm(entry, 0644);
 		archive_write_header(a, entry);
 		while ((rlen = read(fd, buf, sizeof(buf))) > 0)
-			archive_write_data(a, buf, rlen);
+			if (archive_write_data(a, buf, rlen) != rlen) {
+				ctx->gerr = true;
+				break;
+			}
+		if (rlen < 0)
+			ctx->gerr = true;
 		archive_entry_free(entry);
 	}
 	if (fd >= 0)
@@ -257,7 +264,7 @@ static int q_build_gtree_ebuilds_pkg(tree_pkg_ctx *pkg, void *priv)
 	size_t                len;
 	char                 *qc;
 	char                  pth[_Q_PATH_MAX];
-	size_t                flen;
+	ssize_t               flen;
 	int                   ffd;
 	bool                  newpkg = true;
 
@@ -304,7 +311,12 @@ static int q_build_gtree_ebuilds_pkg(tree_pkg_ctx *pkg, void *priv)
 				archive_entry_set_perm(entry, 0644);
 				archive_write_header(a, entry);
 				while ((flen = read(ffd, pth, sizeof(pth))) > 0)
-					archive_write_data(a, pth, flen);
+					if (archive_write_data(a, pth, flen) != flen) {
+						ctx->gerr = true;
+						break;
+					}
+				if (flen < 0)
+					ctx->gerr = true;
 				archive_entry_free(entry);
 			}
 			close(ffd);
@@ -371,13 +383,60 @@ static int q_build_gtree_ebuilds_pkg(tree_pkg_ctx *pkg, void *priv)
 			archive_entry_set_perm(entry, 0644);
 			archive_write_header(a, entry);
 			while ((flen = read(ffd, pth, sizeof(pth))) > 0)
-				archive_write_data(a, pth, flen);
+				if (archive_write_data(a, pth, flen) != flen) {
+					ctx->gerr = true;
+					break;
+				}
+			if (flen < 0)
+				ctx->gerr = true;
 			archive_entry_free(entry);
 		}
 		close(ffd);
 	}
 
 	return 0;
+}
+
+static const char *q_gtree_compression(struct archive *a, bool *gerr)
+{
+	const char *s     = qgtree_compress;
+	long        level = 3;
+	char        opts[64];
+	char        prog[32];
+
+	if (s != NULL && *s != '\0') {
+		if (strcmp(s, "none") == 0)
+			return "repo.tar";
+		if (strncmp(s, "zstd", sizeof("zstd") - 1) == 0 &&
+			(s[4] == '\0' || s[4] == ':'))
+		{
+			if (s[4] == ':') {
+				char *endp;
+
+				level = strtol(s + 5, &endp, 10);
+				if (*endp != '\0' || level < 1 || level > 22) {
+					warn("QGTREE_COMPRESS: invalid zstd level '%s', "
+						 "using 3", s + 5);
+					level = 3;
+				}
+			}
+		} else {
+			warn("QGTREE_COMPRESS: unsupported value '%s', "
+				 "using zstd:3", s);
+		}
+	}
+
+	if (archive_write_add_filter_zstd(a) == ARCHIVE_OK) {
+		snprintf(opts, sizeof(opts),
+				 "zstd:compression-level=%ld,zstd:threads=0", level);
+		if (archive_write_set_options(a, opts) != ARCHIVE_OK)
+			*gerr = true;
+	} else {
+		snprintf(prog, sizeof(prog), "zstd -%ld", level);
+		if (archive_write_add_filter_program(a, prog) != ARCHIVE_OK)
+			*gerr = true;
+	}
+	return "repo.tar.zst";
 }
 #endif
 
@@ -393,6 +452,8 @@ static void q_js_sighandler(int sig)
 		case SIGFPE:
 		case SIGILL:
 			q_js_shutdown = true;
+			break;
+		default:
 			break;
 	}
 }
@@ -716,14 +777,17 @@ int q_main(int argc, char **argv)
 					char mfileloc[_Q_PATH_MAX];
 
 					snprintf(mfileloc, sizeof(mfileloc), "%s%.*s",
-							 portroot, (int)(s - mfile), mfile);
+							 portroot,
+							 (int)MIN((size_t)(s - mfile),
+									  sizeof(mfileloc) - 2), mfile);
 
 					if (buf != NULL)
 						*buf = '\0';
 					eat_file(mfileloc, &buf, &buflen);
 
 					line = 0;
-					for (l = buf; (s = strchr(l, '\n')) != NULL; l = s + 1)
+					for (l = buf; l != NULL &&
+							(s = strchr(l, '\n')) != NULL; l = s + 1)
 					{
 						line++;
 						if (line >= cbeg && line <= cend)
@@ -791,12 +855,16 @@ int q_main(int argc, char **argv)
 		struct archive_entry *entry;
 		struct q_cache_ctx    qcctx;
 		struct stat           st;
+		const char           *rname;
 		char                  buf[BUFSIZ];
 		size_t                len;
 		ssize_t               rlen;
 		int                   dfd;
 		int                   tfd;
 		int                   fd;
+		char                  gfinal[BUFSIZ];
+		char                  gold[BUFSIZ + 8];
+		char                  gqtmp[BUFSIZ + 8];
 
 		memset(&qcctx, 0, sizeof(qcctx));
 
@@ -815,30 +883,39 @@ int q_main(int argc, char **argv)
 					 	   "%s/%s/metadata", portroot, overlay);
 			mkdir_p(buf, 0755);
 
-			snprintf(buf + len, sizeof(buf) - len, "/repo.gtree.tar");
+			snprintf(gfinal, sizeof(gfinal), "%s/%s/metadata/repo.gtree.tar",
+					portroot, overlay);
+			snprintf(gold, sizeof(gold), "%s/%s/metadata/repo.gtree.tar.old",
+					portroot, overlay);
+			snprintf(gqtmp, sizeof(gqtmp), "%s/%s/metadata/repo.gtree.tar.qtmp",
+					portroot, overlay);
 			/* because we're building a new one here, make sure
 			 * tree_open doesn't pick it up */
-			unlink(buf);
+			rename(gfinal, gold);
 
 			t = tree_new(portroot, overlay, TREETYPE_EBUILD, false);
 			if (t == NULL) {
 				warn("could not open overlay at %s", overlay);
+				rename(gold, gfinal);
 				continue;
 			}
 
 			/* now open it */
-			fd = open(buf, O_WRONLY | O_CREAT | O_TRUNC,
+			fd = open(gqtmp, O_WRONLY | O_CREAT | O_TRUNC,
 					  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH /* 0644 */);
 			if (fd < 0)
 			{
-				warnp("failed to open gtree for writing at %s", buf);
+				warnp("failed to open gtree for writing at %s", gqtmp);
 				tree_close(t);
+				rename(gold, gfinal);
 				continue;
 			}
 
+			qcctx.gerr = false;
 			a = archive_write_new();
 			archive_write_set_format_ustar(a);  /* GLEP-78, just to be safe */
-			archive_write_open_fd(a, fd);
+			if (archive_write_open_fd(a, fd) != ARCHIVE_OK)
+				qcctx.gerr = true;
 
 			qcctx.buildtime = time(NULL);
 
@@ -855,7 +932,7 @@ int q_main(int argc, char **argv)
 			archive_write_data(a, buf, len);
 			archive_entry_free(entry);
 
-			/* repo.tar.zst
+			/* repo.tar{.zst}
 			 * the nested archive unfortunately cannot be written
 			 * straight to the archive stream above: its size needs to
 			 * be known before data can be written, hence we'll have to
@@ -870,19 +947,18 @@ int q_main(int argc, char **argv)
 				tree_close(t);
 				archive_write_close(a);
 				archive_write_free(a);
+				close(fd);
+				unlink(gqtmp);
+				rename(gold, gfinal);
 				continue;
 			}
 			unlink(buf);  /* make invisible, drop on close */
 
 			qcctx.archive = archive_write_new();
 			archive_write_set_format_ustar(qcctx.archive);
-			/* would love to use this:
-			 * archive_write_add_filter_zstd(qcctx.archive);
-			 * but https://github.com/libarchive/libarchive/issues/957
-			 * suggests there's never going to be an interface
-			 * for this, which is a real shame */
-			archive_write_add_filter_program(qcctx.archive, "zstd -19");
-			archive_write_open_fd(qcctx.archive, tfd);
+			rname = q_gtree_compression(qcctx.archive, &qcctx.gerr);
+			if (archive_write_open_fd(qcctx.archive, tfd) != ARCHIVE_OK)
+				qcctx.gerr = true;
 
 			/* write repo name, if any */
 			if (tree_get_repo_name(t) != NULL) {
@@ -916,14 +992,15 @@ int q_main(int argc, char **argv)
 				close(dfd);
 			}
 
-			archive_write_close(qcctx.archive);
+			if (archive_write_close(qcctx.archive) != ARCHIVE_OK)
+				qcctx.gerr = true;
 			archive_write_free(qcctx.archive);
 
 			/* now we got the size, put it in the main archive */
 			if (fstat(tfd, &st) >= 0) 
 			{
 				entry = archive_entry_new();
-				archive_entry_set_pathname(entry, "repo.tar.zst");
+				archive_entry_set_pathname(entry, rname);
 				archive_entry_set_size(entry, st.st_size);
 				archive_entry_set_mtime(entry, qcctx.buildtime, 0);
 				archive_entry_set_filetype(entry, AE_IFREG);
@@ -931,7 +1008,12 @@ int q_main(int argc, char **argv)
 				archive_write_header(a, entry);
 				lseek(tfd, 0, SEEK_SET);  /* reposition at the start of file */
 				while ((rlen = read(tfd, buf, sizeof(buf))) > 0)
-					archive_write_data(a, buf, rlen);
+					if (archive_write_data(a, buf, rlen) != rlen) {
+						qcctx.gerr = true;
+						break;
+					}
+				if (rlen < 0)
+					qcctx.gerr = true;
 				archive_entry_free(entry);
 			}
 
@@ -940,7 +1022,8 @@ int q_main(int argc, char **argv)
 			/* cleanup repo archive */
 			close(tfd);
 
-			archive_write_close(a);
+			if (archive_write_close(a) != ARCHIVE_OK)
+				qcctx.gerr = true;
 			archive_write_free(a);
 
 			if (verbose) {
@@ -957,6 +1040,18 @@ int q_main(int argc, char **argv)
 			fchmod(fd, 0644);
 			close(fd);
 			tree_close(t);
+
+			if (qcctx.gerr) {
+				warn("gtree generation failed for %s, discarding it", overlay);
+				unlink(gqtmp);
+				rename(gold, gfinal);
+			} else if (rename(gqtmp, gfinal) != 0) {
+				warnp("failed to publish gtree for %s", overlay);
+				unlink(gqtmp);
+				rename(gold, gfinal);
+			} else {
+				unlink(gold);
+			}
 		}
 
 		free(qcctx.cbuf);
@@ -1008,7 +1103,7 @@ int q_main(int argc, char **argv)
 		} else {
 			jslink[len] = '\0';
 			/* see if the target is still alive */
-			if (len > sizeof(Q_JOBS_SOCK) - 1 &&
+			if ((size_t)len > sizeof(Q_JOBS_SOCK) - 1 &&
 				strncmp(jslink, Q_JOBS_SOCK, sizeof(Q_JOBS_SOCK) - 1) == 0 &&
 				jslink[sizeof(Q_JOBS_SOCK) - 1] == '.')
 			{
@@ -1118,7 +1213,8 @@ int q_main(int argc, char **argv)
 
 				/* tell grandparent we've made it */
 				if (write(fds[1], "OK:", 3) != 3 ||
-					write(fds[1], jslink, strlen(jslink)) != strlen(jslink))
+					write(fds[1], jslink,
+						  strlen(jslink)) != (ssize_t)strlen(jslink))
 					warnp("could not report success");
 				close(fds[1]);
 				/* close stdio streams */

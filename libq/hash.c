@@ -3,6 +3,7 @@
  * Distributed under the terms of the GNU General Public License v2
  *
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  *
  * The contents of this file was taken from:
  *   https://github.com/grobian/hashgen
@@ -82,7 +83,7 @@ hash_hex(char *out, const unsigned char *buf, const int length)
 			{
 				int i;
 				for (i = 0; i < length; i++) {
-					snprintf(&out[i * 2], 3, "%02x", buf[i]);
+					snprintf(&out[(size_t)i * 2], 3, "%02x", buf[i]);
 				}
 			}
 			break;
@@ -94,9 +95,12 @@ typedef size_t (*read_cb)(char *,size_t,void *);
 
 static size_t read_stdio(char *dest, size_t destlen, void *ctx)
 {
-	FILE *io = ctx;
+	FILE  *io = ctx;
+	size_t n  = fread(dest, 1, destlen, io);
 
-	return fread(dest, 1, destlen, io);
+	if (n == 0 && ferror(io))
+		return (size_t)-1;
+	return n;
 }
 
 struct bufctx {
@@ -136,6 +140,7 @@ hash_multiple_internal(
 {
 	size_t            len;
 	char              data[8192];
+	int               nreq = 0;
 
 	struct md5_ctx    m5;
 	struct sha1_ctx   s1;
@@ -145,6 +150,19 @@ hash_multiple_internal(
 	blake2b_state     bl2b;
 #else
 	(void)blak2b;
+#endif
+
+	if (hashes & HASH_MD5)
+		nreq++;
+	if (hashes & HASH_SHA1)
+		nreq++;
+	if (hashes & HASH_SHA256)
+		nreq++;
+	if (hashes & HASH_SHA512)
+		nreq++;
+#ifdef HAVE_BLAKE2B
+	if (hashes & HASH_BLAKE2B)
+		nreq++;
 #endif
 
 	*flen = 0;
@@ -157,9 +175,30 @@ hash_multiple_internal(
 	blake2b_init(&bl2b, BLAKE2B_OUTBYTES);
 #endif
 
-	while ((len = rcb(data, sizeof(data), ctx)) > 0) {
+	if (nreq <= 1) {
+		while ((len = rcb(data, sizeof(data), ctx)) != 0) {
+			if (len == (size_t)-1)
+				return -1;
+			*flen += len;
+			if (hashes & HASH_MD5)
+				md5_process_bytes(data, len, &m5);
+			if (hashes & HASH_SHA1)
+				sha1_process_bytes(data, len, &s1);
+			if (hashes & HASH_SHA256)
+				sha256_process_bytes(data, len, &s256);
+			if (hashes & HASH_SHA512)
+				sha512_process_bytes(data, len, &s512);
+#ifdef HAVE_BLAKE2B
+			if (hashes & HASH_BLAKE2B)
+				blake2b_update(&bl2b, (unsigned char *)data, len);
+#endif
+		}
+	} else
+	while ((len = rcb(data, sizeof(data), ctx)) != 0) {
+		if (len == (size_t)-1)
+			return -1;
 		*flen += len;
-#pragma omp parallel sections
+#pragma omp parallel sections num_threads(nreq)
 		{
 #pragma omp section
 			{
@@ -191,64 +230,36 @@ hash_multiple_internal(
 		}
 	}
 
-#pragma omp parallel sections
-	{
-#pragma omp section
-		{
-			if (hashes & HASH_MD5) {
-				unsigned char md5buf[MD5_DIGEST_SIZE];
-				md5_finish_ctx(&m5, md5buf);
-				hash_hex(md5, md5buf, MD5_DIGEST_SIZE);
-			}
-		}
-#pragma omp section
-		{
-			if (hashes & HASH_SHA1) {
-				unsigned char sha1buf[SHA1_DIGEST_SIZE];
-				sha1_finish_ctx(&s1, sha1buf);
-				hash_hex(sha1, sha1buf, SHA1_DIGEST_SIZE);
-			}
-		}
-#pragma omp section
-		{
-			if (hashes & HASH_SHA256) {
-				unsigned char sha256buf[SHA256_DIGEST_SIZE];
-				sha256_finish_ctx(&s256, sha256buf);
-				hash_hex(sha256, sha256buf, SHA256_DIGEST_SIZE);
-			}
-		}
-#pragma omp section
-		{
-			if (hashes & HASH_SHA512) {
-				unsigned char sha512buf[SHA512_DIGEST_SIZE];
-				sha512_finish_ctx(&s512, sha512buf);
-				hash_hex(sha512, sha512buf, SHA512_DIGEST_SIZE);
-			}
-		}
-#ifdef HAVE_BLAKE2B
-#pragma omp section
-		{
-			if (hashes & HASH_BLAKE2B) {
-				unsigned char blak2bbuf[BLAKE2B_OUTBYTES];
-				blake2b_final(&bl2b, blak2bbuf, BLAKE2B_OUTBYTES);
-				hash_hex(blak2b, blak2bbuf, BLAKE2B_OUTBYTES);
-			}
-		}
-#endif
+	if (hashes & HASH_MD5) {
+		unsigned char md5buf[MD5_DIGEST_SIZE];
+		md5_finish_ctx(&m5, md5buf);
+		hash_hex(md5, md5buf, MD5_DIGEST_SIZE);
 	}
+	if (hashes & HASH_SHA1) {
+		unsigned char sha1buf[SHA1_DIGEST_SIZE];
+		sha1_finish_ctx(&s1, sha1buf);
+		hash_hex(sha1, sha1buf, SHA1_DIGEST_SIZE);
+	}
+	if (hashes & HASH_SHA256) {
+		unsigned char sha256buf[SHA256_DIGEST_SIZE];
+		sha256_finish_ctx(&s256, sha256buf);
+		hash_hex(sha256, sha256buf, SHA256_DIGEST_SIZE);
+	}
+	if (hashes & HASH_SHA512) {
+		unsigned char sha512buf[SHA512_DIGEST_SIZE];
+		sha512_finish_ctx(&s512, sha512buf);
+		hash_hex(sha512, sha512buf, SHA512_DIGEST_SIZE);
+	}
+#ifdef HAVE_BLAKE2B
+	if (hashes & HASH_BLAKE2B) {
+		unsigned char blak2bbuf[BLAKE2B_OUTBYTES];
+		blake2b_final(&bl2b, blak2bbuf, BLAKE2B_OUTBYTES);
+		hash_hex(blak2b, blak2bbuf, BLAKE2B_OUTBYTES);
+	}
+#endif
 
 	return 0;
 }
-
-/**
- * Computes the hashes for file fname and writes the hex-representation
- * for those hashes into the address space pointed to by the return
- * pointers for these hashes.  The caller should ensure enough space is
- * available.  Only those hashes which are in the global hashes variable
- * are computed, the address space pointed to for non-used hashes are
- * left untouched, e.g. they can be NULL.  The number of bytes read from
- * the file pointed to by fname is returned in the flen argument.
- */
 int
 hash_multiple_cb(
 		hash_read_cb rcb,
@@ -265,6 +276,15 @@ hash_multiple_cb(
 			md5, sha1, sha256, sha512, blak2b, flen, hashes);
 }
 
+/**
+ * Computes the hashes for file fname and writes the hex-representation
+ * for those hashes into the address space pointed to by the return
+ * pointers for these hashes.  The caller should ensure enough space is
+ * available.  Only those hashes which are in the global hashes variable
+ * are computed, the address space pointed to for non-used hashes are
+ * left untouched, e.g. they can be NULL.  The number of bytes read from
+ * the file pointed to by fname is returned in the flen argument.
+ */
 int
 hash_multiple_file_fd(
 		int fd,
@@ -279,12 +299,17 @@ hash_multiple_file_fd(
 	FILE *f;
 	int   ret;
 
-	if ((f = fdopen(fd, "r")) == NULL)
+	if ((f = fdopen(fd, "r")) == NULL) {
+		close(fd);
 		return -1;
+	}
 
 	ret = hash_multiple_internal(read_stdio, f,
 								 md5, sha1, sha256, sha512, blak2b,
 								 flen, hashes);
+
+	if (ret == 0 && ferror(f))
+		ret = -1;
 
 	fclose(f);
 
@@ -318,9 +343,6 @@ hash_multiple_file_at_cb(
 
 	ret = hash_multiple_file_fd(fd, md5, sha1, sha256, sha512,
 			blak2b, flen, hashes);
-
-	if (ret != 0)
-		close(fd);
 
 	return ret;
 }

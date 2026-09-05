@@ -5,6 +5,7 @@
  * Copyright 2005-2008 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <ctype.h>
 #include <xalloc.h>
 
@@ -146,6 +148,8 @@ atom_ctx *atom_explode_cat
     ret->pfx_op = ATOM_OP_PV_EQUAL;
     input++;
     break;
+  default:
+    break;
   }
   if (*input == '=')
   {
@@ -230,6 +234,8 @@ atom_ctx *atom_explode_cat
       case '!':
         w->pfx_cond = ATOM_UC_NOT;
         ptr++;
+        break;
+      default:
         break;
       }
       w->use = ptr;
@@ -423,7 +429,9 @@ atom_ctx *atom_explode_cat
   }
 
   ret->PVR = ptr;
-  snprintf(ret->PN, slen, "%.*s", (int)(ret->PVR - 1 - ret->PF), ret->PF);
+  len = MIN((size_t)(ret->PVR - 1 - ret->PF), slen - 1);
+  memcpy(ret->PN, ret->PF, len);
+  ret->PN[len] = '\0';
 
   /* find -r# */
   pv = NULL;
@@ -444,16 +452,22 @@ atom_ctx *atom_explode_cat
     ptr--;
   }
   if (pv != NULL)
-    snprintf(ret->P, slen, "%.*s", (int)(pv - ret->PF), ret->PF);
+  {
+    len = MIN((size_t)(pv - ret->PF), slen - 1);
+    memcpy(ret->P, ret->PF, len);
+    ret->P[len] = '\0';
+  }
   else
     ret->P = ret->PF;
 
   ret->PV = ret->P + (ret->PVR - ret->PF);
 
-  /* break out all the suffixes */
+  /* break out all the suffixes.A bare version is an implicit _p-1 so 
+   * that 1 < 1_p0, matching portage's vercmp (and PMS 3.7, more-suffixes-with-_p
+   * compares greater to _p0). */
   sidx = 0;
   ret->suffixes = xrealloc(ret->suffixes, sizeof(atom_suffix) * (sidx + 1));
-  ret->suffixes[sidx].sint   = 0;
+  ret->suffixes[sidx].sint   = -1;
   ret->suffixes[sidx].suffix = VER_NORM;
   ptr = ret->PV + strlen(ret->PV) - 1;
   while (ptr-- > ret->PV)
@@ -463,7 +477,7 @@ atom_ctx *atom_explode_cat
     for (idx = 0; idx < ARRAY_SIZE(atom_suffixes_str); idx++)
     {
       if (strncmp(ptr, atom_suffixes_str[idx],
-                  strlen(atom_suffixes_str[idx])))
+                  strlen(atom_suffixes_str[idx])) != 0)
         continue;
 
       ret->suffixes[sidx].sint   =
@@ -474,7 +488,7 @@ atom_ctx *atom_explode_cat
 
       ret->suffixes = xrealloc(ret->suffixes,
                                sizeof(atom_suffix) * (sidx + 1));
-      ret->suffixes[sidx].sint   = 0;
+      ret->suffixes[sidx].sint   = -1;
       ret->suffixes[sidx].suffix = VER_NORM;
       break;
     }
@@ -541,7 +555,8 @@ atom_ctx *atom_clone
     memcpy(ret->PF, a->PF, flen);
     p += flen;
   }
-  if (a->PVR > a->PF &&
+  if (a->PVR != NULL && a->PF != NULL &&
+      a->PVR > a->PF &&
       a->PVR < (a->PF + flen))
     ret->PVR = ret->PF + (a->PVR - a->PF);
   if (a->P != NULL)
@@ -550,7 +565,8 @@ atom_ctx *atom_clone
     memcpy(ret->P, a->P, plen);
     p += plen;
   }
-  if (a->PV > a->P &&
+  if (a->PV != NULL && a->P != NULL &&
+      a->PV > a->P &&
       a->PV < (a->P + plen))
     ret->PV = ret->P + (a->PV - a->P);
   if (a->PN != NULL)
@@ -625,6 +641,8 @@ atom_ctx *atom_clone
   return ret;
 }
 
+void atom_implode_cb(void *a) { atom_implode(a); }
+
 void atom_implode
 (
   atom_ctx *a
@@ -642,7 +660,7 @@ void atom_implode
   free(a);
 }
 
-static atom_equality _atom_compare_match
+static atom_equality atom_compare_match
 (
   int           ret,
   atom_operator op
@@ -1132,7 +1150,7 @@ atom_equality atom_compare_flg
                s2 == NULL &&
                !ver_bits)
       {
-        return _atom_compare_match(EQUAL, pfx_op);
+        return atom_compare_match(EQUAL, pfx_op);
       }
       else
       {  /* 3.2#L12-16 */
@@ -1151,9 +1169,9 @@ atom_equality atom_compare_flg
       }
 
       if (n1 < n2)
-        return _atom_compare_match(OLDER, pfx_op);
+        return atom_compare_match(OLDER, pfx_op);
       else if (n1 > n2)
-        return _atom_compare_match(NEWER, pfx_op);
+        return atom_compare_match(NEWER, pfx_op);
 
       s1 = *ends1 == '\0' ? NULL : ends1;
       if (s1 != NULL)
@@ -1191,12 +1209,12 @@ atom_equality atom_compare_flg
       ver_bits >>= 1;
       if (!query->letter &&
           !ver_bits)
-        return _atom_compare_match(EQUAL, pfx_op);
+        return atom_compare_match(EQUAL, pfx_op);
     }
     if (data->letter < query->letter)
-      return _atom_compare_match(OLDER, pfx_op);
+      return atom_compare_match(OLDER, pfx_op);
     if (data->letter > query->letter)
-      return _atom_compare_match(NEWER, pfx_op);
+      return atom_compare_match(NEWER, pfx_op);
 
     /* Algorithm 3.5: Version comparison logic for suffixes
      *  1:  define the notations Ask and Bsk to mean the kth suffix
@@ -1260,21 +1278,21 @@ atom_equality atom_compare_flg
       ver_bits >>= 1;
       if (as2->suffix == VER_NORM &&
           !ver_bits)
-        return _atom_compare_match(EQUAL, pfx_op);
+        return atom_compare_match(EQUAL, pfx_op);
     }
     if (as1->suffix < as2->suffix)  /* 3.6#L9 */
-      return _atom_compare_match(OLDER, pfx_op);
+      return atom_compare_match(OLDER, pfx_op);
     else if (as1->suffix > as2->suffix)
-      return _atom_compare_match(NEWER, pfx_op);
+      return atom_compare_match(NEWER, pfx_op);
     /* compare suffix number 1.0z_alpha[1] 3.6#L4 */
     if (sfx_op == ATOM_OP_STAR &&
         !as2->sint &&
         !ver_bits)
-      return _atom_compare_match(EQUAL, pfx_op);
+      return atom_compare_match(EQUAL, pfx_op);
     else if (as1->sint < as2->sint)
-      return _atom_compare_match(OLDER, pfx_op);
+      return atom_compare_match(OLDER, pfx_op);
     else if (as1->sint > as2->sint)
-      return _atom_compare_match(NEWER, pfx_op);
+      return atom_compare_match(NEWER, pfx_op);
     /* fall through to -r# check below */
   }
   else if (data->PV ||
@@ -1299,24 +1317,24 @@ atom_equality atom_compare_flg
        query->PR_int == 0) ||
       pfx_op == ATOM_OP_PV_EQUAL ||
       flags & ATOM_COMP_NOREV)
-    return _atom_compare_match(EQUAL, pfx_op);
+    return atom_compare_match(EQUAL, pfx_op);
   /* Make sure the -r# is the same. 3.7 */
   if (data->PR_int < query->PR_int)
-    return _atom_compare_match(OLDER, pfx_op);
+    return atom_compare_match(OLDER, pfx_op);
   else if (data->PR_int > query->PR_int)
-    return _atom_compare_match(NEWER, pfx_op);
+    return atom_compare_match(NEWER, pfx_op);
 
   /* binpkg-multi-instance support */
   if (data->BUILDID > 0 &&
       query->BUILDID > 0)
   {
     if (data->BUILDID < query->BUILDID)
-      return _atom_compare_match(OLDER, pfx_op);
+      return atom_compare_match(OLDER, pfx_op);
     if (data->BUILDID > query->BUILDID)
-      return _atom_compare_match(NEWER, pfx_op);
+      return atom_compare_match(NEWER, pfx_op);
   }
 
-  return _atom_compare_match(EQUAL, pfx_op);
+  return atom_compare_match(EQUAL, pfx_op);
 }
 
 atom_equality atom_compare_str
@@ -1345,6 +1363,20 @@ implode_a1_ret:
   return ret;
 }
 
+static size_t
+atom_str_append(char *buf, size_t buflen, size_t off, const char *fmt, ...)
+{
+  va_list ap;
+  int     n;
+
+  if (off >= buflen)
+    return off;
+  va_start(ap, fmt);
+  n = vsnprintf(buf + off, buflen - off, fmt, ap);
+  va_end(ap);
+  return n > 0 ? off + (size_t)n : off;
+}
+
 /**
  * Reconstructs an atom exactly like it was originally given (exploded).
  */
@@ -1358,35 +1390,35 @@ char *atom_to_string_r
   atom_usedep *ud;
   size_t       off = 0;
 
-  off += snprintf(buf + off, buflen - off, "%s%s",
+  off = atom_str_append(buf, buflen, off, "%s%s",
                   atom_blocker_str[a->blocker], atom_op_str[a->pfx_op]);
   if (a->CATEGORY != NULL)
-    off += snprintf(buf + off, buflen - off, "%s/", a->CATEGORY);
+    off = atom_str_append(buf, buflen, off, "%s/", a->CATEGORY);
   if (a->PN != NULL)
-    off += snprintf(buf + off, buflen - off, "%s", a->PN);
+    off = atom_str_append(buf, buflen, off, "%s", a->PN);
   if (a->PV != NULL)
-    off += snprintf(buf + off, buflen - off, "-%s", a->PV);
+    off = atom_str_append(buf, buflen, off, "-%s", a->PV);
   if (a->PR_int > 0)
-    off += snprintf(buf + off, buflen - off, "-r%d", a->PR_int);
+    off = atom_str_append(buf, buflen, off, "-r%d", a->PR_int);
   if (a->BUILDID > 0)
-    off += snprintf(buf + off, buflen - off, "~%u", a->BUILDID);
-  off += snprintf(buf + off, buflen - off, "%s", atom_op_str[a->sfx_op]);
+    off = atom_str_append(buf, buflen, off, "~%u", a->BUILDID);
+  off = atom_str_append(buf, buflen, off, "%s", atom_op_str[a->sfx_op]);
   if (a->SLOT != NULL ||
       a->slotdep != ATOM_SD_NONE)
-    off += snprintf(buf + off, buflen - off, ":%s%s%s%s",
+    off = atom_str_append(buf, buflen, off, ":%s%s%s%s",
                     a->SLOT ? a->SLOT : "",
                     a->SUBSLOT && a->SUBSLOT != a->SLOT ?  "/" : "",
                     a->SUBSLOT && a->SUBSLOT != a->SLOT ? a->SUBSLOT : "",
                     atom_slotdep_str[a->slotdep]);
   for (ud = a->usedeps; ud != NULL; ud = ud->next)
-    off += snprintf(buf + off, buflen - off, "%s%s%s%s%s",
+    off = atom_str_append(buf, buflen, off, "%s%s%s%s%s",
                     ud == a->usedeps ? "[" : "",
                     atom_usecond_str[ud->pfx_cond],
                     ud->use,
                     atom_usecond_str[ud->sfx_cond],
                     ud->next == NULL ? "]" : ",");
   if (a->REPO != NULL)
-    off += snprintf(buf + off, buflen - off, "::%s", a->REPO);
+    off = atom_str_append(buf, buflen, off, "::%s", a->REPO);
 
   return buf;
 }
@@ -1418,6 +1450,7 @@ char *atom_format_r
   char        bracket;
   bool        showit;
   bool        connected;
+  bool        suppressed = false;
 
   if (!a)
   {
@@ -1427,9 +1460,12 @@ char *atom_format_r
 
 #define append_buf(B,L,FMT,...) \
   { \
-    len = snprintf(B, L, FMT, __VA_ARGS__); \
-    L -= len; \
-    B += len; \
+    int alen = snprintf(B, L, FMT, __VA_ARGS__); \
+    len = alen < 0 ? 0 : (size_t)alen; \
+    if (len >= (L)) \
+      len = (L) > 0 ? (L) - 1 : 0; \
+    (L) -= len; \
+    (B) += len; \
   }
   ret = buf;
   p = format;
@@ -1439,6 +1475,8 @@ char *atom_format_r
     if (fmt == NULL)
     {
       append_buf(buf, buflen, "%s", p);
+      if (suppressed)
+        color_unsuppress();
       return ret;
     }
     else if (fmt != p)
@@ -1602,6 +1640,20 @@ char *atom_format_r
                        a->BUILDID, NORM);
           }
         }
+        else if (len == 1 &&
+                 fmt[0] == '#')
+        {
+          if (showit)
+          {
+            color_suppress();
+            suppressed = true;
+          }
+          else if (suppressed)
+          {
+            color_unsuppress();
+            suppressed = false;
+          }
+        }
         else
         {
           append_buf(buf, buflen, "<BAD:%.*s>", (int)len, fmt);
@@ -1611,7 +1663,7 @@ char *atom_format_r
       }
       else
       {
-        p = fmt + 1;
+        p = fmt + (*fmt != '\0' ? 1 : 0);
       }
     }
     else
@@ -1620,6 +1672,9 @@ char *atom_format_r
     }
   }
 #undef append_buf
+
+  if (suppressed)
+    color_unsuppress();
 
   return ret;
 }
@@ -1651,8 +1706,8 @@ inline int atom_compar_cb
   const void *r
 )
 {
-  const atom_ctx *al = *(const atom_ctx **)l;
-  const atom_ctx *ar = *(const atom_ctx **)r;
+  const atom_ctx *al = *(const atom_ctx * const *)l;
+  const atom_ctx *ar = *(const atom_ctx * const *)r;
 
   switch (atom_compare(al, ar))
   {

@@ -7,8 +7,8 @@
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _CONTENTS_H
-#define _CONTENTS_H 1
+#ifndef CONTENTS_H
+#define CONTENTS_H 1
 
 typedef enum {
 	CONTENTS_DIR, CONTENTS_OBJ, CONTENTS_SYM

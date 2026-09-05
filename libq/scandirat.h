@@ -7,8 +7,8 @@
  * Copyright 2021-     Fabian Groffen  - <grobian@gentoo.org>
  */
 
-#ifndef _SCANDIRAT_H
-#define _SCANDIRAT_H 1
+#ifndef SCANDIRAT_H
+#define SCANDIRAT_H 1
 
 #include <sys/types.h>
 #include <sys/stat.h>

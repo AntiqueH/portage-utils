@@ -32,8 +32,14 @@ INSTALL
 Makefile
 /tests/init.sh
 /tests/qmanifest/root/.gnupg/random_seed
+/tests/qmerge/qmerge-httpd
 /tests/install/
-/man/*.1
+/tests/atom_explode/e
+/tests/copy_file/m
+/tests/mkdir/m
+/tests/preserved/m
+/tests/rmspace/m
+/tests/usedep/m
 
 # ignore the binary and symlinks produced by q -i
 /q
@@ -49,6 +55,7 @@ Makefile
 /qmanifest
 /qmerge
 /qetuto
+/qmaint
 /qnews
 /qpkg
 /qsearch
@@ -101,3 +108,21 @@ Makefile
 .docker
 RESO*
 compile_commands.json
+muon_saves
+tests/fuzz/.bin/
+tests/fuzz/seeds/*/gen-*
+tests/fuzz/fuzz_*
+!tests/fuzz/fuzz_*.c
+tests/fuzz/*.log
+tests/fuzz/*.trs
+tests/cbmc/.atom_axioms
+vgcore*
+crash-*
+default.profraw
+*.plist
+oom-*
+tests/*/q-tmp/
+tests/r/
+.flagmatrix/
+/internal-libs/
+qgpkg-sign

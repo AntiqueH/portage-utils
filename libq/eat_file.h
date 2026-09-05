@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _EAT_FILE_H
-#define _EAT_FILE_H 1
+#ifndef EAT_FILE_H
+#define EAT_FILE_H 1
 
 #include <unistd.h>
 #include <stdbool.h>

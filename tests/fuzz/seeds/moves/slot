@@ -1,0 +1,2 @@
+slotmove dev-lang/python 3.11 3.12
+slotmove sys-libs/foo 0 1

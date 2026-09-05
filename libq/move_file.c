@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -41,6 +42,7 @@ move_file(int rootfd_src, const char *name_src,
 		if (stat_src == NULL) {
 			if (fstat(fd_src, &st) != 0) {
 				warnp("could not stat source file %s", name_src);
+				close(fd_src);
 				return -1;
 			}
 
@@ -66,11 +68,21 @@ move_file(int rootfd_src, const char *name_src,
 		if (fchown(fd_dst, stat_src->st_uid, stat_src->st_gid) != 0) {
 			warnp("could not set ownership (%zu/%zu) for %s",
 			  	  (size_t)stat_src->st_uid, (size_t)stat_src->st_gid, name_dst);
+			close(fd_src);
+			close(fd_dst);
+			if (unlinkat(rootfd_dst, tmpname_dst, 0) != 0) {
+				/* don't care */;
+			}
 			return -1;
 		}
 		if (fchmod(fd_dst, stat_src->st_mode) != 0) {
 			warnp("could not set permission (%u) for %s",
 			  	  (int)stat_src->st_mode, name_dst);
+			close(fd_src);
+			close(fd_dst);
+			if (unlinkat(rootfd_dst, tmpname_dst, 0) != 0) {
+				/* don't care */;
+			}
 			return -1;
 		}
 
@@ -88,7 +100,8 @@ move_file(int rootfd_src, const char *name_src,
 		/* preserve the file times */
 		times[0] = get_stat_atime(stat_src);
 		times[1] = get_stat_mtime(stat_src);
-		futimens(fd_dst, times);
+		if (futimens(fd_dst, times) != 0)
+			warnp("could not preserve times for %s", name_dst);
 
 		close(fd_src);
 		close(fd_dst);

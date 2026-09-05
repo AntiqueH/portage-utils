@@ -1,6 +1,8 @@
 /*
  * Copyright 2014 Gentoo Foundation
  * Distributed under the terms of the GNU General Public License v2
+ *
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -124,10 +126,10 @@ static bool is_prelink_elf(int fd, const char *filename)
 
 static int execvp_const(const char * const argv[])
 {
-	return execvp(argv[0], (void *)argv);
+	return execvp(argv[0], q_deconst_p(argv));
 }
 
-static int _hash_cb_prelink(int fd, const char *filename, const char * const argv[])
+static int hash_cb_prelink(int fd, const char *filename, const char * const argv[])
 {
 	int pipefd[2];
 
@@ -212,5 +214,5 @@ int hash_cb_prelink_undo(int fd, const char *filename)
 		"/dev/stdin",
 		NULL,
 	};
-	return _hash_cb_prelink(fd, filename, argv);
+	return hash_cb_prelink(fd, filename, argv);
 }

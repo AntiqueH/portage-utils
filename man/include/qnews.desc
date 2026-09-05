@@ -1,0 +1,20 @@
+\fIqnews\fR reads GLEP\ 42 news items for the configured repositories.
+It is a small C equivalent of \fBeselect news\fR that needs neither
+\fBeselect\fR nor Python.
+.P
+It understands three actions; with no action, \fBlist\fR is assumed:
+.TP
+.B list
+List the available news items, marking which are unread.
+.TP
+.B count
+Print the number of unread news items.
+.TP
+.B read \fR[\fBall\fR|\fI<item>\fR ...]
+Display news item(s) and mark them read. With no argument every
+currently unread item is shown; \fBall\fR shows every item, read or not;
+or name one or more \fI<item>\fR identifiers to show just those.
+.P
+Read and unread state is tracked per repository under
+\fI${ROOT}/var/lib/gentoo/news\fR, the same location Portage and
+\fBeselect news\fR use, so the two stay consistent.

@@ -4,6 +4,7 @@
  *
  * Copyright 2010-2016 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2022-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -80,7 +81,7 @@ int xsystembash_status
       /* a straight argument vector, not a shell command line:
        * execute it directly; passing it through `bash -c` would
        * run argv[0] only, with the rest as positional params */
-      _exit(execvp(argv[0], (char *const *)argv));
+      _exit(execvp(argv[0], q_deconst_p(argv)));
     }
 
   default: /* parent */

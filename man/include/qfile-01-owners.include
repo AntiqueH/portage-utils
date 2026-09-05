@@ -1,5 +1,4 @@
 .SH "FINDING FILE OWNERS"
-.PP
 This is the default behavior of \fBqfile\fP.  It will list the packages
 which own the files (or directories, or symlinks, or anything else
 Portage can install) you are querying.  Query items may be file paths or
@@ -11,13 +10,13 @@ The return status of \fBqfile\fP will be \fI0\fP as soon as an owning
 package has been found for one of the query items.
 .PP
 Find names of package(s) owning "/bin/bash":
-.nf\fI
+.nf
 	$ qfile -q /bin/bash
 	app-shells/bash
 .fi
 .PP
 Find package(s) owning any file named "bash", and show paths of this files:
-.nf\fI
+.nf
 	$ qfile -d bash
 	app-shells/bash: /bin/bash
 	app-shells/bash: /etc/bash
@@ -25,14 +24,14 @@ Find package(s) owning any file named "bash", and show paths of this files:
 .PP
 Find packages(s) owning the file named "bash" in the current directory. Also 
 display their exact version:
-.nf\fI
+.nf
 	$ cd /bin
 	$ qfile -v ./bash
 	app-shells/bash-3.1_p17: /bin/bash
 .fi
 .PP
 Find the package(s) owning the libraries needed by the Bash binary:
-.nf\fI
+.nf
 	$ qfile $(scanelf -nq -F%n#F /bin/bash | tr , '\\n')
 	sys-libs/ncurses (/lib/libncurses.so.5)
 	sys-libs/glibc (/lib/libdl.so.2)

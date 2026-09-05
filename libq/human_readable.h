@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _HUMAN_READABLE_H
-#define _HUMAN_READABLE_H 1
+#ifndef HUMAN_READABLE_H
+#define HUMAN_READABLE_H 1
 
 enum {
 	KILOBYTE = 1024,

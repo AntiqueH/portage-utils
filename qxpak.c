@@ -4,6 +4,7 @@
  *
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -46,6 +47,7 @@ struct qxpak_cb {
 	int argc;
 	char **argv;
 	bool extract;
+	bool error;
 };
 
 static void
@@ -90,18 +92,26 @@ _xpak_callback(
 	if (!xpak_stdout) {
 		int fd = openat(xctx->dir_fd, pathname,
 				O_WRONLY | O_CLOEXEC | O_CREAT | O_TRUNC, 0644);
-		if (fd < 0)
+		if (fd < 0) {
+			xctx->error = true;
 			return;
+		}
 		out = fdopen(fd, "w");
-		if (!out)
+		if (!out) {
+			close(fd);
+			xctx->error = true;
 			return;
+		}
 	} else
 		out = stdout;
 
-	fwrite(data + data_offset, 1, data_len, out);
+	if (fwrite(data + data_offset, 1, data_len, out) != (size_t)data_len)
+		xctx->error = true;
 
-	if (!xpak_stdout)
-		fclose(out);
+	if (!xpak_stdout) {
+		if (fclose(out) != 0)
+			xctx->error = true;
+	}
 }
 
 int qxpak_main(int argc, char **argv)
@@ -115,6 +125,7 @@ int qxpak_main(int argc, char **argv)
 	xpak_stdout = 0;
 	cbctx.dir_fd = AT_FDCWD;
 	cbctx.extract = false;
+	cbctx.error = false;
 
 	while ((i = GETOPT_LONG(QXPAK, qxpak, "")) != -1) {
 		switch (i) {
@@ -151,11 +162,15 @@ int qxpak_main(int argc, char **argv)
 		break;
 	case XPAK_ACT_CREATE:
 		ret = xpak_create(cbctx.dir_fd, xpak, argc, argv, 0, verbose);
+		if (ret != 0)
+			ret = -1;
 		break;
 	default:
 		ret = -1;
 	}
 	ret = ret < 0 ? EXIT_FAILURE : 0;
+	if (cbctx.error)
+		ret = EXIT_FAILURE;
 
 	if (cbctx.dir_fd != AT_FDCWD)
 		close(cbctx.dir_fd);

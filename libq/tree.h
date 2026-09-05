@@ -3,8 +3,8 @@
  * Distributed under the terms of the GNU General Public License v2
  */
 
-#ifndef _TREE_H
-#define _TREE_H 1
+#ifndef TREE_H
+#define TREE_H 1
 
 #include <dirent.h>
 #include <stdbool.h>
@@ -68,6 +68,8 @@ enum tree_open_type {
   X(REQUIRES) \
   X(REPO_REVISIONS) \
   X(repository) \
+  X(CATEGORY) \
+  X(PF) \
   X(MD5) \
   X(SHA1) \
   X(SIZE) \
@@ -87,6 +89,7 @@ tree_ctx           *tree_new(const char *portroot, const char *path,
                              enum tree_open_type type, bool quiet);
 tree_ctx           *tree_merge(tree_ctx *tree1, tree_ctx *tree2);
 void                tree_close(tree_ctx *tree);
+void                tree_close_cb(void *tree);
 
 int                 tree_foreach_pkg(tree_ctx *tree, tree_pkg_cb callback,
                                      void *priv, bool sorted,
@@ -115,6 +118,12 @@ char               *tree_get_path(tree_ctx *tree);
 int                 tree_get_portroot_fd(tree_ctx *tree);
 enum tree_open_type tree_get_treetype(tree_ctx *tree);
 
+void                tree_vdbmeta_stamp(const char *dbdir);
+bool                tree_vdbmeta_usable(const char *dbdir);
+bool                tree_vdbmeta_consolidate(const char *dbdir,
+                                             bool del_individual,
+                                             bool stamp);
+int                 tree_vdbmeta_explode(const char *dbdir);
 char               *tree_pkg_meta(tree_pkg_ctx *pkg,
                                   enum tree_pkg_meta_keys key);
 atom_ctx           *tree_pkg_atom(tree_pkg_ctx *pkg, bool full);
@@ -124,6 +133,10 @@ char               *tree_pkg_get_pf_name(tree_pkg_ctx *pkg);
 char               *tree_pkg_get_path(tree_pkg_ctx *pkg);
 int                 tree_pkg_get_portroot_fd(tree_pkg_ctx *pkg);
 enum tree_open_type tree_pkg_get_treetype(tree_pkg_ctx *pkg);
+
+struct archive;
+void qarchive_read_filters(struct archive *a);
+void qarchive_read_taronly(struct archive *a);
 
 #endif
 

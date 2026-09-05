@@ -7,8 +7,8 @@ be available, e.g. it won't match unset SLOT (NULL).
 
 The antislot is mostly useful with dependencies and is best described
 with an example.  Consider a perl upgrade from \fIperl:0/5.28\fR to
-\fIperl:0/5.30\fR.  To find a consumer for \fIperl:0/5.28\fR a simple
-match can be made, e.g. using \fBqdepends\Rf(1):
+\fIperl:0/5.30\fR.  To find a revdep of \fIperl:0/5.28\fR a simple
+match can be made, e.g. using \fBqdepends\fR(1):
 
 .nf
 	$ \fIqdepends -Q perl:0/5.28\fR

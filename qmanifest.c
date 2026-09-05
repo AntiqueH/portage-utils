@@ -3,6 +3,7 @@
  * Distributed under the terms of the GNU General Public License v2
  *
  * Copyright 2018-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  *
  * The contents of this file was taken from:
  *   https://github.com/grobian/hashgen
@@ -35,6 +36,8 @@
 
 #include "eat_file.h"
 #include "hash.h"
+#include "mfline.h"
+#include "xasprintf.h"
 
 #define QMANIFEST_FLAGS "gs:pdo" COMMON_FLAGS
 static struct option const qmanifest_long_opts[] = {
@@ -68,7 +71,7 @@ typedef struct verify_msg {
 typedef struct _gpg_signature {
 	char *algo;
 	char *fingerprint;
-	char isgood:1;
+	unsigned char isgood:1;
 	char *timestamp;
 	char *signer;
 	char *pkfingerprint;
@@ -112,8 +115,8 @@ update_times(struct timeval *tv, struct stat *s)
 static int
 compare_strings(const void *l, const void *r)
 {
-	const char **strl = (const char **)l;
-	const char **strr = (const char **)r;
+	const char * const *strl = l;
+	const char * const *strr = r;
 	return strcmp(*strl, *strr);
 }
 
@@ -174,6 +177,14 @@ list_dir(char ***retlist, size_t *retcnt, const char *path)
  * in root found by name.  The Manifest entry will be using type as
  * first component.
  */
+static char *
+hashline_adv(char *p, char *end, int n)
+{
+	if (n < 0)
+		return p;
+	return (size_t)n < (size_t)(end - p) ? p + n : end;
+}
+
 static void
 write_hashes(
 		struct timeval *tv,
@@ -199,22 +210,32 @@ write_hashes(
 
 	update_times(tv, &s);
 
-	hash_compute_file(fname, sha256, sha512, blak2b, &flen, hashes);
+	if (hash_compute_file(fname, sha256, sha512, blak2b, &flen, hashes) != 0) {
+		fprintf(stderr, "failed to hash %s\n", fname);
+		return;
+	}
 
-	len = snprintf(data, sizeof(data), "%s %s %zd", type, name, flen);
-	if (hashes & HASH_BLAKE2B)
-		len += snprintf(data + len, sizeof(data) - len,
-				" BLAKE2B %s", blak2b);
-	if (hashes & HASH_SHA256)
-		len += snprintf(data + len, sizeof(data) - len,
-				" SHA256 %s", sha256);
-	if (hashes & HASH_SHA512)
-		len += snprintf(data + len, sizeof(data) - len,
-				" SHA512 %s", sha512);
-	len += snprintf(data + len, sizeof(data) - len, "\n");
+	data[0] = '\0';
+	{
+		char *p = data;
+		char *e = data + sizeof(data);
+		p = hashline_adv(p, e, snprintf(p, e - p, "%s %s %zd",
+					type, name, flen));
+		if (hashes & HASH_BLAKE2B)
+			p = hashline_adv(p, e, snprintf(p, e - p,
+						" BLAKE2B %s", blak2b));
+		if (hashes & HASH_SHA256)
+			p = hashline_adv(p, e, snprintf(p, e - p,
+						" SHA256 %s", sha256));
+		if (hashes & HASH_SHA512)
+			p = hashline_adv(p, e, snprintf(p, e - p,
+						" SHA512 %s", sha512));
+		p = hashline_adv(p, e, snprintf(p, e - p, "\n"));
+		len = (size_t)(p - data);
+	}
 
-	if (m != NULL)
-		fwrite(data, len, 1, m);
+	if (m != NULL && fwrite(data, len, 1, m) != 1)
+		fprintf(stderr, "failed to write Manifest entry for %s\n", name);
 	if (gm != NULL && gzwrite(gm, data, len) == 0)
 		fprintf(stderr, "failed to write to compressed stream\n");
 }
@@ -316,25 +337,30 @@ parse_layout_conf(const char *path)
 		last_nl = NULL;
 		for (p = buf; (size_t)(p - buf) < len; p++) {
 			if (*p == '\n') {
+				char *eol = p;
+
 				if (last_nl != NULL)
 					start = last_nl + 1;
 				last_nl = p;
 				do {
 					sz = strlen("manifest-hashes");
-					if (strncmp(start, "manifest-hashes", sz))
+					if (strncmp(start, "manifest-hashes", sz) != 0)
 						break;
-					if ((q = strchr(start + sz, '=')) == NULL)
+
+					if ((q = memchr(start + sz, '=',
+									eol - (start + sz))) == NULL)
 						break;
 					q++;
-					while (isspace((int)*q))
+					while (q < eol && isspace((int)*q))
 						q++;
 					/* parse the tokens, whitespace separated */
 					tok = q;
 					do {
-						while (!isspace((int)*q))
+						while (q < eol && !isspace((int)*q))
 							q++;
 						sz = q - tok;
-						if (strncmp(tok, "SHA256", sz) == 0) {
+						if (sz == 0) {
+						} else if (strncmp(tok, "SHA256", sz) == 0) {
 							ret |= HASH_SHA256;
 						} else if (strncmp(tok, "SHA512", sz) == 0) {
 							ret |= HASH_SHA512;
@@ -346,10 +372,10 @@ parse_layout_conf(const char *path)
 							fprintf(stderr, "warning: unsupported hash from "
 									"layout.conf: %.*s\n", (int)sz, tok);
 						}
-						while (isspace((int)*q) && *q != '\n')
+						while (q < eol && isspace((int)*q))
 							q++;
 						tok = q;
-					} while (*q != '\n');
+					} while (q < eol);
 					/* got it, expect only once, so stop processing */
 					fclose(f);
 					return ret;
@@ -357,9 +383,9 @@ parse_layout_conf(const char *path)
 			}
 		}
 		if (last_nl != NULL) {
-			last_nl++;  /* skip \n */
-			len = last_nl - buf;
-			memmove(buf, last_nl, len);
+			size_t consumed = last_nl + 1 - buf;
+			len -= consumed;
+			memmove(buf, last_nl + 1, len);
 		} else {
 			/* skip too long line */
 			len = 0;
@@ -507,7 +533,12 @@ generate_dir(const char *dir, enum type_manifest mtype)
 		time(&rtime);
 		len = strftime(path, sizeof(path),
 				"TIMESTAMP %Y-%m-%dT%H:%M:%SZ\n", gmtime(&rtime));
-		fwrite(path, len, 1, f);
+		if (fwrite(path, len, 1, f) != 1) {
+			fprintf(stderr, "failed to write to file '%s/%s': %s\n",
+					dir, str_manifest, strerror(errno));
+			fclose(f);
+			return NULL;
+		}
 		fflush(f);
 		fclose(f);
 
@@ -758,7 +789,8 @@ process_dir_gen(void)
 		gpgme_data_t manifest;
 		gpgme_data_t out;
 		FILE *f;
-		size_t dlen;
+		const char *reterr;
+		ssize_t dlen;
 
 		gerr = gpgme_new(&gctx);
 		if (gerr != GPG_ERR_NO_ERROR)
@@ -783,9 +815,10 @@ process_dir_gen(void)
 		if (gpg_get_password) {
 			if (isatty(fileno(stdin))) {
 				/* disable terminal echo; the printing of what you type */
-				tcgetattr(fileno(stdin), &termio);
-				termio.c_lflag &= ~ECHO;
-				tcsetattr(fileno(stdin), TCSANOW, &termio);
+				if (tcgetattr(fileno(stdin), &termio) == 0) {
+					termio.c_lflag &= ~ECHO;
+					tcsetattr(fileno(stdin), TCSANOW, &termio);
+				}
 
 				printf("Password for GPG-key %s: ", gpg_sign_key);
 			}
@@ -795,8 +828,10 @@ process_dir_gen(void)
 			if (isatty(fileno(stdin))) {
 				printf("\n");
 				/* restore echoing, for what it's worth */
-				termio.c_lflag |= ECHO;
-				tcsetattr(fileno(stdin), TCSANOW, &termio);
+				if (tcgetattr(fileno(stdin), &termio) == 0) {
+					termio.c_lflag |= ECHO;
+					tcsetattr(fileno(stdin), TCSANOW, &termio);
+				}
 			}
 
 			if (gpg_pass == NULL || *gpg_pass == '\0')
@@ -808,6 +843,11 @@ process_dir_gen(void)
 			}
 		}
 
+
+		manifest = NULL;
+		out      = NULL;
+		reterr   = NULL;
+
 		if ((f = fopen(str_manifest, "r+")) == NULL)
 		{
 			gpgme_release(gctx);
@@ -817,36 +857,50 @@ process_dir_gen(void)
 		/* finally, sign the Manifest */
 		if (gpgme_data_new_from_stream(&manifest, f) != GPG_ERR_NO_ERROR)
 		{
-			gpgme_release(gctx);
-			return "failed to create GPG data from Manifest";
+			reterr = "failed to create GPG data from Manifest";
+			goto sign_out;
 		}
 
 		if (gpgme_data_new(&out) != GPG_ERR_NO_ERROR)
 		{
-			gpgme_release(gctx);
-			return "failed to create GPG output buffer";
+			reterr = "failed to create GPG output buffer";
+			goto sign_out;
 		}
 
 		gerr = gpgme_op_sign(gctx, manifest, out, GPGME_SIG_MODE_CLEAR);
 		if (gerr != GPG_ERR_NO_ERROR) {
 			warn("%s: %s", gpgme_strsource(gerr), gpgme_strerror(gerr));
-			gpgme_data_release(out);
-			gpgme_release(gctx);
-			return "failed to GPG sign Manifest";
+			reterr = "failed to GPG sign Manifest";
+			goto sign_out;
 		}
 
 		/* write back signed Manifest */
-		rewind(f);
+		if (fseek(f, 0, SEEK_SET) != 0) {
+			reterr = "failed to seek top-level Manifest for signing";
+			goto sign_out;
+		}
 		gpgme_data_seek(out, 0, SEEK_SET);
 		do {
 			dlen = gpgme_data_read(out, path, sizeof(path));
-			fwrite(path, dlen, 1, f);
-		} while (dlen == sizeof(path));
-		fclose(f);
+			if (dlen < 0) {
+				reterr = "failed to read signed Manifest";
+				goto sign_out;
+			}
+			if (dlen > 0 && fwrite(path, (size_t)dlen, 1, f) != 1) {
+				reterr = "failed to write signed Manifest";
+				goto sign_out;
+			}
+		} while ((size_t)dlen == sizeof(path));
 
-		gpgme_data_release(out);
-		gpgme_data_release(manifest);
+ sign_out:
+		if (out != NULL)
+			gpgme_data_release(out);
+		if (manifest != NULL)
+			gpgme_data_release(manifest);
 		gpgme_release(gctx);
+		fclose(f);
+		if (reterr != NULL)
+			return reterr;
 	}
 
 	return NULL;
@@ -864,22 +918,36 @@ msgs_add(
 	va_list ap;
 	verify_msg *msg;
 
-	if (msgs == NULL || *msgs == NULL)
+	if (msgs == NULL)
 		return;
-
-	msg = (*msgs)->next = xmalloc(sizeof(verify_msg));
 
 	len = snprintf(buf, sizeof(buf), "%s:%s:",
 			manifest ? manifest : "",
 			ebuild   ? ebuild   : "");
+	if (len < 0)
+		len = 0;
+	else if ((size_t)len >= sizeof(buf))
+		len = sizeof(buf) - 1;
 
 	va_start(ap, fmt);
 	vsnprintf(buf + len, sizeof(buf) - len, fmt, ap);
 	va_end(ap);
 
+	msg = xmalloc(sizeof(verify_msg));
 	msg->msg = xstrdup(buf);
 	msg->next = NULL;
-	*msgs = msg;
+#pragma omp critical
+	{
+		if (*msgs != NULL) {
+			(*msgs)->next = msg;
+			*msgs = msg;
+			msg = NULL;
+		}
+	}
+	if (msg != NULL) {
+		free(msg->msg);
+		free(msg);
+	}
 }
 
 gpg_sig *
@@ -1063,33 +1131,24 @@ verify_file(const char *dir, char *mfline, const char *mfest, verify_msg **msgs)
 	 * file <SIZE> <HASHTYPE HASH ...>
 	 * we parse this, and verify the size and hashes */
 
-	path = mfline;
-	p = strchr(path, ' ');
-	if (p == NULL) {
+	switch (mfline_split(mfline, &path, &size, &fsize, &p)) {
+	case MFLINE_NOPATH:
 		msgs_add(msgs, mfest, NULL, "corrupt manifest line: %s", path);
 		return 1;
-	}
-	*p++ = '\0';
-
-	size = p;
-	p = strchr(size, ' ');
-	if (p == NULL) {
+	case MFLINE_NOSIZE:
 		msgs_add(msgs, mfest, NULL, "corrupt manifest line, need size");
 		return 1;
-	}
-	*p++ = '\0';
-	fsize = strtoll(size, NULL, 10);
-	if (fsize == 0 && errno == EINVAL) {
+	case MFLINE_BADSIZE:
 		msgs_add(msgs, mfest, NULL, "corrupt manifest line, "
 				"size is not a number: %s", size);
 		return 1;
+	default:
+		break;
 	}
 
 	sha256[0] = sha512[0] = blak2b[0] = '\0';
 	snprintf(buf, sizeof(buf), "%s/%s", dir, path);
-	hash_compute_file(buf, sha256, sha512, blak2b, &flen, hashes);
-
-	if (flen == 0) {
+	if (hash_compute_file(buf, sha256, sha512, blak2b, &flen, hashes) != 0) {
 		msgs_add(msgs, mfest, path, "cannot open file!");
 		return 1;
 	}
@@ -1108,20 +1167,16 @@ verify_file(const char *dir, char *mfline, const char *mfest, verify_msg **msgs)
 
 	/* now we are in free territory, we read TYPE HASH pairs until we
 	 * drained the string, and match them against what we computed */
-	while (p != NULL && *p != '\0') {
-		hashtype = p;
-		p = strchr(hashtype, ' ');
-		if (p == NULL) {
+	for (;;) {
+		mfline_err me = mfline_next_hash(&p, &hashtype, &hash);
+
+		if (me == MFLINE_END)
+			break;
+		if (me == MFLINE_NOHASH) {
 			msgs_add(msgs, mfest, path,
 					"corrupt manifest line, missing hash type");
 			return 1;
 		}
-		*p++ = '\0';
-
-		hash = p;
-		p = strchr(hash, ' ');
-		if (p != NULL)
-			*p++ = '\0';
 
 		if (strcmp(hashtype, "SHA256") == 0) {
 			if (!(hashes & HASH_SHA256)) {
@@ -1206,8 +1261,8 @@ verify_file(const char *dir, char *mfline, const char *mfest, verify_msg **msgs)
 static int
 compare_elems(const void *l, const void *r)
 {
-	const char *strl = *((const char **)l) + 2;
-	const char *strr = *((const char **)r) + 2;
+	const char *strl = *(const char * const *)l + 2;
+	const char *strr = *(const char * const *)r + 2;
 	unsigned char cl;
 	unsigned char cr;
 	/* compare treating / as end of string */
@@ -1293,7 +1348,7 @@ verify_dir(
 				entry = elems[curelem] + 2 + skippath;
 				etpe = *elems[curelem];
 			} else {
-				entry = (char *)"";
+				entry = q_deconst("");
 				etpe = 'I';
 			}
 
@@ -1387,10 +1442,11 @@ verify_dir(
 			free(dentries[curdentry]);
 		free(dentries);
 
-#pragma omp parallel for shared(ret) private(entry, etpe, slash)
-		for (elem = 0; elem < subdirlen; elem++) {
+#pragma omp parallel for reduction(|:ret) private(entry, etpe, slash, elem)
+		for (ssize_t selem = 0; selem < (ssize_t)subdirlen; selem++) {
 			char ndir[8192];
 
+			elem = (size_t)selem;
 			entry = subdir[elem]->elems[0] + 2 + skippath;
 			etpe = subdir[elem]->elems[0][0];
 
@@ -1411,8 +1467,10 @@ verify_dir(
 						verify_manifest(ndir, ndir + skiplen + 1, msgs) != 0)
 					ret |= 1;
 			} else {
+				/* ISO C only guarantees 4095 bytes of snprintf output.  */
 				snprintf(ndir, sizeof(ndir), "%s/%.*s", dir,
-						(int)subdir[elem]->subdirlen, entry);
+						(int)MIN(subdir[elem]->subdirlen,
+								 (size_t)4064), entry);
 				ret |= verify_dir(ndir, subdir[elem]->elems,
 						subdir[elem]->elemslen,
 						skippath + subdir[elem]->subdirlen + 1, mfest, msgs);
@@ -1477,9 +1535,7 @@ verify_manifest(
 			elemslen++;\
 		} else if (strncmp(STR, "AUX ", 4) == 0) {\
 			/* translate directly into what it is: DATA in files/ */\
-			size_t slen = strlen(STR + 2) + sizeof("files/");\
-			elems[elemslen] = xmalloc(slen);\
-			snprintf(elems[elemslen], slen, "D files/%s", STR + 4);\
+			xasprintf(&elems[elemslen], "D files/%s", STR + 4);\
 			elemslen++;\
 		}\
 	}
@@ -1584,11 +1640,11 @@ process_dir_vrfy(void)
 	double etime;
 	char *timestamp;
 	verify_msg topmsg;
-	verify_msg *walk = &topmsg;
+	verify_msg *cur = &topmsg;
 	verify_msg *next;
 	gpg_sig *gs;
 
-	walk->next = NULL;
+	cur->next = NULL;
 	gettimeofday(&startt, NULL);
 
 	snprintf(buf, sizeof(buf), "metadata/layout.conf");
@@ -1598,7 +1654,7 @@ process_dir_vrfy(void)
 		return "verification must be done on a full tree";
 	}
 
-	if ((gs = verify_gpg_sig(str_manifest, &walk)) == NULL) {
+	if ((gs = verify_gpg_sig(str_manifest, &cur)) == NULL) {
 		ret = "gpg signature invalid";
 	} else {
 		fprintf(stdout,
@@ -1639,7 +1695,7 @@ process_dir_vrfy(void)
 	 *   be there
 	 * - recurse into directories for which Manifest files are defined
 	 */
-	if (verify_manifest(".\0", str_manifest, &walk) != 0)
+	if (verify_manifest(".\0", str_manifest, &cur) != 0)
 		ret = "manifest verification failed";
 
 	gettimeofday(&finisht, NULL);
@@ -1649,13 +1705,13 @@ process_dir_vrfy(void)
 		char *mfest;
 		char *ebuild;
 		char *msg;
-		char *lastmfest = (char *)"-";
-		char *lastebuild = (char *)"-";
+		char *lastmfest = q_deconst("-");
+		char *lastebuild = q_deconst("-");
 		char *msgline;
 		const char *pfx;
 
-		for (walk = topmsg.next; walk != NULL; walk = walk->next) {
-			mfest = walk->msg;
+		for (cur = topmsg.next; cur != NULL; cur = cur->next) {
+			mfest = cur->msg;
 			ebuild = strchr(mfest, ':');
 			if (ebuild != NULL) {
 				*ebuild++ = '\0';
@@ -1713,12 +1769,12 @@ process_dir_vrfy(void)
 	}
 
 	/* clean up messages */
-	walk = topmsg.next;
-	while (walk != NULL) {
-		next = walk->next;
-		free(walk->msg);
-		free(walk);
-		walk = next;
+	cur = topmsg.next;
+	while (cur != NULL) {
+		next = cur->next;
+		free(cur->msg);
+		free(cur);
+		cur = next;
 	}
 
 	etime = ((double)((finisht.tv_sec - startt.tv_sec) * 1000000 +
@@ -1848,8 +1904,9 @@ qmanifest_main(int argc, char **argv)
 				/* resolve the path */
 				if (fchdir(curdirfd) != 0)
 					continue;  /* this shouldn't happen */
-				if (realpath(overlay, path) == NULL && *path == '\0') {
+				if (realpath(overlay, path) == NULL) {
 					warn("could not resolve %s", overlay);
+					ret |= 1;
 					continue;  /* very unlikely */
 				}
 			} else {
@@ -1859,15 +1916,18 @@ qmanifest_main(int argc, char **argv)
 			snprintf(path, sizeof(path), "%s", overlay);
 		}
 
-		snprintf(path2, sizeof(path2), "%s%s", portroot, path);
+		snprintf(path2, sizeof(path2), "%s%.*s", portroot,
+				(int)MIN(strlen(path), sizeof(path2) - 2), path);
 		if (chdir(path2) != 0) {
 			warn("cannot change directory to %s: %s", overlay, strerror(errno));
 			ret |= 1;
 			continue;
 		}
 
-		if (runfunc == process_dir_vrfy)
+		if (runfunc == process_dir_vrfy) {
 			printf("verifying %s%s%s...\n", BOLD, overlay, NORM);
+			fflush(stdout);
+		}
 
 		rsn = runfunc();
 		if (rsn != NULL) {
@@ -1883,8 +1943,10 @@ qmanifest_main(int argc, char **argv)
 					main_overlay, strerror(errno));
 			ret |= 1;
 		} else {
-			if (runfunc == process_dir_vrfy)
+			if (runfunc == process_dir_vrfy) {
 				printf("verifying %s%s%s...\n", BOLD, main_overlay, NORM);
+				fflush(stdout);
+			}
 
 			rsn = runfunc();
 			if (rsn != NULL) {

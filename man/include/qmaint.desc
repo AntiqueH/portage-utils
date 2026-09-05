@@ -1,0 +1,25 @@
+\fIqmaint\fR performs package\-management housekeeping tasks and is a C
+reimplementation of Portage's \fBemaint\fR. It operates on a named
+\fImodule\fR with either the \fB\-\-check\fR or \fB\-\-fix\fR action.
+.P
+The available modules are:
+.TP
+.B binhost
+Check that the local \fIPKGDIR/Packages\fR index agrees with the binary
+packages on disk; \fB\-\-fix\fR regenerates the index (see also
+\fBqmerge\fR(1) \fB\-\-index\fR).
+.TP
+.B moves
+Apply the outstanding package and slot moves from the repositories'
+update records to the installed package database.
+.TP
+.B news
+Reconcile GLEP\ 42 news bookkeeping (see \fBqnews\fR(1)).
+.TP
+.B env
+Regenerate the environment (\fI/etc/profile.env\fR and friends) from
+\fI/etc/env.d\fR, equivalent to \fBenv\-update\fR(1).
+.P
+With neither \fB\-\-check\fR nor \fB\-\-fix\fR, \fB\-\-check\fR is
+assumed. A check that finds nothing prints nothing and exits
+successfully: the exit status, not the output, is the result signal.

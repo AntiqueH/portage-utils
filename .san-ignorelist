@@ -1,0 +1,14 @@
+src:*/src/curl/*
+src:*/autotools/gnulib/*
+src:lib/*
+src:vauth/*
+src:vtls/*
+src:vquic/*
+src:*getdelim.c
+src:*md5.c
+src:*sha1.c
+src:*sha256.c
+src:*sha512.c
+src:*u64.h
+[unsigned-integer-overflow]
+fun:fnv1a32
