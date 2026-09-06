@@ -32988,7 +32988,34 @@ printf "%s\n" "yes" >&6; }
 else case e in #(
   e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
 printf "%s\n" "no" >&6; }
-           as_fn_error $? "--enable-static needs a static libcurl (net-misc/curl[static-libs]) or --enable-internal-libs with a curl source tree in src/curl" "$LINENO" 5 ;;
+           pt_missing_static=
+           for pt_l in $LIBCURL_LIBS; do
+             case $pt_l in #(
+  -l*) :
+    pt_n=`echo "$pt_l" | sed 's/^-l//'`
+               pt_p=`$CC $LDFLAGS -print-file-name=lib$pt_n.a 2>/dev/null`
+               case $pt_p in #(
+  /*) :
+     ;; #(
+  *) :
+    case " $pt_missing_static " in #(
+  *" $pt_n "*) :
+     ;; #(
+  *) :
+    pt_missing_static="$pt_missing_static $pt_n" ;;
+esac ;;
+esac ;; #(
+  *) :
+     ;;
+esac
+           done
+           if test -n "$pt_missing_static"
+then :
+  as_fn_error $? "--enable-static: the system libcurl cannot be linked statically, no static archive for:$pt_missing_static (build them with USE=static-libs), or use --enable-internal-libs with a curl source tree in src/curl" "$LINENO" 5
+else case e in #(
+  e) as_fn_error $? "--enable-static: the system libcurl cannot be linked statically (see config.log), or use --enable-internal-libs with a curl source tree in src/curl" "$LINENO" 5 ;;
+esac
+fi ;;
 esac
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.beam \

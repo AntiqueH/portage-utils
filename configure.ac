@@ -303,7 +303,18 @@ AS_IF([test "x${enable_static}" = "xyes"],
          AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <curl/curl.h>]], [[curl_version();]])],
           [AC_MSG_RESULT([yes])],
           [AC_MSG_RESULT([no])
-           AC_MSG_ERROR([--enable-static needs a static libcurl (net-misc/curl@<:@static-libs@:>@) or --enable-internal-libs with a curl source tree in src/curl])])
+           pt_missing_static=
+           for pt_l in $LIBCURL_LIBS; do
+             AS_CASE([$pt_l], [-l*],
+              [pt_n=`echo "$pt_l" | sed 's/^-l//'`
+               pt_p=`$CC $LDFLAGS -print-file-name=lib$pt_n.a 2>/dev/null`
+               AS_CASE([$pt_p], [/*], [],
+                [AS_CASE([" $pt_missing_static "], [*" $pt_n "*], [],
+                  [pt_missing_static="$pt_missing_static $pt_n"])])])
+           done
+           AS_IF([test -n "$pt_missing_static"],
+            [AC_MSG_ERROR([--enable-static: the system libcurl cannot be linked statically, no static archive for:$pt_missing_static (build them with USE=static-libs), or use --enable-internal-libs with a curl source tree in src/curl])],
+            [AC_MSG_ERROR([--enable-static: the system libcurl cannot be linked statically (see config.log), or use --enable-internal-libs with a curl source tree in src/curl])])])
          CFLAGS=$pt_save_CFLAGS
          LIBS=$pt_save_LIBS])])
 
