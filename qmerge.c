@@ -22463,6 +22463,36 @@ qm_dc_contents_paths(const struct qm_dc_pkg *p)
 	return paths;
 }
 
+static bool
+qm_dc_contents_owns_any(const struct qm_dc_pkg *p, set *wanted)
+{
+	char   path[_Q_PATH_MAX];
+	char  *buf = NULL;
+	size_t len = 0;
+	bool   ret = false;
+
+	snprintf(path, sizeof(path), "%s%s/%s/CONTENTS", portroot, portvdb, p->cpv);
+	if (eat_file(path, &buf, &len) && buf != NULL) {
+		char *line;
+		char *sp;
+
+		for (line = strtok_r(buf, "\n", &sp); line != NULL && !ret;
+			 line = strtok_r(NULL, "\n", &sp)) {
+			contents_entry *ce = contents_parse_line(line);
+
+			if (ce != NULL && ce->name != NULL) {
+				char np[_Q_PATH_MAX];
+
+				snprintf(np, sizeof(np), "%s", ce->name);
+				qm_dc_normpath(np);
+				ret = contains_set(np, wanted) != NULL;
+			}
+		}
+	}
+	free(buf);
+	return ret;
+}
+
 struct qm_dc_lcons {
 	struct qm_dc_pkg *pkg;
 	array            *libs;
@@ -23525,6 +23555,7 @@ qm_dc_survivors(struct qm_dc *dc, struct qm_dc_setarg *sv, char *desc,
 {
 	array  *paths  = array_new();
 	set    *owners = create_set();
+	set    *want   = create_set();
 	size_t  i;
 	size_t  k;
 	char   *p;
@@ -23564,16 +23595,12 @@ qm_dc_survivors(struct qm_dc *dc, struct qm_dc_setarg *sv, char *desc,
 		}
 	}
 
-	array_for_each(dc->pkgs, i, pkg) {
-		set *c = qm_dc_contents_paths(pkg);
-
-		array_for_each(paths, k, p)
-			if (contains_set(p, c) != NULL) {
-				add_set_unique(pkg->cpv, owners, NULL);
-				break;
-			}
-		free_set(c);
-	}
+	array_for_each(paths, k, p)
+		add_set_unique(p, want, NULL);
+	array_for_each(dc->pkgs, i, pkg)
+		if (qm_dc_contents_owns_any(pkg, want))
+			add_set_unique(pkg->cpv, owners, NULL);
+	free_set(want);
 
 	/* the dynamic linking of those binaries, transitively */
 	if (cnt_set(owners) > 0) {
