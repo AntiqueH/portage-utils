@@ -23,6 +23,7 @@ int
 mkdir_p_at(int dfd, const char *path, mode_t mode)
 {
 	char *_p, *p, *s;
+	int ret;
 
 	/* Assume that most of the time, only the last element
 	 * is missing.  So if we can mkdir it right away, bail. */
@@ -31,6 +32,7 @@ mkdir_p_at(int dfd, const char *path, mode_t mode)
 
 	/* Build up the whole tree */
 	_p = p = xstrdup(path);
+	ret = 0;
 
 	while (*p) {
 		/* Skip duplicate slashes */
@@ -40,13 +42,15 @@ mkdir_p_at(int dfd, const char *path, mode_t mode)
 		/* Find the next path element */
 		s = strchr(p, '/');
 		if (!s) {
-			mkdirat(dfd, _p, mode);
+			if (mkdirat(dfd, _p, mode) != 0 && errno != EEXIST)
+				ret = -1;
 			break;
 		}
 
 		/* Make it */
 		*s = '\0';
-		mkdirat(dfd, _p, mode);
+		if (mkdirat(dfd, _p, mode) != 0 && errno != EEXIST)
+			ret = -1;
 		*s = '/';
 
 		p = s;
@@ -54,7 +58,7 @@ mkdir_p_at(int dfd, const char *path, mode_t mode)
 
 	free(_p);
 
-	return 0;
+	return ret;
 }
 
 int

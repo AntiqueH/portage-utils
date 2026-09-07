@@ -654,6 +654,9 @@
 /* Define if you have libarchive */
 #undef HAVE_LIBARCHIVE
 
+/* Define if the built-in libcurl fetcher is compiled in */
+#undef HAVE_LIBCURL
+
 /* Define to 1 if you have the <libgen.h> header file. */
 #undef HAVE_LIBGEN_H
 

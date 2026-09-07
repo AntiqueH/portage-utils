@@ -211,6 +211,7 @@ struct qgrep_grepargs {
 	QGREP_STR_FUNC strfunc;
 	array *include_atoms;
 	const char *portdir;
+	bool matched;
 };
 
 static int
@@ -438,7 +439,10 @@ qgrep_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 		buf[0] = '\0';
 	}
 
-	return qgrep_grepat(tree_pkg_get_portroot_fd(pkg_ctx), path, buf, data);
+	if (qgrep_grepat(tree_pkg_get_portroot_fd(pkg_ctx), path, buf, data) == 0)
+		data->matched = true;
+
+	return EXIT_SUCCESS;
 }
 
 int qgrep_main(int argc, char **argv)
@@ -451,7 +455,6 @@ int qgrep_main(int argc, char **argv)
 	struct dirent *dentry = NULL;
 	int reflags = 0;
 	unsigned long int context_optarg;
-	char status = 1;
 	size_t n;
 	char *overlay;
 
@@ -472,6 +475,7 @@ int qgrep_main(int argc, char **argv)
 		.strfunc = strstr,
 		.include_atoms = NULL,
 		.portdir = NULL,
+		.matched = false,
 	};
 
 	do_eclass = do_installed = 0;
@@ -612,17 +616,19 @@ int qgrep_main(int argc, char **argv)
 				continue;
 			}
 			while ((dentry = readdir(eclass_dir)) != NULL) {
+				size_t ai;
+
 				if (strstr(dentry->d_name, ".eclass") == NULL)
 					continue;
 				/* filter the files we grep when there are extra args */
-				array_for_each(args.include_atoms, n, atom)
+				array_for_each(args.include_atoms, ai, atom)
 				{
 					if (atom->PN != NULL &&
 						strncmp(dentry->d_name,
 								atom->PN, strlen(atom->PN)) == 0)
 						break;
 				}
-				if (atom == NULL)
+				if (args.include_atoms != NULL && atom == NULL)
 					continue;
 
 				label = NULL;
@@ -639,21 +645,25 @@ int qgrep_main(int argc, char **argv)
 							 dentry->d_name);
 					label = name;
 				}
-				status = qgrep_grepat(efd, dentry->d_name, label, &args);
+				if (qgrep_grepat(efd, dentry->d_name, label, &args) == 0)
+					args.matched = true;
 			}
 			closedir(eclass_dir);
 			tree_close(tree);
-		} else { /* do_ebuild || do_installed */
-			tree_ctx *t;
-			if (do_installed) {
-				t = tree_new(portroot, portvdb, TREETYPE_VDB, false);
-			} else {
-				t = tree_new(portroot, overlay, TREETYPE_EBUILD, false);
-			}
+		} else if (!do_installed) {
+			tree_ctx *t = tree_new(portroot, overlay, TREETYPE_EBUILD, false);
 			if (t != NULL) {
-				status = tree_foreach_pkg_fast(t, qgrep_cb, &args, NULL);
+				tree_foreach_pkg_fast(t, qgrep_cb, &args, NULL);
 				tree_close(t);
 			}
+		}
+	}
+
+	if (do_installed) {
+		tree_ctx *t = tree_new(portroot, portvdb, TREETYPE_VDB, false);
+		if (t != NULL) {
+			tree_foreach_pkg_fast(t, qgrep_cb, &args, NULL);
+			tree_close(t);
 		}
 	}
 
@@ -665,5 +675,5 @@ int qgrep_main(int argc, char **argv)
 		array_deepfree(args.include_atoms, atom_implode_cb);
 	qgrep_buf_list_free(args.buf_list);
 
-	return status;
+	return args.matched ? EXIT_SUCCESS : EXIT_FAILURE;
 }

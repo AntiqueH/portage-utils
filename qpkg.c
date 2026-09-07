@@ -128,7 +128,10 @@ qpkg_clean(qpkg_cb_args *args)
 		}
 	}
 
-	array_deepfree(trees, tree_close_cb);
+	if (args->clean_notintree)
+		array_deepfree(trees, tree_close_cb);
+	else
+		array_free(trees);
 	trees = NULL;
 
 	array_for_each(bins, n, binpkg) {

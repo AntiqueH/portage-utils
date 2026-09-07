@@ -30,7 +30,9 @@
 
 #include <archive.h>
 #include <archive_entry.h>
+#ifdef HAVE_LIBCURL
 #include <curl/curl.h>
+#endif
 #include <zlib.h>
 #if defined(ENABLE_GPKG) && defined(HAVE_GPGME)
 # include <gpgme.h>
@@ -1841,6 +1843,7 @@ static time_t qm_fetch_ims    = 0;
 static bool   qm_fetch_meta   = false;
 static bool   qm_fetch_notmod = false;
 
+#ifdef HAVE_LIBCURL
 /* in-process download via libcurl; resumes partial files */
 static int
 fetch_curl(const char *repo_uri, const char *destdir, const char *src)
@@ -1939,6 +1942,7 @@ fetch_curl(const char *repo_uri, const char *destdir, const char *src)
 	free(dest);
 	return res == CURLE_OK ? 0 : -1;
 }
+#endif
 
 /* time to harden the shells.
  * apparently they spike us pretty hard. */
@@ -2067,8 +2071,19 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 		}
 		free(cmd);
 	} else {
+#ifdef HAVE_LIBCURL
 		/* no external fetch tool configured: built-in libcurl */
 		(void)fetch_curl(uri, destdir, src);
+#else
+		static bool told = false;
+
+		if (!told) {
+			warn("no fetcher available: built without libcurl and "
+				 "QFETCHCOMMAND is unset (wget: see FETCHCOMMAND in "
+				 "make.conf(5))");
+			told = true;
+		}
+#endif
 	}
 
 	if (stat(dest, &st) == 0 && st.st_size > 0) {
@@ -2371,8 +2386,12 @@ qmerge_initialize(void)
 		errf("PKGDIR='%s' does not appear to be valid", pkgdir);
 
 	if (!search_pkgs && !pretend) {
-		if (mkdir_p(pkgdir, 0755))
-			errp("could not setup PKGDIR: %s", pkgdir);
+		char *pdir;
+
+		xasprintf(&pdir, "%s%s", portroot, pkgdir);
+		if (mkdir_p(pdir, 0755))
+			errp("could not setup PKGDIR: %s", pdir);
+		free(pdir);
 	}
 
 	xasprintf(&buf, "%s%s/portage/", portroot, port_tmpdir);

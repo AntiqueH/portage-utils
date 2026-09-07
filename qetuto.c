@@ -52,6 +52,7 @@ static const char * const qet_keyservers_default[] = {
 #define QET_GPG_KILL "2.5m"
 
 static bool qet_quiet = true;
+static bool qet_external;
 static char qet_home[_Q_PATH_MAX];
 static char *qet_root;
 
@@ -269,6 +270,17 @@ qet_colon_fields(char *line, char **fields, int maxf)
 }
 
 static void
+qet_touch(const char *path)
+{
+	int fd = open(path, O_WRONLY | O_CREAT, 0644);
+
+	if (fd >= 0) {
+		futimens(fd, NULL);
+		close(fd);
+	}
+}
+
+static void
 qet_gpgconf_kill(void)
 {
 	char *av[] = { q_deconst("gpgconf"), q_deconst("--kill"),
@@ -415,34 +427,32 @@ qet_refresh(const char *lastrun)
 		(void)qet_spawn(av, NULL, NULL);
 	}
 
-	for (k = 0; qet_keyservers[k] != NULL; k++) {
-		char *tav[16];
-		size_t n = 0;
+	if (qet_external) {
+		for (k = 0; qet_keyservers[k] != NULL; k++) {
+			char *tav[16];
+			size_t n = 0;
 
-		tav[n++] = q_deconst("timeout");
-		tav[n++] = q_deconst("-k");
-		tav[n++] = q_deconst(QET_GPG_KILL);
-		tav[n++] = q_deconst(QET_GPG_TERM);
-		tav[n++] = q_deconst("gpg");
-		if (qet_quiet) {
-			tav[n++] = q_deconst("--quiet");
-			tav[n++] = q_deconst("--no-permission-warning");
+			tav[n++] = q_deconst("timeout");
+			tav[n++] = q_deconst("-k");
+			tav[n++] = q_deconst(QET_GPG_KILL);
+			tav[n++] = q_deconst(QET_GPG_TERM);
+			tav[n++] = q_deconst("gpg");
+			if (qet_quiet) {
+				tav[n++] = q_deconst("--quiet");
+				tav[n++] = q_deconst("--no-permission-warning");
+			}
+			tav[n++] = q_deconst("--batch");
+			tav[n++] = q_deconst("--keyserver");
+			tav[n++] = (char *)qet_keyservers[k];
+			tav[n++] = q_deconst("--refresh-keys");
+			tav[n] = NULL;
+			(void)qet_spawn(tav, NULL, NULL);
 		}
-		tav[n++] = q_deconst("--batch");
-		tav[n++] = q_deconst("--keyserver");
-		tav[n++] = (char *)qet_keyservers[k];
-		tav[n++] = q_deconst("--refresh-keys");
-		tav[n] = NULL;
-		(void)qet_spawn(tav, NULL, NULL);
+
+		qet_wkd_locate();
 	}
 
-	qet_wkd_locate();
-	{
-		int fd = open(lastrun, O_WRONLY | O_CREAT, 0644);
-
-		if (fd >= 0)
-			close(fd);
-	}
+	qet_touch(lastrun);
 	return 0;
 }
 
@@ -605,31 +615,33 @@ qet_bootstrap(const char *lastrun)
 	relkeys = qet_fingerprints(false, mykeyid);
 	relarr  = set_keys(relkeys);
 
-	for (size_t k = 0; qet_keyservers[k] != NULL; k++) {
-		char  *tav[64];
-		size_t n = 0;
+	if (qet_external) {
+		for (size_t k = 0; qet_keyservers[k] != NULL; k++) {
+			char  *tav[64];
+			size_t n = 0;
 
-		tav[n++] = q_deconst("timeout");
-		tav[n++] = q_deconst("-k");
-		tav[n++] = q_deconst(QET_GPG_KILL);
-		tav[n++] = q_deconst(QET_GPG_TERM);
-		tav[n++] = q_deconst("gpg");
-		if (qet_quiet) {
-			tav[n++] = q_deconst("--quiet");
-			tav[n++] = q_deconst("--no-permission-warning");
+			tav[n++] = q_deconst("timeout");
+			tav[n++] = q_deconst("-k");
+			tav[n++] = q_deconst(QET_GPG_KILL);
+			tav[n++] = q_deconst(QET_GPG_TERM);
+			tav[n++] = q_deconst("gpg");
+			if (qet_quiet) {
+				tav[n++] = q_deconst("--quiet");
+				tav[n++] = q_deconst("--no-permission-warning");
+			}
+			tav[n++] = q_deconst("--batch");
+			tav[n++] = q_deconst("--keyserver");
+			tav[n++] = (char *)qet_keyservers[k];
+			tav[n++] = q_deconst("--recv-keys");
+			array_for_each(relarr, i, fp)
+				if (n < 62)
+					tav[n++] = fp;
+			tav[n] = NULL;
+			(void)qet_spawn(tav, NULL, NULL);
 		}
-		tav[n++] = q_deconst("--batch");
-		tav[n++] = q_deconst("--keyserver");
-		tav[n++] = (char *)qet_keyservers[k];
-		tav[n++] = q_deconst("--recv-keys");
-		array_for_each(relarr, i, fp)
-			if (n < 62)
-				tav[n++] = fp;
-		tav[n] = NULL;
-		(void)qet_spawn(tav, NULL, NULL);
-	}
 
-	qet_wkd_locate();
+		qet_wkd_locate();
+	}
 
 	{
 		char passfile[_Q_PATH_MAX + 48];
@@ -695,12 +707,7 @@ qet_bootstrap(const char *lastrun)
 	}
 	setenv("GNUPGHOME", orig, 1);
 
-	{
-		int fd = open(lastrun, O_WRONLY | O_CREAT, 0644);
-
-		if (fd >= 0)
-			close(fd);
-	}
+	qet_touch(lastrun);
 
 	free(pass);
 	free(mykeyid);
@@ -728,10 +735,9 @@ int qetuto_main(int argc, char **argv)
 		}
 	}
 
-	qet_quiet = verbose == 0;
-
-	if (geteuid() != 0)
-		err("qetuto must be run as root");
+	qet_quiet    = verbose == 0;
+	qet_external = qetuto_external_refresh_conf != NULL &&
+				   strcmp(qetuto_external_refresh_conf, "1") == 0;
 
 	qet_root = xstrdup(portroot);
 	rl = strlen(qet_root);
@@ -739,6 +745,9 @@ int qetuto_main(int argc, char **argv)
 		qet_root[--rl] = '\0';
 	if (strcmp(qet_root, "/") == 0)
 		qet_root[0] = '\0';
+
+	if (geteuid() != 0 && qet_root[0] == '\0')
+		err("qetuto must be run as root");
 
 	snprintf(qet_home, sizeof(qet_home), "%s/etc/portage/gnupg", qet_root);
 	setenv("GNUPGHOME", qet_home, 1);

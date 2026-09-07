@@ -28,6 +28,7 @@
 #include "scandirat.h"
 #include "set.h"
 #include "tree.h"
+#include "xasprintf.h"
 
 static int
 tree_open_regfile(int rootfd, const char *path)
@@ -1279,11 +1280,14 @@ static bool tree_pkg_ebuild_read
   char       *pbase;
   char       *q;
   char       *w;
+  char       *vs;
+  char       *n;
   char      **key;
   size_t      len;
   int         fd;
   bool        esc;
   bool        findnl;
+  bool        append;
   bool        ret;
 
   if ((fd = tree_open_regfile(pkg->cat->tree->portroot_fd, pkg->path)) < 0)
@@ -1310,11 +1314,27 @@ static bool tree_pkg_ebuild_read
            *p <= 'Z')
       p++;
 
-    key = NULL;
+    key    = NULL;
+    append = false;
     if (q < p &&
-        *p == '=')
+        *p == '+' &&
+        p[1] == '=')
+    {
+      append = true;
+      *p     = '\0';
+      p     += 2;
+    }
+    else if (q < p &&
+             *p == '=')
     {
       *p++ = '\0';
+    }
+    else
+    {
+      q = NULL;
+    }
+    if (q != NULL)
+    {
       /* match variable against which ones we look for */
       switch (q[0])
       {
@@ -1379,6 +1399,7 @@ static bool tree_pkg_ebuild_read
         /* find matching quote */
         p++;
         w = p;
+        vs = w;
         esc = false;
         do
         {
@@ -1405,11 +1426,12 @@ static bool tree_pkg_ebuild_read
             }
 
             /* collapse sequences of spaces */
-            if (*w != ' ' ||
-                *p != ' ')
-              *w++ = *p++;
-            else
+            if (*p == ' ' &&
+                w > vs &&
+                w[-1] == ' ')
               p++;
+            else
+              *w++ = *p++;
           }
           if (*p == *q &&
               esc)
@@ -1435,7 +1457,15 @@ static bool tree_pkg_ebuild_read
       }
       *p++ = '\0';
       if (*key == NULL)  /* ignore secondary assignments (perhaps if/else) */
+      {
         *key = xstrdup(q);
+      }
+      else if (append)
+      {
+        xasprintf(&n, "%s%s", *key, q);
+        free(*key);
+        *key = n;
+      }
     }
 
     if (findnl &&

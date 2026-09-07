@@ -71,7 +71,7 @@ struct quse_state {
 	const char *fmt;
 };
 
-static const depend_atom *quse_last_atom;
+static char quse_last_pkg[_Q_PATH_MAX];
 static char *_quse_getline_buf = NULL;
 static size_t _quse_getline_buflen = 0;
 #define GETLINE(FD, BUF, LEN) \
@@ -656,12 +656,14 @@ quse_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			free(us.retv);
 			free(us.argv);
 		} else {
-			if (quse_last_atom == NULL ||
+			char key[_Q_PATH_MAX];
+
+			snprintf(key, sizeof(key), "%s/%s", atom->CATEGORY, atom->PN);
+			if (quse_last_pkg[0] == '\0' ||
 					verbose ||
-					strcmp(atom->CATEGORY, quse_last_atom->CATEGORY) != 0 ||
-					strcmp(atom->PN, quse_last_atom->PN) != 0)
+					strcmp(key, quse_last_pkg) != 0)
 			{
-				quse_last_atom = atom;
+				snprintf(quse_last_pkg, sizeof(quse_last_pkg), "%s", key);
 				printf("%s: %s\n", atom_format(state->fmt, atom), v);
 			}
 		}

@@ -1542,6 +1542,7 @@ static array *probe_proc(array *atoms)
 	} else {
 		/* flag /proc doesn't exist */
 		warn("/proc doesn't exist, running merges are based on heuristics");
+		free(cmdline);
 		array_deepfree(ret_atoms, atom_implode_cb);
 		return NULL;
 	}
@@ -1554,6 +1555,7 @@ static array *probe_proc(array *atoms)
 		if (geteuid() != 0) {
 			warn("insufficient privileges for full /proc access, "
 					"running merges are based on heuristics");
+			free(cmdline);
 			array_deepfree(ret_atoms, atom_implode_cb);
 			return NULL;
 		}
@@ -1594,6 +1596,7 @@ static array *probe_proc(array *atoms)
 		array_append(atoms, atom);
 	}
 
+	free(cmdline);
 	array_free(ret_atoms);
 
 	return atoms;

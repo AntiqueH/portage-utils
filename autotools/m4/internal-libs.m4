@@ -122,6 +122,4 @@ AS_IF([test "x${pt_internal_curl}" = "xyes"],
   [PKG_CHECK_MODULES([LIBCURL], [libcurl >= 7.85.0],
      [AC_MSG_NOTICE([using system libcurl])],
      [AC_MSG_FAILURE([libcurl.pc (7.85.0 or newer) not found; install libcurl, or put a curl source tree in src/curl and pass --enable-internal-libs])])])
-
-AM_CONDITIONAL([INTERNAL_CURL], [test "x${pt_internal_curl}" = "xyes"])
 ])

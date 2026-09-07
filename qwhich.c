@@ -54,16 +54,16 @@ static const char qwhich_desc[] = "Find paths to ebuilds.";
 	usage(ret, QWHICH_FLAGS, qwhich_long_opts, qwhich_opts_help, qwhich_desc, lookup_applet_idx("qwhich"))
 
 struct qwhich_mode {
-	char do_vdb:1;
-	char do_binpkg:1;
-	char do_tree:1;
-	char print_atom:1;
-	char print_path:1;
-	char print_repo:1;
-	char match_first:1;
-	char match_latest:1;
-	char skip_virtual:1;
-	char skip_acct:1;
+	bool do_vdb:1;
+	bool do_binpkg:1;
+	bool do_tree:1;
+	bool print_atom:1;
+	bool print_path:1;
+	bool print_repo:1;
+	bool match_first:1;
+	bool match_latest:1;
+	bool skip_virtual:1;
+	bool skip_acct:1;
 	const char *fmt;
 };
 
@@ -83,6 +83,7 @@ int qwhich_main(int argc, char **argv)
 	tree_ctx *t;
 	char *reponam;
 	size_t repolen;
+	size_t pathlen;
 
 	VAL_CLEAR(m);
 
@@ -162,12 +163,13 @@ int qwhich_main(int argc, char **argv)
 	array_for_each(trees, j, t) {
 		char *reponame = tree_get_repo_name(t);
 
+		pathlen = strlen(tree_get_path(t));
 		if (m.print_repo && reponame != NULL) {
 			reponam = reponame;
 			repolen = strlen(reponam);
 		} else {
 			reponam = tree_get_path(t);
-			repolen = strlen(reponam);
+			repolen = pathlen;
 		}
 
 		array_for_each(atoms, i, atom) {
@@ -187,10 +189,10 @@ int qwhich_main(int argc, char **argv)
 					char  *path = tree_pkg_get_path(tmcw) + 1;
 					size_t len  = strlen(path);
 
-					if (len > repolen)
+					if (len > pathlen)
 					{
-						path += repolen;
-						len  -= repolen;
+						path += pathlen;
+						len  -= pathlen;
 					}
 
 					if (m.print_path)

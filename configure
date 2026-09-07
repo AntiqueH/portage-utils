@@ -662,6 +662,7 @@ LIBOBJS
 STATICXML2_LIBS
 STATICXML2_CFLAGS
 CWFLAGS
+CURL_ENABLED
 GPGME_ENABLED
 GTREE_ENABLED
 GPKG_ENABLED
@@ -1955,6 +1956,7 @@ enable_gpkg
 enable_gtree
 enable_gpg
 enable_static
+enable_curl
 enable_internal_libs
 enable_werror
 enable_year2038
@@ -2633,6 +2635,8 @@ Optional Features:
                           signature verification
   --enable-static         link q statically; requires static (.a) libraries
                           for the whole dependency closure
+  --disable-curl          build without libcurl; package and index downloads
+                          then need QFETCHCOMMAND (wget for instance)
   --enable-internal-libs  build the libraries found under src/ (currently
                           src/curl) into q instead of linking the system ones;
                           a src/<lib> without a configure script we skip
@@ -31108,6 +31112,15 @@ fi
 esac
 fi
 
+# Check whether --enable-curl was given.
+if test ${enable_curl+y}
+then :
+  enableval=$enable_curl; enable_curl=$enableval
+else case e in #(
+  e) enable_curl=yes ;;
+esac
+fi
+
 
 # Check whether --enable-internal-libs was given.
 if test ${enable_internal_libs+y}
@@ -31122,6 +31135,8 @@ fi
 
 
 
+if test "x${enable_curl}" != "xno"
+then :
 
 
 pt_curl_src="$srcdir/src/curl"
@@ -31383,6 +31398,17 @@ fi ;;
 esac
 fi
 
+
+printf "%s\n" "#define HAVE_LIBCURL 1" >>confdefs.h
+
+   do_curl=yes
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: libcurl disabled, package and index downloads need QFETCHCOMMAND" >&5
+printf "%s\n" "$as_me: libcurl disabled, package and index downloads need QFETCHCOMMAND" >&6;}
+   pt_internal_curl=no
+   do_curl= ;;
+esac
+fi
  if test "x${pt_internal_curl}" = "xyes"; then
   INTERNAL_CURL_TRUE=
   INTERNAL_CURL_FALSE='#'
@@ -31390,7 +31416,6 @@ else
   INTERNAL_CURL_TRUE='#'
   INTERNAL_CURL_FALSE=
 fi
-
 
 
 
@@ -31761,6 +31786,8 @@ GPKG_ENABLED="$do_gpkg"
 GTREE_ENABLED="$do_gtree"
 
 GPGME_ENABLED="$do_gpgme"
+
+CURL_ENABLED="$do_curl"
 
 
     { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for C compiler vendor" >&5
@@ -32962,7 +32989,7 @@ else case e in #(
 esac
 fi
 
-       if test "x${pt_internal_curl}" != "xyes"
+       if test "x${enable_curl}" != "xno" && test "x${pt_internal_curl}" != "xyes"
 then :
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether the system libcurl links statically" >&5
 printf %s "checking whether the system libcurl links statically... " >&6; }
@@ -33025,7 +33052,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.beam \
 fi
 fi
 
-ac_config_files="$ac_config_files Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/fuzz/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qetc-update/Makefile tests/qfile/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qtbz2/Makefile tests/quse/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile tests/usedep/Makefile tests/preserved/Makefile"
+ac_config_files="$ac_config_files Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/fuzz/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qetc-update/Makefile tests/qetuto/Makefile tests/qfile/Makefile tests/qgrep/Makefile tests/qkeyword/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qnews/Makefile tests/qsearch/Makefile tests/qsize/Makefile tests/qtbz2/Makefile tests/qtegrity/Makefile tests/quse/Makefile tests/qwhich/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile tests/usedep/Makefile tests/preserved/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -33887,13 +33914,21 @@ do
     "tests/qcheck/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qcheck/Makefile" ;;
     "tests/qdepends/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qdepends/Makefile" ;;
     "tests/qetc-update/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qetc-update/Makefile" ;;
+    "tests/qetuto/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qetuto/Makefile" ;;
     "tests/qfile/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qfile/Makefile" ;;
+    "tests/qgrep/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qgrep/Makefile" ;;
+    "tests/qkeyword/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qkeyword/Makefile" ;;
     "tests/qlist/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qlist/Makefile" ;;
     "tests/qlop/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qlop/Makefile" ;;
     "tests/qmanifest/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qmanifest/Makefile" ;;
     "tests/qmerge/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qmerge/Makefile" ;;
+    "tests/qnews/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qnews/Makefile" ;;
+    "tests/qsearch/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qsearch/Makefile" ;;
+    "tests/qsize/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qsize/Makefile" ;;
     "tests/qtbz2/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qtbz2/Makefile" ;;
+    "tests/qtegrity/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qtegrity/Makefile" ;;
     "tests/quse/Makefile") CONFIG_FILES="$CONFIG_FILES tests/quse/Makefile" ;;
+    "tests/qwhich/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qwhich/Makefile" ;;
     "tests/qxpak/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qxpak/Makefile" ;;
     "tests/rmspace/Makefile") CONFIG_FILES="$CONFIG_FILES tests/rmspace/Makefile" ;;
     "tests/source/Makefile") CONFIG_FILES="$CONFIG_FILES tests/source/Makefile" ;;

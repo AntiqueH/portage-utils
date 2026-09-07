@@ -113,6 +113,8 @@ curl source tree found in `src/curl` (its own configure, HTTP(S) only, OpenSSL
 and zlib) into q, so the dynamic and static builds alike. Empty
 `src/curl` we skipped and the system libcurl is used. `--enable-static` links
 the system libraries statically (libcurl.a from `net-misc/curl[static-libs]`).
+`--disable-curl` downloads then run through `QFETCHCOMMAND` (wget, for instance),
+and a static build needs no curl at all.
 Before opening a
 pull request, we CRUCIALLY recommend going through `./testmycode.sh` from the source root: it runs the gcc/clang
 warnings gates (`--enable-werror` plus the modern-C flags), an ASan+UBSan

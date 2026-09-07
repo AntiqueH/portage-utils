@@ -33,14 +33,16 @@ void  *array_binsearch(array *arr, void *needle, array_compar_cb *func, size_t *
 #define array_append_strcpy(A,S) array_append_copy(A,S,strlen(S)+1/*NUL*/)
 
 #define array_for_each(arr, n, ele) \
-  for (n = 0, ele = NULL; \
-       ((size_t)(n) < array_cnt(arr) && \
-        (ele = array_get(arr, n))); \
+  for (n = 0; \
+       ((size_t)(n) < array_cnt(arr) ? \
+        ((ele = array_get(arr, n)) != NULL) : \
+        (ele = NULL, 0)); \
        n++)
 #define array_for_each_rev(arr, n, ele) \
-  for (n = array_cnt(arr), ele = NULL; \
-       (n > 0 && \
-        (ele = array_get(arr, n - 1), n--, ele != NULL)); \
+  for (n = array_cnt(arr); \
+       ((n) > 0 ? \
+        (ele = array_get(arr, (n) - 1), (n)--, ele != NULL) : \
+        (ele = NULL, 0)); \
        /*nothing*/)
 
 #endif

@@ -453,13 +453,15 @@ qkeyword_stats(tree_pkg_ctx *pkg_ctx, void *priv)
 	static int *packages_stable;
 	static int *packages_testing;
 	static int *current_package_keywords;
-	static const char *lastcat = NULL;
+	static set_t *cats = NULL;
 	static char lastpkg[_Q_PATH_MAX];
 
 	size_t a;
 	size_t archlist_count = array_cnt(archlist);
 	depend_atom *atom;
 	qkeyword_data *data = (qkeyword_data *)priv;
+	bool unique;
+	char key[_Q_PATH_MAX];
 
 	/* Is this the last time we'll be called? */
 	if (!data) {
@@ -531,6 +533,8 @@ qkeyword_stats(tree_pkg_ctx *pkg_ctx, void *priv)
 		free(packages_stable);
 		free(packages_testing);
 		free(current_package_keywords);
+		set_free(cats);
+		cats = NULL;
 		return EXIT_SUCCESS;
 	}
 
@@ -544,12 +548,14 @@ qkeyword_stats(tree_pkg_ctx *pkg_ctx, void *priv)
 			xcalloc(archlist_count, sizeof(*current_package_keywords));
 	}
 
-	if (lastcat != tree_pkg_get_cat_name(pkg_ctx))
+	cats = set_add_unique(cats, tree_pkg_get_cat_name(pkg_ctx), &unique);
+	if (unique)
 		numcat++;
-	lastcat = tree_pkg_get_cat_name(pkg_ctx);
 
 	atom = tree_pkg_atom(pkg_ctx, false);
-	if (atom && strcmp(lastpkg, atom->PN) != 0) {
+	if (atom != NULL)
+		snprintf(key, sizeof(key), "%s/%s", atom->CATEGORY, atom->PN);
+	if (atom && strcmp(lastpkg, key) != 0) {
 		for (a = 0; a < archlist_count; a++) {
 			switch (current_package_keywords[a]) {
 				case stable:
@@ -563,7 +569,7 @@ qkeyword_stats(tree_pkg_ctx *pkg_ctx, void *priv)
 		}
 
 		numpkg++;
-		snprintf(lastpkg, sizeof(lastpkg), "%s", atom->PN);
+		snprintf(lastpkg, sizeof(lastpkg), "%s", key);
 		memset(current_package_keywords, 0,
 				archlist_count * sizeof(*current_package_keywords));
 	}
@@ -707,10 +713,12 @@ qkeyword_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 
 	if (ret == EXIT_SUCCESS) {
 		/* store CAT/PN in lastatom */
-		patom->P = patom->PN;
-		patom->PVR = patom->PN;
-		patom->PR_int = 0;
-		data->lastatom = patom;
+		if (data->lastatom != NULL)
+			atom_implode(data->lastatom);
+		data->lastatom = atom_clone(patom);
+		data->lastatom->P = data->lastatom->PN;
+		data->lastatom->PVR = data->lastatom->PN;
+		data->lastatom->PR_int = 0;
 	}
 
 	return EXIT_SUCCESS;
@@ -827,6 +835,11 @@ qkeyword_traverse(tree_pkg_cb func, void *priv)
 					qkeyword_results_cb, priv, data->qatom);
 			tree_close(t);
 		}
+	}
+
+	if (data->lastatom != NULL) {
+		atom_implode(data->lastatom);
+		data->lastatom = NULL;
 	}
 
 	return ret;

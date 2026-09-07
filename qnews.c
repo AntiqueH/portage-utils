@@ -90,8 +90,10 @@ qnews_body_path(const char *repoid, const char *nid)
 	if (access(p, R_OK) == 0)
 		return p;
 	for (o = 0; o < array_cnt(overlays); o++) {
-		snprintf(p, sizeof(p), "%s/metadata/news/%s/%s.en.txt",
-				 (char *)array_get(overlays, o), nid, nid);
+		const char *ov = array_get(overlays, o);
+
+		snprintf(p, sizeof(p), "%s%s/metadata/news/%s/%s.en.txt",
+				 portroot, ov[0] == '/' ? ov + 1 : ov, nid, nid);
 		if (access(p, R_OK) == 0)
 			return p;
 	}

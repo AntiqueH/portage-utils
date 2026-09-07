@@ -258,6 +258,7 @@ extern bool qnews_enable;
 extern bool qmerge_blockers;
 extern char *qetuto_keyservers_conf;
 extern char *qetuto_keys_conf;
+extern char *qetuto_external_refresh_conf;
 extern bool qmerge_prefetch;
 int qmerge_binhost_maint(bool fix);
 int qmerge_vdb_maint(bool fix, bool del_individual, bool remove_meta);

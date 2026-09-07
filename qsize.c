@@ -279,6 +279,12 @@ int qsize_main(int argc, char **argv)
 	}
 
 	array_deepfree(state.atoms, atom_implode_cb);
+	{
+		regex_t *regex;
+
+		array_for_each(state.ignore_regexp, i, regex)
+			regfree(regex);
+	}
 	array_deepfree(state.ignore_regexp, NULL);
 	free_set(state.uniq_files);
 

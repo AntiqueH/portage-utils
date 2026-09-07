@@ -46,6 +46,7 @@ bool qnews_enable;
 bool qmerge_blockers;
 char *qetuto_keyservers_conf;
 char *qetuto_keys_conf;
+char *qetuto_external_refresh_conf;
 char *binpkg_gpg_verify_gpg_home;
 char *binpkg_tar_opts;
 char *accept_chosts;
@@ -1378,6 +1379,7 @@ env_vars vars_to_read[] = {
 	_Q_EVB(BOOL, QMERGE_BLOCKERS,     qmerge_blockers,     true,  NULL)
 	_Q_EVS(STR,  QETUTO_KEYSERVERS,   qetuto_keyservers_conf, true, "")
 	_Q_EVS(STR,  QETUTO_KEYS,         qetuto_keys_conf,    true,  "")
+	_Q_EVS(STR,  QETUTO_EXTERNAL_REFRESH, qetuto_external_refresh_conf, true, "0")
 	_Q_EVS(NSTR, COLLISION_IGNORE,    collision_ignore,    true,
 		   "/lib/modules/* *.py[co] *$py.class")
 	_Q_EVS(STR,  QMERGE_LOCAL_PRIORITY, qmerge_local_priority_conf, true, "")

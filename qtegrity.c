@@ -127,46 +127,49 @@ static void get_known_good_digest(const char * fn_store, char * recorded_fname, 
 
 	fd_store = open(fn_store, O_RDONLY|O_CLOEXEC, 0);
 	if (fd_store == -1) {
-		warnp("unable to open(%s)", fn_store);
-		exit(0);
+		if (errno != ENOENT)
+			warnp("unable to open(%s)", fn_store);
+		return;
 	}
 	if ((fp_store = fdopen(fd_store, "r")) == NULL) {
 		warnp("unable to fopen(%s, r)", fn_store);
 		close(fd_store);
-		exit(0);
+		return;
 	}
 
-	char *buffered_line, *line, *fname;
+	char *line;
 	size_t linelen;
 
-	/* Iterate over lines in known-good-hashes-file; per line: if fname
-	 * matches, grab hash. */
-	buffered_line = line = fname = NULL;
+	/* Iterate over lines in known-good-hashes-file.
+	 * every line being "<algo>:<digest> file:<path>" ( --add writes them)
+	 * per line: if fname matches, grab hash. */
+	line = NULL;
 	while (getline(&line, &linelen, fp_store) != -1) {
-		free(buffered_line);
-		buffered_line = xstrdup(line);
+		char  *digest = strchr(line, ':');
+		char  *fname;
+		size_t dlen;
 
-		get_fname_from_line(line, &fname, recorded_digest_size, 15);
-
-		if (fname == NULL) {
-			/* probably line without digest (e.g. symlink) */
+		if (digest == NULL)
 			continue;
-		}
+		digest++;
+		fname = strstr(digest, " file:");
+		if (fname == NULL)
+			continue;
+		dlen = fname - digest;
+		if (dlen != (size_t)recorded_digest_size)
+			continue;
+		fname += sizeof(" file:") - 1;
+		fname[strcspn(fname, "\r\n")] = '\0';
 
 		if (strcmp(recorded_fname, fname) == 0) {
-			get_digest_from_line(line, ret, recorded_digest_size, 9);
-
-			free(fname);
+			memcpy(ret, digest, dlen);
+			ret[dlen] = '\0';
 			break;
 		}
-
-		free(fname);
 	}
 
 	free(line);
-	free(buffered_line);
 
-	close(fd_store);
 	fclose(fp_store);
 }
 
@@ -259,11 +262,19 @@ int qtegrity_main(int argc, char **argv)
 	}
 
 	if (state.ima) {
-		const char *fn_ima =
-			"/sys/kernel/security/ima/ascii_runtime_measurements";
+		char fn_ima[_Q_PATH_MAX];
+		char fn_custom[_Q_PATH_MAX];
+		char fn_os[_Q_PATH_MAX];
 		int fd_ima;
 		FILE *fp_ima;
 		struct stat st;
+
+		snprintf(fn_ima, sizeof(fn_ima),
+				 "%ssys/kernel/security/ima/ascii_runtime_measurements",
+				 portroot);
+		snprintf(fn_custom, sizeof(fn_custom), "%svar/db/QTEGRITY_custom",
+				 portroot);
+		snprintf(fn_os, sizeof(fn_os), "%svar/db/QTEGRITY", portroot);
 
 		fd_ima = open(fn_ima, O_RDONLY|O_CLOEXEC, 0);
 		if (fd_ima == -1) {
@@ -349,13 +360,13 @@ int qtegrity_main(int argc, char **argv)
 			digest[0] = '\0';
 
 			/* first try custom known good digests for fname */
-			get_known_good_digest("/var/db/QTEGRITY_custom",
+			get_known_good_digest(fn_custom,
 					recorded_fname, digest, recorded_digest_size);
 
 			if (digest[0] == '\0') {
 				digest[0] = '\0';
 				/* then try from OS source */
-				get_known_good_digest("/var/db/QTEGRITY",
+				get_known_good_digest(fn_os,
 						recorded_fname, digest, recorded_digest_size);
 
 				if (digest[0] == '\0') {
@@ -384,29 +395,14 @@ int qtegrity_main(int argc, char **argv)
 		free(line);
 		free(buffered_line);
 
-		close(fd_ima);
 		fclose(fp_ima);
 	} else if (state.add) {
 		/* Add a single executable file+digest to the custom digest store */
-		const char *fn_qtegrity_custom = "/var/db/QTEGRITY_custom";
+		char fn_qtegrity_custom[_Q_PATH_MAX];
 		int fd_qtegrity_custom;
 		FILE *fp_qtegrity_custom;
 		struct stat st;
 		int flush_status;
-
-		fd_qtegrity_custom =
-			open(fn_qtegrity_custom, O_RDWR|O_CREAT|O_CLOEXEC, 0);
-		if (fd_qtegrity_custom == -1) {
-			warnp("Unable to open(%s)", fn_qtegrity_custom);
-			exit(0);
-		}
-		if ((fp_qtegrity_custom = fdopen(fd_qtegrity_custom, "w+")) == NULL) {
-			warnp("Unable to fopen(%s, r)", fn_qtegrity_custom);
-			close(fd_qtegrity_custom);
-			exit(0);
-		}
-
-		printf("Adding %s to %s\n", state.add_file, fn_qtegrity_custom);
 
 		if (stat(state.add_file, &st) < 0)
 			err("Couldn't access file '%s'\n", state.add_file);
@@ -425,6 +421,22 @@ int qtegrity_main(int argc, char **argv)
 				file_digest[0] == '\0')
 			err("Failed to compute %s digest for '%s'",
 					hash_algo, state.add_file);
+
+		snprintf(fn_qtegrity_custom, sizeof(fn_qtegrity_custom),
+				 "%svar/db/QTEGRITY_custom", portroot);
+		fd_qtegrity_custom =
+			open(fn_qtegrity_custom, O_RDWR|O_CREAT|O_CLOEXEC, 0644);
+		if (fd_qtegrity_custom == -1) {
+			warnp("Unable to open(%s)", fn_qtegrity_custom);
+			exit(0);
+		}
+		if ((fp_qtegrity_custom = fdopen(fd_qtegrity_custom, "w+")) == NULL) {
+			warnp("Unable to fopen(%s, r)", fn_qtegrity_custom);
+			close(fd_qtegrity_custom);
+			exit(0);
+		}
+
+		printf("Adding %s to %s\n", state.add_file, fn_qtegrity_custom);
 
 		/* Iterate over lines; if fname matches, exit-loop */
 		char *line, *fname;
@@ -447,7 +459,7 @@ int qtegrity_main(int argc, char **argv)
 						(recorded_digest_size == SHA512_DIGEST_LENGTH)) ?
 					recorded_digest_size+6+8 : recorded_digest_size+6+6;
 				if (fseek(fp_qtegrity_custom,
-							-skip-strlen(fname), SEEK_CUR) == -1)
+							-(long)(skip + strlen(fname)), SEEK_CUR) == -1)
 					err("seek failed: %s\n", strerror(errno));
 				free(fname);
 				break;

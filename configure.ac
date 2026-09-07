@@ -147,9 +147,22 @@ PKG_CHECK_MODULES([GPGME], [gpgme],
       ])
 
 dnl libcurl: the system one by default; --enable-internal-libs builds the
-dnl curl source tree found in src/curl into q instead (autotools/m4/internal-libs.m4)
+dnl curl source tree found in src/curl into q instead (autotools/m4/internal-libs.m4);
+dnl --disable-curl leaves the built-in fetcher out, downloads then run
+dnl through QFETCHCOMMAND (wget and the like)
+AC_ARG_ENABLE([curl],
+  [AS_HELP_STRING([--disable-curl],
+    [build without libcurl; package and index downloads then need QFETCHCOMMAND (wget for instance)])],
+  [enable_curl=$enableval], [enable_curl=yes])
 PT_INTERNAL_LIBS
-PT_INTERNAL_CURL
+AS_IF([test "x${enable_curl}" != "xno"],
+  [PT_INTERNAL_CURL
+   AC_DEFINE([HAVE_LIBCURL], [1], [Define if the built-in libcurl fetcher is compiled in])
+   do_curl=yes],
+  [AC_MSG_NOTICE([libcurl disabled, package and index downloads need QFETCHCOMMAND])
+   pt_internal_curl=no
+   do_curl=])
+AM_CONDITIONAL([INTERNAL_CURL], [test "x${pt_internal_curl}" = "xyes"])
 
 PKG_CHECK_MODULES([LIBARCHIVE], [libarchive],
                   [
@@ -243,6 +256,7 @@ AC_SUBST([QMANIFEST_ENABLED], ["$do_qmanifest"])
 AC_SUBST([GPKG_ENABLED], ["$do_gpkg"])
 AC_SUBST([GTREE_ENABLED], ["$do_gtree"])
 AC_SUBST([GPGME_ENABLED], ["$do_gpgme"])
+AC_SUBST([CURL_ENABLED], ["$do_curl"])
 
 AX_CFLAGS_WARN_ALL([CWFLAGS])
 AC_DEFUN([PT_CHECK_CFLAG],[AX_CHECK_COMPILER_FLAGS([$1],[CFLAGS="$CFLAGS $1"])])
@@ -294,7 +308,7 @@ AS_IF([test "x${enable_static}" = "xyes"],
        AX_CHECK_LINK_FLAG([-static],
         [AS_VAR_APPEND([LDFLAGS], [" -static"])],
         [AC_MSG_ERROR([--enable-static requested but the toolchain cannot link "-static"; install a static libc])])
-       AS_IF([test "x${pt_internal_curl}" != "xyes"],
+       AS_IF([test "x${enable_curl}" != "xno" && test "x${pt_internal_curl}" != "xyes"],
         [AC_MSG_CHECKING([whether the system libcurl links statically])
          pt_save_CFLAGS=$CFLAGS
          pt_save_LIBS=$LIBS
@@ -335,13 +349,21 @@ AC_CONFIG_FILES([
 	tests/qcheck/Makefile
 	tests/qdepends/Makefile
 	tests/qetc-update/Makefile
+	tests/qetuto/Makefile
 	tests/qfile/Makefile
+	tests/qgrep/Makefile
+	tests/qkeyword/Makefile
 	tests/qlist/Makefile
 	tests/qlop/Makefile
 	tests/qmanifest/Makefile
 	tests/qmerge/Makefile
+	tests/qnews/Makefile
+	tests/qsearch/Makefile
+	tests/qsize/Makefile
 	tests/qtbz2/Makefile
+	tests/qtegrity/Makefile
 	tests/quse/Makefile
+	tests/qwhich/Makefile
 	tests/qxpak/Makefile
 	tests/rmspace/Makefile
 	tests/source/Makefile
