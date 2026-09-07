@@ -295,8 +295,10 @@ am__define_uniq_tagged_files = \
     if test -f "$$i"; then echo $$i; else echo $(srcdir)/$$i; fi; \
   done | $(am__uniquify_input)`
 DIST_SUBDIRS = atom_compare atom_explode copy_file fuzz mkdir rmspace \
-	usedep preserved qatom qcheck qdepends qetc-update qfile qlist \
-	qlop qmerge qtbz2 quse qxpak install profile qmanifest source
+	usedep preserved qatom qcheck qdepends qetc-update qetuto \
+	qfile qgrep qkeyword qlist qlop qmerge qnews qsearch qsize \
+	qtbz2 qtegrity quse qwhich qxpak install profile qmanifest \
+	source
 am__DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/init.sh.in README.md
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 am__relativize = \
@@ -353,6 +355,7 @@ CPP = @CPP@
 CPPFLAGS = @CPPFLAGS@
 CSCOPE = @CSCOPE@
 CTAGS = @CTAGS@
+CURL_ENABLED = @CURL_ENABLED@
 CWFLAGS = @CWFLAGS@
 CYGPATH_W = @CYGPATH_W@
 DEFS = @DEFS@
@@ -1460,9 +1463,10 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 SUBDIRS = atom_compare atom_explode copy_file fuzz mkdir rmspace \
-	usedep preserved qatom qcheck qdepends qetc-update qfile qlist \
-	qlop qmerge qtbz2 quse qxpak install profile $(am__append_1) \
-	source
+	usedep preserved qatom qcheck qdepends qetc-update qetuto \
+	qfile qgrep qkeyword qlist qlop qmerge qnews qsearch qsize \
+	qtbz2 qtegrity quse qwhich qxpak install profile \
+	$(am__append_1) source
 all: all-recursive
 
 .SUFFIXES:

@@ -1,0 +1,88 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# two repositories under ROOT, an eclass in the first one, and one
+# installed package in the VDB with its ebuild
+export ROOT=${PWD}/root
+export Q_VDB=/var/db/pkg
+export PORTAGE_CONFIGROOT=${PWD}
+mkdir -p etc/portage root/rep1/profiles root/rep1/eclass root/rep1/my-cat/apkg \
+	root/rep1/my-cat/bpkg root/rep1/virtual/vpkg root/rep1/acct-user/auser \
+	root/rep2/profiles root/rep2/my-cat/apkg root/var/db/pkg/my-cat/apkg-1
+cat <<-EOF > etc/portage/repos.conf
+[DEFAULT]
+main-repo = utils-rep1
+[utils-rep1]
+location = /rep1
+[utils-rep2]
+location = /rep2
+EOF
+echo utils-rep1 > root/rep1/profiles/repo_name
+echo utils-rep2 > root/rep2/profiles/repo_name
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nHOMEPAGE="https://example.org/apkg"\nSLOT="0"\nKEYWORDS="amd64 ~x86"\nIUSE="+aflag other"\n# trailing comment\n' \
+	> root/rep1/my-cat/apkg/apkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nHOMEPAGE="https://example.org/apkg"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> root/rep1/my-cat/apkg/apkg-2.ebuild
+printf 'EAPI=7\nDESCRIPTION="beta thing"\nHOMEPAGE="https://beta.example.org"\nSLOT="0"\nKEYWORDS="~amd64 x86"\ninherit my\n' \
+	> root/rep1/my-cat/bpkg/bpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="virtual package"\nSLOT="0"\nKEYWORDS="amd64"\n' \
+	> root/rep1/virtual/vpkg/vpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="account user"\nSLOT="0"\nKEYWORDS="amd64"\n' \
+	> root/rep1/acct-user/auser/auser-0.ebuild
+printf '# my eclass\nmy_func() { :; }\n' > root/rep1/eclass/my.eclass
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nHOMEPAGE="https://example.org/apkg"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> root/rep2/my-cat/apkg/apkg-3.ebuild
+cp root/rep1/my-cat/apkg/apkg-1.ebuild root/var/db/pkg/my-cat/apkg-1/
+echo 0 > root/var/db/pkg/my-cat/apkg-1/SLOT
+echo utils-rep1 > root/var/db/pkg/my-cat/apkg-1/repository
+
+# $1 expected exit code, $2 expected output (sorted), rest the command
+test() {
+	local exprc=$1 exp=$2 rc=0
+	shift 2
+	eval "$@" | LC_ALL=C sort > x || rc=${PIPESTATUS[0]}
+	rc=${PIPESTATUS[0]}
+	printf '%s' "${exp}" > good
+	diff -u good x
+	[[ ${rc} -eq ${exprc} ]]
+	tend $? "$*"
+}
+
+test 0 $'utils-rep1:acct-user/auser/auser-0.ebuild:DESCRIPTION="account user"\nutils-rep1:my-cat/apkg/apkg-1.ebuild:DESCRIPTION="first alpha package"\nutils-rep1:my-cat/apkg/apkg-2.ebuild:DESCRIPTION="first alpha package"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild:DESCRIPTION="beta thing"\nutils-rep1:virtual/vpkg/vpkg-1.ebuild:DESCRIPTION="virtual package"\nutils-rep2:my-cat/apkg/apkg-3.ebuild:DESCRIPTION="first alpha package"\n' \
+	"qgrep -C DESCRIPTION"
+test 0 $'utils-rep1:my-cat/bpkg/bpkg-1.ebuild\n' "qgrep -C -l DESCRIPTION my-cat/bpkg"
+test 0 $'utils-rep1:my-cat/apkg/apkg-1.ebuild:1\nutils-rep1:my-cat/apkg/apkg-2.ebuild:1\nutils-rep2:my-cat/apkg/apkg-3.ebuild:1\n' \
+	"qgrep -C -c DESCRIPTION my-cat/apkg"
+test 0 $'my-cat/apkg-1::utils-rep1:DESCRIPTION="first alpha package"\nmy-cat/apkg-2::utils-rep1:DESCRIPTION="first alpha package"\nmy-cat/apkg-3::utils-rep2:DESCRIPTION="first alpha package"\n' \
+	"qgrep -C -N alpha"
+test 0 $'utils-rep1:my-cat/bpkg/bpkg-1.ebuild:HOMEPAGE="https://beta.example.org"\n' \
+	"qgrep -C -e '^HOME' my-cat/bpkg"
+test 0 $'utils-rep1:my-cat/bpkg/bpkg-1.ebuild:KEYWORDS="~amd64 x86"\n' \
+	"qgrep -C -x 'KEY.*S=' my-cat/bpkg"
+test 0 $'utils-rep1:my-cat/bpkg/bpkg-1.ebuild:DESCRIPTION="beta thing"\n' \
+	"qgrep -C -i description my-cat/bpkg"
+test 0 $'utils-rep1:my-cat/bpkg/bpkg-1.ebuild:DESCRIPTION="beta thing"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild:HOMEPAGE="https://beta.example.org"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild:KEYWORDS="~amd64 x86"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild:SLOT="0"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild:inherit my\n' \
+	"qgrep -C -I EAPI my-cat/bpkg"
+test 1 '' "qgrep -C -s comment my-cat/apkg"
+test 1 '' "qgrep -C -S KEYWORDS -e '^K' my-cat/bpkg"
+test 0 $'utils-rep1:my-cat/bpkg/bpkg-1.ebuild-HOMEPAGE="https://beta.example.org"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild-KEYWORDS="~amd64 x86"\nutils-rep1:my-cat/bpkg/bpkg-1.ebuild:SLOT="0"\n' \
+	"qgrep -C -B 1 -A 1 SLOT my-cat/bpkg"
+test 0 $'utils-rep1:acct-user/auser/auser-0.ebuild\nutils-rep1:virtual/vpkg/vpkg-1.ebuild\n' \
+	"qgrep -C -L HOMEPAGE"
+test 0 $'my-cat/bpkg-1::utils-rep1:HOMEPAGE="https://beta.example.org"\n' \
+	"qgrep -C -R HOMEPAGE my-cat/bpkg"
+test 0 $'utils-rep1:eclass/my.eclass:my_func() { :; }\n' "qgrep -C -E my_func"
+test 0 $'utils-rep1:eclass/my.eclass\n' "qgrep -C -E -l my_func my"
+test 0 $'my:my_func() { :; }\n' "qgrep -C -E -N my_func"
+test 0 $'vdb:my-cat/apkg-1/apkg-1.ebuild:SLOT="0"\n' "qgrep -C -J SLOT"
+test 0 $'vdb:my-cat/apkg-1/apkg-1.ebuild\n' "qgrep -C -J -l SLOT my-cat/apkg"
+test 1 '' "qgrep -C -J ZZZ"
+
+rm -f x good
+
+cleantmpdir

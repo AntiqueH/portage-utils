@@ -1,0 +1,62 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# multiple repositories under ROOT; rep2 carries a newer apkg than rep1
+export ROOT=${PWD}/root
+export PORTAGE_CONFIGROOT=${PWD}
+mkdir -p etc/portage root/rep1/profiles root/rep1/my-cat/apkg \
+	root/rep1/my-cat/bpkg root/rep1/virtual/vpkg root/rep1/acct-user/auser \
+	root/rep2/profiles root/rep2/my-cat/apkg
+cat <<-EOF > etc/portage/repos.conf
+[DEFAULT]
+main-repo = utils-rep1
+[utils-rep1]
+location = /rep1
+[utils-rep2]
+location = /rep2
+EOF
+echo utils-rep1 > root/rep1/profiles/repo_name
+echo utils-rep2 > root/rep2/profiles/repo_name
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nHOMEPAGE="https://example.org/apkg"\nSLOT="0"\nKEYWORDS="amd64 ~x86"\n' \
+	> root/rep1/my-cat/apkg/apkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nHOMEPAGE="https://example.org/apkg"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> root/rep1/my-cat/apkg/apkg-2.ebuild
+printf 'EAPI=7\nDESCRIPTION="beta thing"\nHOMEPAGE="https://beta.example.org"\nSLOT="0"\nKEYWORDS="~amd64 x86"\n' \
+	> root/rep1/my-cat/bpkg/bpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="virtual package"\nSLOT="0"\nKEYWORDS="amd64"\n' \
+	> root/rep1/virtual/vpkg/vpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="account user"\nSLOT="0"\nKEYWORDS="amd64"\n' \
+	> root/rep1/acct-user/auser/auser-0.ebuild
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nHOMEPAGE="https://example.org/apkg"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> root/rep2/my-cat/apkg/apkg-3.ebuild
+
+test() {
+	local exp=$1
+	shift
+	eval "$@" | LC_ALL=C sort > x
+	printf '%s' "${exp}" > good
+	diff -u good x
+	tend $? "$*"
+}
+
+test $'my-cat/bpkg: beta thing\n' "qsearch -C -S beta"
+test $'my-cat/apkg\nmy-cat/apkg\nmy-cat/bpkg\nvirtual/vpkg\n' "qsearch -C -N pkg"
+test $'my-cat/apkg::utils-rep1: first alpha package\nmy-cat/apkg::utils-rep2: first alpha package\n' \
+	"qsearch -C -R apkg"
+test $'acct-user/auser: account user\nmy-cat/apkg: first alpha package\nmy-cat/apkg: first alpha package\nmy-cat/bpkg: beta thing\nvirtual/vpkg: virtual package\n' \
+	"qsearch -C -a"
+test $'my-cat/apkg-2: first alpha package\nmy-cat/apkg-3: first alpha package\n' \
+	"qsearch -C -F '%[CATEGORY]%[PN]-%[PV]' -s apkg"
+test $'my-cat/apkg: https://example.org/apkg\nmy-cat/apkg: https://example.org/apkg\nmy-cat/bpkg: https://beta.example.org\n' \
+	"qsearch -C -S -H example"
+test $'my-cat/bpkg: https://beta.example.org\n' "qsearch -C -H -s bpkg"
+test '' "qsearch -C -s zzz"
+
+rm -f x good
+
+cleantmpdir

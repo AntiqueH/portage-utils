@@ -33,6 +33,7 @@ export QMANIFEST_ENABLED="@QMANIFEST_ENABLED@"
 export GPKG_ENABLED="@GPKG_ENABLED@"
 export GTREE_ENABLED="@GTREE_ENABLED@"
 export GPGME_ENABLED="@GPGME_ENABLED@"
+export CURL_ENABLED="@CURL_ENABLED@"
 
 # create symlinks for applets
 q -i -q

@@ -1,0 +1,116 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# the IMA measurement list and both digest stores live under ROOT
+# the measured executables are (true) files here, output'ed by absolute path as
+# the kernel would output them
+export ROOT=${PWD}/root
+export PORTAGE_CONFIGROOT=${PWD}
+mkdir -p etc/portage root/sys/kernel/security/ima root/var/db bin
+printf '#!/bin/sh\necho hi\n' > bin/prog
+chmod +x bin/prog
+printf 'data\n' > bin/data
+printf '#!/bin/sh\n' > bin/unknown
+chmod +x bin/unknown
+
+prog=${PWD}/bin/prog
+digest=$(sha256sum bin/prog | cut -d' ' -f1)
+udigest=$(sha256sum bin/unknown | cut -d' ' -f1)
+tmpl=0123456789abcdef0123456789abcdef01234567
+ima=root/sys/kernel/security/ima/ascii_runtime_measurements
+custom=root/var/db/QTEGRITY_custom
+os=root/var/db/QTEGRITY
+
+cat <<-EOF > ${ima}
+10 ${tmpl} ima-ng sha256:${digest} ${prog}
+10 ${tmpl} ima-ng sha256:${digest} ${PWD}/bin/data
+10 ${tmpl} ima-ng sha256:${digest} ${PWD}/bin/missing
+10 ${tmpl} ima-ng sha256:${digest} kernel-thread
+10 ${tmpl} ima-ng sha256:${udigest} ${PWD}/bin/unknown
+11 ${tmpl} ima-ng sha256:${digest} /other/pcr
+EOF
+
+# we report every executable as unknown, and the missing
+# file and the kernel thread each get their line, the non-executable
+# data file and the PCR 11 entry are skipped
+qtegrity -C -s > x
+printf 'No digest found for: 10 %s ima-ng sha256:%s %s\n\nCouldn'"'"'t access recorded file '"'"'%s/bin/missing'"'"'\nSeems like a kernel process: kernel-thread\nNo digest found for: 10 %s ima-ng sha256:%s %s/bin/unknown\n\n' \
+	"${tmpl}" "${digest}" "${prog}" "${PWD}" "${tmpl}" "${udigest}" "${PWD}" > good
+diff -u good x
+[[ ! -e ${custom} ]]
+tpass "verification without any digest store"
+
+# --add records the executable in the custom store under ROOT
+qtegrity -C -a "${prog}" > x
+printf 'Adding %s to %s/var/db/QTEGRITY_custom\n' "${prog}" "${ROOT}" > good
+diff -u good x
+printf 'sha256:%s file:%s\n' "${digest}" "${prog}" > good
+diff -u good ${custom}
+tpass "qtegrity -a records a digest"
+
+qtegrity -C -s > x
+printf 'Success! Digest matched for %s\nCouldn'"'"'t access recorded file '"'"'%s/bin/missing'"'"'\nSeems like a kernel process: kernel-thread\nNo digest found for: 10 %s ima-ng sha256:%s %s/bin/unknown\n\n' \
+	"${prog}" "${PWD}" "${tmpl}" "${udigest}" "${PWD}" > good
+diff -u good x
+tpass "recorded digest matches the measurement"
+
+qtegrity -C -i > x
+printf 'Seems like a kernel process: kernel-thread\nNo digest found for: 10 %s ima-ng sha256:%s %s/bin/unknown\n\n' \
+	"${tmpl}" "${udigest}" "${PWD}" > good
+diff -u good x
+tpass "-i silences the missing file, matches stay silent without -s"
+
+# the OS store is the fallback for executables the custom store lacks
+printf 'sha256:%s file:%s/bin/unknown\n' "${udigest}" "${PWD}" > ${os}
+qtegrity -C -s -i > x
+printf 'Success! Digest matched for %s\nSeems like a kernel process: kernel-thread\nSuccess! Digest matched for %s/bin/unknown\n' \
+	"${prog}" "${PWD}" > good
+diff -u good x
+tpass "OS store consulted after the custom store"
+
+# the executable's measurement no longer matches the record
+echo "# changed" >> bin/prog
+newdigest=$(sha256sum bin/prog | cut -d' ' -f1)
+qtegrity -C -s -i > x
+grep -q "^Success! Digest matched for ${prog}$" x
+! grep -q "didn't match" x
+tpass "an unrecorded change is invisible to the measurement"
+
+# the old measurement then no longer matches the store
+qtegrity -C -a "${prog}" > x
+grep -q "^Executable already recorded, replacing digest with ${newdigest}$" x
+[[ $(wc -l < ${custom}) -eq 1 ]]
+printf 'sha256:%s file:%s\n' "${newdigest}" "${prog}" > good
+diff -u good ${custom}
+qtegrity -C -i > x
+[[ $(grep -c "^Digest didn't match for ${prog}$" x) -eq 1 ]]
+grep -q "^Known-good: '${newdigest}'" x
+grep -q "^Recorded: '${digest}'" x
+tpass "qtegrity -a replaces an existing record and the mismatch is outputed"
+
+# --add refuses relative paths / non-executables / missing files
+set +e
+qtegrity -C -a bin/prog > /dev/null 2> err; rc1=$?
+qtegrity -C -a "${PWD}/bin/data" > /dev/null 2> err2; rc2=$?
+qtegrity -C -a "${PWD}/bin/nope" > /dev/null 2> err3; rc3=$?
+set -e
+[[ ${rc1} -ne 0 && $(<err) == *"Expected absolute file"* ]]
+[[ ${rc2} -ne 0 && $(<err2) == *"is not executable"* ]]
+[[ ${rc3} -ne 0 && $(<err3) == *"Couldn't access file"* ]]
+tpass "qtegrity -a rejects bad arguments"
+
+# without an IMA measurement list there is nothing to verify
+# show as missing measurement list
+rm ${ima}
+qtegrity -C > x 2> err
+[[ ! -s x && $(<err) == *"Unable to open("*"ascii_runtime_measurements"* ]]
+tpass "missing measurement list is reported"
+
+rm -f x good err err2 err3
+
+cleantmpdir

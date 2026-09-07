@@ -456,8 +456,8 @@ fm_build() {
             fm_ok=0
             return 1
         fi
-        if [ "$want_internal" = 1 ] && ldd ./q 2>/dev/null | grep -q libcurl; then
-            printf '  flagmatrix %-16s FAIL (internal build links libcurl.so)\n' "$name"
+        if [ "$want_internal" != 0 ] && ldd ./q 2>/dev/null | grep -q libcurl; then
+            printf '  flagmatrix %-16s FAIL (build links libcurl.so, expected none)\n' "$name"
             fm_ok=0
             return 1
         fi
@@ -559,6 +559,14 @@ flagmatrix_gate() {
         fm_build no-openmp   1 0 0 --enable-qmanifest --enable-gtree \
             --enable-gpkg --disable-openmp
         fm_build gpg-only    0 0 0 --enable-gpg --disable-qmanifest
+        fm_build no-curl     1 0 2 --enable-qmanifest --enable-gtree \
+            --enable-gpkg --disable-curl
+        if [ "$fm_have_static" = 1 ]; then
+            fm_build static-no-curl 0 1 2 --enable-static --disable-gpg \
+                --disable-openmp --disable-curl
+        else
+            printf '  flagmatrix %-16s skipped (no static libc)\n' static-no-curl
+        fi
         if [ "$fm_have_static" = 0 ]; then
             printf '  flagmatrix %-16s skipped (no static libc)\n' static-min
         elif [ "$fm_have_static_curl" = 0 ]; then
@@ -1174,7 +1182,7 @@ parallel_run() {
             sc=()
             [ "$want_internal" -eq 1 ] && sc=(internal)
             Q_SHORT_TMPDIR=1 TESTMYCODE_LANE=1 TESTMYCODE_PARALLEL=0 CPU_JOBS="$pj" \
-                ./testmycode.sh "${sc[@]}" "${pgrp[@]}"
+                FEATURES="${FEATURES[*]}" ./testmycode.sh "${sc[@]}" "${pgrp[@]}"
         ) >"$plogs/p$i.log" 2>&1 &
         ppids+=($!)
         pnames+=("$i")

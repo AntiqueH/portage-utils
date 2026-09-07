@@ -1,0 +1,73 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# multiple repositories under ROOT, rep2 carrying the newest apkg, plus a
+# virtual, an acct-user package and one installed package in the VDB
+export ROOT=${PWD}/root
+export Q_VDB=/var/db/pkg
+export PORTAGE_CONFIGROOT=${PWD}
+mkdir -p etc/portage root/rep1/profiles root/rep1/my-cat/apkg \
+	root/rep1/my-cat/bpkg root/rep1/virtual/vpkg root/rep1/acct-user/auser \
+	root/rep2/profiles root/rep2/my-cat/apkg root/var/db/pkg/my-cat/apkg-1
+cat <<-EOF > etc/portage/repos.conf
+[DEFAULT]
+main-repo = utils-rep1
+[utils-rep1]
+location = /rep1
+[utils-rep2]
+location = /rep2
+EOF
+echo utils-rep1 > root/rep1/profiles/repo_name
+echo utils-rep2 > root/rep2/profiles/repo_name
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nSLOT="0"\nKEYWORDS="amd64 ~x86"\n' \
+	> root/rep1/my-cat/apkg/apkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> root/rep1/my-cat/apkg/apkg-2.ebuild
+printf 'EAPI=7\nDESCRIPTION="beta thing"\nSLOT="0"\nKEYWORDS="~amd64 x86"\n' \
+	> root/rep1/my-cat/bpkg/bpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="virtual package"\nSLOT="0"\nKEYWORDS="amd64"\n' \
+	> root/rep1/virtual/vpkg/vpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="account user"\nSLOT="0"\nKEYWORDS="amd64"\n' \
+	> root/rep1/acct-user/auser/auser-0.ebuild
+printf 'EAPI=7\nDESCRIPTION="first alpha package"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> root/rep2/my-cat/apkg/apkg-3.ebuild
+cp root/rep1/my-cat/apkg/apkg-1.ebuild root/var/db/pkg/my-cat/apkg-1/
+echo 0 > root/var/db/pkg/my-cat/apkg-1/SLOT
+echo utils-rep1 > root/var/db/pkg/my-cat/apkg-1/repository
+
+test() {
+	local exp=$1
+	shift
+	eval "$@" | LC_ALL=C sort > x
+	printf '%s' "${exp}" > good
+	diff -u good x
+	tend $? "$*"
+}
+
+test $'/rep1/my-cat/apkg/apkg-1.ebuild\n/rep1/my-cat/apkg/apkg-2.ebuild\n/rep2/my-cat/apkg/apkg-3.ebuild\n' \
+	"qwhich -C my-cat/apkg"
+test $'/rep1/my-cat/apkg/apkg-2.ebuild\n/rep2/my-cat/apkg/apkg-3.ebuild\n' \
+	"qwhich -C -l my-cat/apkg"
+test $'/rep1/my-cat/apkg/apkg-2.ebuild\n/rep2/my-cat/apkg/apkg-3.ebuild\n' \
+	"qwhich -C -f my-cat/apkg"
+test $'utils-rep1::my-cat/apkg/apkg-1.ebuild\nutils-rep1::my-cat/apkg/apkg-2.ebuild\nutils-rep2::my-cat/apkg/apkg-3.ebuild\n' \
+	"qwhich -C -R my-cat/apkg"
+test $'/rep1/my-cat/bpkg\n' "qwhich -C -d my-cat/bpkg"
+test $'utils-rep1::my-cat/bpkg\n' "qwhich -C -R -d my-cat/bpkg"
+test $'my-cat/apkg\nmy-cat/apkg\n' "qwhich -C -p -l my-cat/apkg"
+test $'my-cat/bpkg1\n' "qwhich -C -F '%[CATEGORY]%[PN]%[PV]' -p my-cat/bpkg"
+test $'/var/db/pkg/my-cat/apkg-1\n' "qwhich -C -I my-cat/apkg"
+test $'/rep1/virtual/vpkg/vpkg-1.ebuild\n' "qwhich -C -t virtual/vpkg"
+test '' "qwhich -C -t -T virtual/vpkg"
+test $'/rep1/acct-user/auser/auser-0.ebuild\n' "qwhich -C -t acct-user/auser"
+test '' "qwhich -C -t -A acct-user/auser"
+test '' "qwhich -C nosuch/pkg"
+
+rm -f x good
+
+cleantmpdir

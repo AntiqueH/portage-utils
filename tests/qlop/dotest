@@ -50,6 +50,60 @@ test 09 0 "qlop -Hacv automake -f ${as}/aborts.log"
 # wipe the outstanding emerges from other emerges
 test 10 0 "qlop -Mrr -f ${as}/parallel.log" -d 1568976528
 
+# -r running merges found in /proc by sandbox process name or open build.log, filtered to ours
+now=$(date +%s)
+pa="sys-devel/qmerge-test$$"
+pb="sys-apps/foo$$"
+printf "%s: Started emerge on: Jan 01, 2026 00:00:00\n%s:  *** emerge  ${pa} ${pb}\n%s:  >>> emerge (1 of 2) ${pa}-1.0 to /\n%s:  >>> emerge (2 of 2) ${pb}-2 to /\n" \
+	$((now - 125)) $((now - 125)) $((now - 125)) $((now - 65)) > running.log
+mkdir -p portage/${pb}-2/temp
+ours() { grep -E "${pa}|${pb}" || : ; }
+
+bash -c "exec -a '[${pa}-1.0] sandbox' sleep 60" &
+p1=$!
+sleep 60 3> portage/${pb}-2/temp/build.log &
+p2=$!
+sleep 1
+qlop -C -M -r -f running.log | ours > x
+printf "%s >>> ${pb}... (2 of 2) ETA: unknown\n%s >>> ${pa}... (1 of 2) ETA: unknown\n" \
+	$((now - 65)) $((now - 125)) > good
+diff -u good x
+tpass "qlop -r lists both running merges"
+
+kill ${p2}; wait ${p2} 2>/dev/null || :
+qlop -C -M -r -f running.log | ours > x
+printf "%s >>> ${pa}... (1 of 2) ETA: unknown\n" $((now - 125)) > good
+diff -u good x
+tpass "qlop -r: the sandbox process name identifies a merge"
+
+kill ${p1}; wait ${p1} 2>/dev/null || :
+sleep 60 3> portage/${pb}-2/temp/build.log &
+p2=$!
+sleep 1
+qlop -C -M -r -f running.log | ours > x
+printf "%s >>> ${pb}... (2 of 2) ETA: unknown\n" $((now - 65)) > good
+diff -u good x
+tpass "qlop -r: an open build.log identifies a merge"
+kill ${p2}; wait ${p2} 2>/dev/null || :
+
+if [[ ${EUID} -ne 0 ]] ; then
+	qlop -C -M -r -f running.log 2> err | ours > x
+	printf "%s >>> ${pb}... (2 of 2) ETA: unknown\n%s >>> ${pa}... (1 of 2) ETA: unknown\n" \
+		$((now - 65)) $((now - 125)) > good
+	diff -u good x
+	grep -q "insufficient privileges for full /proc access" err
+	tpass "qlop -r falls back to the log without /proc evidence"
+fi
+
+qlop -C -M -rr -f running.log 2> err | ours > x
+printf "%s >>> ${pb}... (2 of 2) ETA: unknown\n%s >>> ${pa}... (1 of 2) ETA: unknown\n" \
+	$((now - 65)) $((now - 125)) > good
+diff -u good x
+grep -q "running without /proc scanning" err
+tpass "qlop -rr skips the /proc scan"
+
+rm -rf x good err running.log portage
+
 cleantmpdir
 
 end

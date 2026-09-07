@@ -38,6 +38,18 @@ for d in a a/ a/b a/b/ a/b/c a/b/c/ ; do
 	tpass "exist ${_d}"
 done
 
+if [[ ${EUID} -ne 0 ]] ; then
+	mkdir -m 500 ro
+	set +e
+	$m ro/x/y
+	rc=$?
+	set -e
+	chmod 755 ro
+	[[ ${rc} -ne 0 && ! -e ro/x ]]
+	rmdir ro
+	tpass "unwritable parent reported"
+fi
+
 # check rm_rf
 m="${_m} rm"
 

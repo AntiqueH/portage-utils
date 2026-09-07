@@ -1,0 +1,69 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# one repository under ROOT with two GLEP 42 news items, both unread
+export ROOT=${PWD}/root
+export PORTAGE_CONFIGROOT=${PWD}
+mkdir -p etc/portage root/rep1/profiles root/var/lib/gentoo/news \
+	root/rep1/metadata/news/2026-01-01-first-item \
+	root/rep1/metadata/news/2026-02-02-second-item
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /rep1\n' \
+	> etc/portage/repos.conf
+echo utils-rep1 > root/rep1/profiles/repo_name
+cat <<-EOF > root/rep1/metadata/news/2026-01-01-first-item/2026-01-01-first-item.en.txt
+Title: First news item
+Author: Test Author <test@example.org>
+Posted: 2026-01-01
+Revision: 1
+News-Item-Format: 2.0
+
+The body of the first item.
+Second body line.
+EOF
+cat <<-EOF > root/rep1/metadata/news/2026-02-02-second-item/2026-02-02-second-item.en.txt
+Title: Second news item
+Author: Test Author <test@example.org>
+Posted: 2026-02-02
+Revision: 1
+News-Item-Format: 2.0
+
+Second body.
+EOF
+printf '2026-01-01-first-item\n2026-02-02-second-item\n' \
+	> root/var/lib/gentoo/news/news-utils-rep1.unread
+
+test() {
+	local exp=$1
+	shift
+	eval "$@" > x
+	printf '%s' "${exp}" > good
+	diff -u good x
+	tend $? "$*"
+}
+
+first=$'utils-rep1/2026-01-01-first-item\n\nTitle: First news item\nAuthor: Test Author <test@example.org>\nPosted: 2026-01-01\nRevision: 1\nNews-Item-Format: 2.0\n\nThe body of the first item.\nSecond body line.\n\n'
+second=$'utils-rep1/2026-02-02-second-item\n\nTitle: Second news item\nAuthor: Test Author <test@example.org>\nPosted: 2026-02-02\nRevision: 1\nNews-Item-Format: 2.0\n\nSecond body.\n\n'
+
+test $'  [N] utils-rep1 2026-01-01-first-item: First news item\n  [N] utils-rep1 2026-02-02-second-item: Second news item\n' \
+	"qnews -C list"
+test $'2\n' "qnews -C count"
+test "${first}" "qnews -C read 2026-01-01-first-item"
+test $'  [N] utils-rep1 2026-02-02-second-item: Second news item\n  [ ] utils-rep1 2026-01-01-first-item: First news item\n' \
+	"qnews -C list"
+test $'1\n' "qnews -C count"
+test "${first}${second}" "qnews -C read all"
+test $'0\n' "qnews -C count"
+test $'  [ ] utils-rep1 2026-01-01-first-item: First news item\n  [ ] utils-rep1 2026-02-02-second-item: Second news item\nno unread news items\n' \
+	"qnews -C list"
+[[ $(cat root/var/lib/gentoo/news/news-utils-rep1.read | LC_ALL=C sort | tr '\n' ' ') == "2026-01-01-first-item 2026-02-02-second-item " ]]
+[[ ! -s root/var/lib/gentoo/news/news-utils-rep1.unread ]]
+tpass "read items moved from the unread list to the read list"
+
+rm -f x good
+
+cleantmpdir

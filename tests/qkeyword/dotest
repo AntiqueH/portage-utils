@@ -1,0 +1,118 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# multi repository tests, in this case two repositories
+# rep2's apkg-2 is the same package as rep1's apkg-1, so
+# the comparison against the package printed last spans the first tree,
+# which is already closed when the second one is opened
+mkdir -p rep1/profiles rep1/my-cat/apkg \
+	rep2/profiles rep2/my-cat/apkg rep2/my-cat/bpkg
+printf 'amd64\nx86\n' > rep1/profiles/arch.list
+cp rep1/profiles/arch.list rep2/profiles/arch.list
+echo utils-rep1 > rep1/profiles/repo_name
+echo utils-rep2 > rep2/profiles/repo_name
+printf 'EAPI=7\nDESCRIPTION="first repository"\nSLOT="0"\nKEYWORDS="amd64 ~x86"\n' \
+	> rep1/my-cat/apkg/apkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="second repository"\nSLOT="0"\nKEYWORDS="~amd64"\n' \
+	> rep2/my-cat/apkg/apkg-2.ebuild
+printf 'EAPI=7\nDESCRIPTION="second repository"\nSLOT="0"\nKEYWORDS="~amd64 x86"\n' \
+	> rep2/my-cat/bpkg/bpkg-1.ebuild
+mkportdir "${PWD}/rep1"
+cat <<-EOF >>etc/portage/repos.conf
+[utils-rep2]
+location = ${PWD}/rep2
+EOF
+
+qkeyword -C -a amd64 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/apkg-1 +amd64 ~x86\nmy-cat/bpkg-1 ~amd64 +x86\n' > good
+diff -u good x
+tpass "qkeyword -a over two repositories"
+
+qkeyword -C -T amd64 > x
+printf 'my-cat/apkg-2\nmy-cat/bpkg-1\n' > good
+diff -u good x
+tpass "qkeyword -T over two repositories"
+
+qkeyword -C -S amd64 > x
+printf 'my-cat/apkg-1\n' > good
+diff -u good x
+qkeyword -C -S x86 > x
+printf 'my-cat/bpkg-1\n' > good
+diff -u good x
+tpass "qkeyword -S per arch"
+
+qkeyword -C -t amd64 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/bpkg-1 ~amd64 +x86\n' > good
+diff -u good x
+tpass "qkeyword -t needsstable"
+
+# adding some more packages for the remaining actions,
+# all the while cpkg has no amd64 keyword at all
+# dpkg removes it explicitly, epkg-2 removes the amd64 its older
+# version had
+mkdir -p rep1/my-cat/cpkg rep1/my-cat/dpkg rep1/my-cat/epkg
+printf 'EAPI=7\nDESCRIPTION="c"\nSLOT="0"\nKEYWORDS="x86"\n' \
+	> rep1/my-cat/cpkg/cpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="d"\nSLOT="0"\nKEYWORDS="-amd64 x86"\n' \
+	> rep1/my-cat/dpkg/dpkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="e"\nSLOT="0"\nKEYWORDS="amd64 x86"\n' \
+	> rep1/my-cat/epkg/epkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="e"\nSLOT="0"\nKEYWORDS="x86"\n' \
+	> rep1/my-cat/epkg/epkg-2.ebuild
+
+qkeyword -C -i amd64 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/bpkg-1 ~amd64 +x86\n' > good
+diff -u good x
+qkeyword -C -i x86 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/apkg-1 +amd64 ~x86\n' > good
+diff -u good x
+tpass "qkeyword -i imlate per arch"
+
+qkeyword -C -n amd64 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/cpkg-1 +x86\nmy-cat/dpkg-1 +x86\nmy-cat/epkg-2 +x86\n' > good
+diff -u good x
+qkeyword -C -n x86 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/apkg-2 ~amd64\n' > good
+diff -u good x
+tpass "qkeyword -n not keyworded, explicit -arch included"
+
+qkeyword -C -d amd64 | sed 's/[[:space:]]*$//' > x
+printf 'my-cat/epkg-2 +x86\n' > good
+diff -u good x
+qkeyword -C -d x86 > x
+[[ ! -s x ]]
+tpass "qkeyword -d dropped keyword between versions"
+
+qkeyword -C -s amd64 | sed -e 's/[[:space:]]*$//' -e '/^Completed in/d' > x
+cat <<-EOF > good
++-------------------------+
+|   general statistics    |
++-------------------------+
+| architectures |       2 |
+|    categories |       1 |
+|      packages |       6 |
+|       ebuilds |       7 |
++-------------------------+
+
++---------------------------------------------------+
+|     keyword distribution                          |
++---------------------------------------------------+
+| architecture |  stable |   ~arch |   total | total/#pkgs |
+|       |         |    only |         |             |
++---------------------------------------------------+
+| amd64 |       2 |       2 |       4 |      66.67% |
+|   x86 |       4 |       1 |       5 |      83.33% |
++---------------------------------------------------+
+
+EOF
+diff -u good x
+tpass "qkeyword -s statistics"
+
+rm -rf x good rep1 rep2
+
+cleantmpdir

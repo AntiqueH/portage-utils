@@ -71,6 +71,29 @@ diff -u ${as}/list01.good x
 rm x
 tpass "multi file match"
 
+# testing -a across two repos. The package printed last is remembered by
+# name, the previous repository's tree is closed before the next one opens
+mkdir -p rep1/profiles rep1/my-cat/apkg rep2/profiles rep2/my-cat/bpkg
+echo utils-rep1 > rep1/profiles/repo_name
+echo utils-rep2 > rep2/profiles/repo_name
+printf 'EAPI=7\nDESCRIPTION="first repository"\nSLOT="0"\nKEYWORDS="~amd64"\nIUSE="+aflag other"\nIUSE+=" third"\n' \
+	> rep1/my-cat/apkg/apkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="second repository"\nSLOT="0"\nKEYWORDS="~amd64"\nIUSE="bflag"\n' \
+	> rep2/my-cat/bpkg/bpkg-1.ebuild
+mkportdir "${PWD}/rep1"
+cat <<-EOF >>etc/portage/repos.conf
+[utils-rep2]
+location = ${PWD}/rep2
+EOF
+quse -C -a | LC_ALL=C sort > x
+printf 'my-cat/apkg: +aflag other third\nmy-cat/bpkg: bflag\n' > good
+diff -u good x
+[[ $(quse -C bflag) == "my-cat/bpkg: bflag" ]]
+[[ $(quse -C third) == "my-cat/apkg: +aflag other third" ]]
+rm -rf x good rep1 rep2
+mkportdir "${as}/portdir"
+tpass "quse -a over two repositories, IUSE+= appends, first space kept"
+
 # gtree cache: q -c compression knob + cache-consumer checks
 if [[ -n ${GTREE_ENABLED} ]] ; then
 	unset QGTREE_COMPRESS

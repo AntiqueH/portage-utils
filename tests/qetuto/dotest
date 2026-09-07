@@ -1,0 +1,148 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+mktmpdir
+
+# qetuto drives gpg, gpgconf, openssl and timeout as external programs;
+# the gpg agents do not get to valgrind
+if [[ -n ${Q_RUN_WITH_VALGRIND} ]] ; then
+	echo "${WARN}SKIPPED:${NORMAL} qetuto checks (valgrind active)"
+	cleantmpdir
+	exit 0
+fi
+for t in gpg gpgconf openssl timeout ; do
+	if ! command -v ${t} >/dev/null 2>&1 ; then
+		echo "${WARN}SKIPPED:${NORMAL} qetuto checks (${t} not installed)"
+		cleantmpdir
+		exit 0
+	fi
+done
+
+set -e
+
+export ROOT=${PWD}/root
+export PORTAGE_CONFIGROOT=${PWD}
+export HOME=${PWD}
+export QETUTO_KEYS=/keys/release.asc
+export QETUTO_KEYSERVERS=hkp://127.0.0.1:1
+unset QETUTO_EXTERNAL_REFRESH
+mkdir -p etc/portage root/keys
+
+# sGentoo release keys, generated here and exported
+# armored into one file
+# UIDs carry no dott domain
+export GNUPGHOME=${PWD}/gen
+mkdir -m 700 gen
+gpg --batch --quiet --passphrase '' --quick-generate-key \
+	'Test Release <release@localhost>' default default never >/dev/null 2>&1
+for i in $(seq 1 20) ; do
+	gpg --batch --quiet --passphrase '' --quick-generate-key \
+		"Extra Key ${i} <extra${i}@localhost>" ed25519 sign never >/dev/null 2>&1
+done
+fpr=$(gpg --batch --with-colons --list-keys release@localhost \
+	| awk -F: '/^fpr:/ { print $10; exit }')
+gpg --batch --quiet --armor --export > root/keys/release.asc
+[[ $(gpg --batch --with-colons --list-keys | wc -c) -gt 4096 ]]
+gpgconf --kill all >/dev/null 2>&1 || :
+unset GNUPGHOME
+[[ -n ${fpr} && -s root/keys/release.asc ]]
+tpass "test release keys generated"
+
+home=root/etc/portage/gnupg
+keys() { gpg --homedir "${home}" --batch --with-colons --list-keys 2>/dev/null; }
+agents_down() { gpgconf --homedir "${home}" --kill all >/dev/null 2>&1 || : ; }
+
+# bootstrap the keyring under ROOT, vin erbose, with the external
+# refresh activated so the keyserver and WKD steps run against the closed port
+out=$(QETUTO_EXTERNAL_REFRESH=1 qetuto -C -v 2>/dev/null)
+[[ ${out} == *"Initializing ${ROOT}/etc/portage/gnupg"* ]]
+[[ -d ${home} && ! -e ${home}.getuto.tmp ]]
+[[ -f ${home}/.getuto.last && -f ${home}/mykeyid && -f ${home}/pass ]]
+[[ -f ${home}/trustdb.gpg && $(stat -c %a ${home}/pass) == 600 ]]
+[[ -f ${home}/gpg.conf && -f ${home}/gpg-agent.conf && -f ${home}/dirmngr.conf ]]
+tpass "bootstrap creates the keyring under ROOT"
+
+mykeyid=$(<${home}/mykeyid)
+[[ ${mykeyid} =~ ^[0-9A-F]{40}$ ]]
+keys | grep -q "^fpr:::::::::${mykeyid}:"
+keys | grep -q "^fpr:::::::::${fpr}:"
+[[ $(keys | grep -c '^uid:.*<extra[0-9]*@localhost>') -eq 20 ]]
+tpass "local trust key and all release keys are in the keyring"
+
+# the release key is locally signed by the trust key: its pub record
+# carries validity f once the trust db has been checked
+[[ $(keys | awk -F: -v f="${fpr}" '$1 == "pub" { v = $2 } $1 == "fpr" && $10 == f { print v; exit }') == f ]]
+tpass "release key locally signed and presumably valid"
+agents_down
+
+# second run within a day: nothing to do
+# without a keyserver override the built-in list is constructed and the refresh is skipped
+out=$(env -u QETUTO_KEYSERVERS qetuto -C -v 2>/dev/null)
+[[ ${out} == *"already up-to-date"* ]]
+tpass "refresh within a day is skipped"
+
+# an old stamp triggers the refresh: the key file is re-imported and the
+# stamp renewed; without QETUTO_EXTERNAL_REFRESH=1 no keyserver or WKD
+touch -d '2 days ago' ${home}/.getuto.last
+before=$(stat -c %Y ${home}/.getuto.last)
+out=$(qetuto -C -v 2>/dev/null)
+[[ ${out} == *"Updating GnuPG keyring"* ]]
+[[ $(stat -c %Y ${home}/.getuto.last) -gt ${before} ]]
+keys | grep -q "^fpr:::::::::${fpr}:"
+tpass "old stamp triggers the refresh and renews the stamp"
+agents_down
+
+# external refresh -> the keyserver is unreachable, the run still ends
+# cleanly and the stamp is renewed
+touch -d '2 days ago' ${home}/.getuto.last
+before=$(stat -c %Y ${home}/.getuto.last)
+QETUTO_EXTERNAL_REFRESH=1 qetuto -C 2>/dev/null
+[[ $(stat -c %Y ${home}/.getuto.last) -gt ${before} ]]
+tpass "external refresh survives an unreachable keyserver"
+agents_down
+
+# bootstrap without a release key file fails and leaves no staging dir
+rm -rf ${home}
+set +e
+QETUTO_KEYS=/keys/missing.asc qetuto -C >/dev/null 2>&1
+rc=$?
+set -e
+[[ ${rc} -ne 0 && ! -e ${home} && ! -e ${home}.getuto.tmp ]]
+tpass "bootstrap without a release key fails cleanly"
+
+# bootstrap without a working openssl fails and the staging should be removed
+mkdir -p fakebin
+printf '#!/bin/sh\nexit 1\n' > fakebin/openssl
+chmod +x fakebin/openssl
+set +e
+err=$(PATH=${PWD}/fakebin:${PATH} qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -ne 0 && ${err} == *"could not generate a passphrase"* ]]
+[[ ! -e ${home} && ! -e ${home}.getuto.tmp ]]
+tpass "bootstrap without openssl fails cleanly"
+
+if [[ ${EUID} -ne 0 ]] ; then
+	chmod 500 root/etc/portage
+	set +e
+	err=$(qetuto -C 2>&1 >/dev/null)
+	rc=$?
+	set -e
+	chmod 755 root/etc/portage
+	[[ ${rc} -ne 0 && ${err} == *"cannot create"* && ! -e ${home} ]]
+	tpass "bootstrap into an unwritable parent fails cleanly"
+
+	# the real system keyring is root's business
+	set +e
+	err=$(qetuto --root / -C 2>&1 >/dev/null)
+	rc=$?
+	set -e
+	[[ ${rc} -ne 0 && ${err} == *"must be run as root"* ]]
+	tpass "ROOT=/ is refused without root"
+fi
+
+agents_down
+gpgconf --kill all >/dev/null 2>&1 || :
+
+cleantmpdir

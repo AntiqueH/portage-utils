@@ -1,0 +1,55 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+# an installed package whose CONTENTS names two regular files of known
+# size, one symlink and three directories under ROOT
+export ROOT=${PWD}/root
+export Q_VDB=/var/db/pkg
+export PORTAGE_CONFIGROOT=${PWD}
+mkdir -p etc/portage root/var/db/pkg/my-cat/apkg-1 root/usr/bin root/usr/share/apkg
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /rep1\n' \
+	> etc/portage/repos.conf
+mkdir -p root/rep1/profiles
+echo utils-rep1 > root/rep1/profiles/repo_name
+head -c 1000 /dev/zero > root/usr/bin/apkg
+head -c 2048 /dev/zero > root/usr/share/apkg/data
+ln -s apkg root/usr/bin/apkg-link
+cat <<-EOF > root/var/db/pkg/my-cat/apkg-1/CONTENTS
+dir /usr/bin
+obj /usr/bin/apkg d41d8cd98f00b204e9800998ecf8427e 1700000000
+sym /usr/bin/apkg-link -> apkg 1700000000
+dir /usr/share
+dir /usr/share/apkg
+obj /usr/share/apkg/data d41d8cd98f00b204e9800998ecf8427e 1700000000
+EOF
+echo 0 > root/var/db/pkg/my-cat/apkg-1/SLOT
+echo utils-rep1 > root/var/db/pkg/my-cat/apkg-1/repository
+
+test() {
+	local exp=$1
+	shift
+	eval "$@" > x
+	printf '%s' "${exp}" > good
+	diff -u good x
+	tend $? "$*"
+}
+
+test $'my-cat/apkg: 3 files, 3 non-files, 3052 bytes\n' "qsize -C -b my-cat/apkg"
+test $'my-cat/apkg: 3 files, 3 non-files, 3052 bytes\n Totals: 3 files, 3 non-files, 3052 bytes\n' \
+	"qsize -C -b -s my-cat/apkg"
+test $' Totals: 3 files, 3 non-files, 3052 bytes\n' "qsize -C -b -S my-cat/apkg"
+test $'my-cat/apkg: 3 files, 3 non-files, 3 KiB\n' "qsize -C -k my-cat/apkg"
+test $'my-cat/apkg: 3 files, 3 non-files, 0 MiB\n' "qsize -C -m my-cat/apkg"
+test $'my-cat/apkg: 2 files, 1 non-files, 3 names-ignored, 1004 bytes\n' \
+	"qsize -C -b -i share my-cat/apkg"
+test $'my-cat/apkg-1: 3 files, 3 non-files, 3052 bytes\n' \
+	"qsize -C -b -F '%[CATEGORY]%[PF]' my-cat/apkg"
+
+rm -f x good
+
+cleantmpdir

@@ -540,6 +540,8 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	qm_merged "sys-devel/${pkgver}" "[ ] install ${pkgver}-r${rev} really landed"
 	out=$(qpkg -g ${pkgver}-r${rev})
 	tend $? "qmerge-test: [ ] build gpkg.tar" || die "${out}"
+	out=$(qpkg -p -c 2>&1)
+	tend $? "qmerge-test: [ ] qpkg -p -c pretend clean over the vdb" || die "${out}"
 
 	gbuilt=$(find "${ROOT}/pkgs/sys-devel" -name "${pkgver}-r${rev}*.gpkg.tar" \
 		| head -1)
@@ -2538,7 +2540,7 @@ fi
 # no user-started server: serve with our C server own helper (tests/qmerge/httpd.c).
 # lots of servers.
 fthpid=
-if [[ -z ${QMERGE_TEST_HTTP_URL} && -x ${ab}/qmerge-httpd ]] ; then
+if [[ -n ${CURL_ENABLED} && -z ${QMERGE_TEST_HTTP_URL} && -x ${ab}/qmerge-httpd ]] ; then
 	mkdir -p "${PWD}/qmerge-httpd-root"
 	timeout 900 "${ab}/qmerge-httpd" -p 0 -d "${PWD}/qmerge-httpd-root" \
 		> "${PWD}/qmerge-httpd.port" &
@@ -2556,7 +2558,7 @@ if [[ -z ${QMERGE_TEST_HTTP_URL} && -x ${ab}/qmerge-httpd ]] ; then
 fi
 
 ftup=0
-if [[ -n ${QMERGE_TEST_HTTP_URL} && -n ${QMERGE_TEST_HTTP_ROOT} && \
+if [[ -n ${CURL_ENABLED} && -n ${QMERGE_TEST_HTTP_URL} && -n ${QMERGE_TEST_HTTP_ROOT} && \
       -d ${QMERGE_TEST_HTTP_ROOT} ]] && type -P curl >/dev/null ; then
 	# per-instance subdir: concurrent suite runs (parallel testmycode
 	# lanes) share one server without clashing
@@ -2658,6 +2660,8 @@ if [[ ${ftup} -eq 1 ]] ; then
 	rm -rf "${icroot}" "${ROOT}/icstore" cfg-ic
 	rm -rf "${ftroot}" "${ROOT}/ftstore" cfg-ft "${acstore}/dev-libs"
 	qmaint binhost -f >/dev/null 2>&1
+elif [[ -z ${CURL_ENABLED} ]] ; then
+	echo "${WARN}SKIPPED:${NORMAL} fetch identity: built without libcurl (--disable-curl), no built-in fetcher to exercise"
 else
 	echo "${WARN}SKIPPED:${NORMAL} fetch identity: no http server came up (own helper missing/failed and no QMERGE_TEST_HTTP_URL + QMERGE_TEST_HTTP_ROOT)"
 fi
