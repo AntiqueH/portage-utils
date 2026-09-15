@@ -1,0 +1,126 @@
+#!/bin/bash
+
+. ../init.sh || exit 1
+
+set -e
+
+mktmpdir
+
+export ROOT=${PWD}/root
+export PORTAGE_CONFIGROOT=${PWD}
+export PKGDIR=/pkgs
+mkdir -p etc/portage root/pkgs
+
+set +e
+qmaint -C > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"usage: qmaint"* ]]
+tpass "qmaint without a module prints the usage"
+
+set +e
+qmaint -C -c -f env > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"--check and --fix are exclusive options"* ]]
+tpass "qmaint -c -f is refused"
+
+set +e
+qmaint -C --no-ldconfig binhost > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"--no-ldconfig only applies to the env module"* ]]
+tpass "qmaint --no-ldconfig outside env is refused"
+
+set +e
+qmaint -C --delete-individual-files env > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"only apply to the vdb module"* ]]
+tpass "qmaint --delete-individual-files outside vdb is refused"
+
+set +e
+qmaint -C --remove binhost > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"only apply to the vdb module"* ]]
+tpass "qmaint --remove outside vdb is refused"
+
+set +e
+qmaint -C --remove -f vdb > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"--fix and --remove are exclusive options"* ]]
+tpass "qmaint --remove with --fix is refused"
+
+set +e
+qmaint -C --delete-individual-files vdb > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"--delete-individual-files requires --fix"* ]]
+tpass "qmaint --delete-individual-files without --fix is refused"
+
+set +e
+qmaint -C bogus > x 2> err; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<err) == *"unknown module 'bogus' (available: binhost, moves, news, env, vdb)"* ]]
+tpass "qmaint refuses an unknown module"
+
+mkdir -p root/rep1/profiles
+echo utils-test > root/rep1/profiles/repo_name
+printf '[DEFAULT]\nmain-repo = utils-test\n[utils-test]\nlocation = /rep1\n' \
+	> etc/portage/repos.conf
+
+qmaint -C -c moves > x
+printf 'Moves: OK (no move instructions, no Moves file)\n' > good
+diff -u good x
+tpass "qmaint -c moves with no move instructions and no Moves file"
+
+qmaint -C -f moves > x
+printf '>>> nothing to do (no move instructions, no Moves file)\n' > good
+diff -u good x
+tpass "qmaint -f moves with nothing to do"
+
+printf 'move old-cat/old new-cat/new\n' > root/pkgs/Moves
+set +e
+qmaint -C -c moves > x; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<x) == "Moves: STALE, ${ROOT}"*"/pkgs/Moves exists but the repo carries no move instructions (run \`qmaint moves -f')" ]]
+tpass "qmaint -c moves reports a stale Moves file"
+
+qmaint -C -f moves > x
+[[ $(<x) == ">>> removed ${ROOT}"*"/pkgs/Moves (repo carries no move instructions)" ]]
+[[ ! -e root/pkgs/Moves ]]
+tpass "qmaint -f moves removes the stale Moves file"
+
+mkdir -p root/rep1/profiles/updates
+printf 'move old-cat/old new-cat/new\n' > root/rep1/profiles/updates/1Q-2026
+set +e
+qmaint -C -c moves > x; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<x) == "Moves: MISSING, the repo carries move instructions but ${ROOT}"*"/pkgs/Moves does not exist (run \`qmaint moves -f')" ]]
+tpass "qmaint -c moves reports a missing Moves file"
+
+qmaint -C -f moves > x
+[[ -s root/pkgs/Moves ]]
+n=$(stat -c %s root/pkgs/Moves)
+[[ $(<x) == ">>> wrote ${ROOT}"*"/pkgs/Moves (${n} bytes)" ]]
+grep -q "old-cat/old" root/pkgs/Moves
+tpass "qmaint -f moves writes the Moves file from profiles/updates"
+
+qmaint -C -c moves > x
+printf 'Moves: OK (%s bytes, matches profiles/updates)\n' "${n}" > good
+diff -u good x
+tpass "qmaint -c moves accepts a matching Moves file"
+
+printf 'move other-cat/a other-cat/b\n' >> root/pkgs/Moves
+set +e
+qmaint -C -c moves > x; rc=$?
+set -e
+[[ ${rc} -ne 0 && $(<x) == "Moves: OUT OF DATE, ${ROOT}"*"/pkgs/Moves does not match the repo profiles/updates (run \`qmaint moves -f')" ]]
+tpass "qmaint -c moves reports an out of date Moves file"
+
+qmaint -C -f moves > x
+[[ $(<x) == ">>> wrote ${ROOT}"*"/pkgs/Moves (${n} bytes)" ]]
+qmaint -C -c moves > x
+diff -u good x
+tpass "qmaint -f moves rewrites an out of date Moves file"
+
+rm -f x err good
+
+cleantmpdir
+
+end

@@ -1,6 +1,6 @@
 SUBDIRS = \
 	atom_compare atom_explode copy_file fuzz mkdir rmspace usedep preserved \
-	qatom qcheck qdepends qetc-update qetuto qfile qgrep qkeyword qlist qlop qmerge \
+	qatom qcheck qdepends qetc-update qetuto qfile qgrep qkeyword qlist qlop qmaint qmerge \
 	qnews qsearch qsize qtbz2 qtegrity quse qwhich qxpak \
 	install profile
 
