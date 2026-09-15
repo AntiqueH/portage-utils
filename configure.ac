@@ -355,6 +355,7 @@ AC_CONFIG_FILES([
 	tests/qkeyword/Makefile
 	tests/qlist/Makefile
 	tests/qlop/Makefile
+	tests/qmaint/Makefile
 	tests/qmanifest/Makefile
 	tests/qmerge/Makefile
 	tests/qnews/Makefile

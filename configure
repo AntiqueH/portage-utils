@@ -33052,7 +33052,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.beam \
 fi
 fi
 
-ac_config_files="$ac_config_files Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/fuzz/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qetc-update/Makefile tests/qetuto/Makefile tests/qfile/Makefile tests/qgrep/Makefile tests/qkeyword/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qnews/Makefile tests/qsearch/Makefile tests/qsize/Makefile tests/qtbz2/Makefile tests/qtegrity/Makefile tests/quse/Makefile tests/qwhich/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile tests/usedep/Makefile tests/preserved/Makefile"
+ac_config_files="$ac_config_files Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/fuzz/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qetc-update/Makefile tests/qetuto/Makefile tests/qfile/Makefile tests/qgrep/Makefile tests/qkeyword/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmaint/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qnews/Makefile tests/qsearch/Makefile tests/qsize/Makefile tests/qtbz2/Makefile tests/qtegrity/Makefile tests/quse/Makefile tests/qwhich/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile tests/usedep/Makefile tests/preserved/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -33920,6 +33920,7 @@ do
     "tests/qkeyword/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qkeyword/Makefile" ;;
     "tests/qlist/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qlist/Makefile" ;;
     "tests/qlop/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qlop/Makefile" ;;
+    "tests/qmaint/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qmaint/Makefile" ;;
     "tests/qmanifest/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qmanifest/Makefile" ;;
     "tests/qmerge/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qmerge/Makefile" ;;
     "tests/qnews/Makefile") CONFIG_FILES="$CONFIG_FILES tests/qnews/Makefile" ;;

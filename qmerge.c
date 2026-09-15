@@ -3529,7 +3529,8 @@ qm_collect_updates(void)
 
 	if (main_overlay == NULL)
 		return NULL;
-	snprintf(updir, sizeof(updir), "%s/profiles/updates", main_overlay);
+	snprintf(updir, sizeof(updir), "%s%s/profiles/updates", portroot,
+			 main_overlay[0] == '/' ? main_overlay + 1 : main_overlay);
 	d = opendir(updir);
 	if (d == NULL)
 		return NULL;
@@ -16855,10 +16856,11 @@ qmerge_moves_maint(bool fix)
 		free(have);
 		return EXIT_FAILURE;
 	}
-	if (dfd >= 0)
-		(void)eat_file_at(dfd, "Moves", &have, &hlen);
-	else
-		(void)eat_file(mpath, &have, &hlen);
+	if (!(dfd >= 0 ? eat_file_at(dfd, "Moves", &have, &hlen) :
+				eat_file(mpath, &have, &hlen))) {
+		free(have);
+		have = NULL;
+	}
 
 	if (fix) {
 		if (want != NULL) {
