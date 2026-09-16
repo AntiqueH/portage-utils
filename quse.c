@@ -461,8 +461,10 @@ quse_results_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			return 0;
 
 		if (state->do_describe) {
+			const char *ov =
+				state->overlay == NULL ? main_overlay : state->overlay;
 			portdirfd = openat(tree_pkg_get_portroot_fd(pkg_ctx),
-					state->overlay == NULL ? main_overlay : state->overlay,
+					ov[0] == '/' ? ov + 1 : ov,
 					O_RDONLY | O_CLOEXEC | O_PATH);
 			if (portdirfd == -1)
 				return 0;

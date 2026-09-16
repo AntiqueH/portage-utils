@@ -950,6 +950,13 @@ qmerge_keyring_ready() { # $1... home dirs, after keys were written
 	[[ $(id -u) -eq 0 && -n ${QMERGE_TEST_KEYRING_PUBLIC} ]] || return 0
 	chmod -R a+rX "$@" 2>/dev/null
 }
+flipbyte() {
+	# $1 file  $2 offset; inverts the byte found there
+	local b
+	b=$(od -An -tu1 -j"$2" -N1 "$1")
+	printf "\\x$(printf %02x $(( b ^ 255 )))" \
+		| dd of="$1" bs=1 seek="$2" conv=notrunc 2>/dev/null
+}
 
 # sign a valid gpkg with a throwaway keyring, then assert accept/refuse per GLEP 78/79.
 # BINPKG_GPG_VERIFY_GPG_HOME points verification at the test keyring.
@@ -1032,8 +1039,7 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 		# evil tamper a member + patch its DATA line INSIDE the clearsigned
 		# Manifest: integrity passes, the Manifest signature must not
 		gs_restore
-		printf 'X' | dd of="${gsex}/${gspfx}/image.tar.zst" bs=1 seek=100 \
-			conv=notrunc 2>/dev/null
+		flipbyte "${gsex}/${gspfx}/image.tar.zst" 100
 		sed -i "s#^DATA image.tar.zst .*#DATA image.tar.zst $(stat -c %s \
 			"${gsex}/${gspfx}/image.tar.zst") SHA512 $(sha512sum \
 			"${gsex}/${gspfx}/image.tar.zst" | cut -d' ' -f1)#" \
@@ -1168,8 +1174,7 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P gpg >/dev/null ; then
 		ggex="${PWD}/gg-ex"
 		rm -rf "${ggex}"; mkdir -p "${ggex}"
 		tar xf "${gggpkg}" -C "${ggex}"
-		printf 'X' | dd of="${ggex}/${ggpfx}/image.tar.zst" bs=1 seek=100 \
-			conv=notrunc 2>/dev/null
+		flipbyte "${ggex}/${ggpfx}/image.tar.zst" 100
 		( cd "${ggex}" && tar --format=ustar -cf "${PWD}/../gg-tampered.gpkg.tar" \
 			$(find "${ggpfx}" -type f | sort) )
 		cp "${PWD}/gg-tampered.gpkg.tar" "${PWD}/gg-tampered.orig"

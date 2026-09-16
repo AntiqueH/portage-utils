@@ -94,6 +94,171 @@ rm -rf x good rep1 rep2
 mkportdir "${as}/portdir"
 tpass "quse -a over two repositories, IUSE+= appends, first space kept"
 
+r=${PWD}/root
+mkdir -p ${r}/rep1/profiles/desc ${r}/rep1/my-cat/apkg ${r}/rep1/my-cat/bpkg \
+	${r}/rep1/my-cat/cpkg ${r}/rep2/profiles ${r}/rep2/my-cat/dpkg \
+	${r}/var/db/pkg/my-cat/apkg-1 ${r}/var/db/pkg/my-cat/bpkg-2
+echo utils-rep1 > ${r}/rep1/profiles/repo_name
+echo utils-rep2 > ${r}/rep2/profiles/repo_name
+printf 'EAPI=7\nDESCRIPTION="a"\nSLOT="0"\nKEYWORDS="~amd64"\nLICENSE="GPL-2"\nIUSE="+aflag  other nginx_modules_http_lua nodesc"\n' \
+	> ${r}/rep1/my-cat/apkg/apkg-1.ebuild
+printf 'EAPI=7\nDESCRIPTION="b"\nSLOT="0"\nKEYWORDS="~amd64"\nLICENSE="MIT GPL-2"\nIUSE="aflag -other"\n' \
+	> ${r}/rep1/my-cat/bpkg/bpkg-2.ebuild
+printf 'EAPI=7\nDESCRIPTION="c"\nSLOT="0"\nKEYWORDS="~amd64"\nLICENSE="BSD"\n' \
+	> ${r}/rep1/my-cat/cpkg/cpkg-3.ebuild
+printf 'EAPI=7\nDESCRIPTION="d"\nSLOT="0"\nKEYWORDS="~amd64"\nIUSE="aflag"\n' \
+	> ${r}/rep2/my-cat/dpkg/dpkg-4.ebuild
+printf 'aflag - global aflag description\nother - global other description\nmalformed line\n' \
+	> ${r}/rep1/profiles/use.desc
+printf 'my-cat/apkg:aflag - local aflag for apkg\nmy-cat/bpkg:aflag - local aflag for bpkg\nnocolon here\nmy-cat/apkg:nodash\n' \
+	> ${r}/rep1/profiles/use.local.desc
+printf 'lua - the lua module\nbroken\n' > ${r}/rep1/profiles/desc/nginx_modules_http.desc
+for p in apkg-1 bpkg-2 ; do
+	echo 0 > ${r}/var/db/pkg/my-cat/${p}/SLOT
+	echo utils-rep1 > ${r}/var/db/pkg/my-cat/${p}/repository
+done
+echo "aflag other nginx_modules_http_lua nodesc" > ${r}/var/db/pkg/my-cat/apkg-1/IUSE
+echo "aflag nodesc" > ${r}/var/db/pkg/my-cat/apkg-1/USE
+echo "aflag  other" > ${r}/var/db/pkg/my-cat/bpkg-2/IUSE
+echo "other" > ${r}/var/db/pkg/my-cat/bpkg-2/USE
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /rep1\n[utils-rep2]\nlocation = /rep2\n' \
+	> etc/portage/repos.conf
+export ROOT=${r} PORTDIR=/rep1
+
+printf 'my-cat/apkg: +aflag other nginx_modules_http_lua nodesc\nmy-cat/bpkg: aflag -other\nmy-cat/dpkg: aflag\n' > all.good
+quse -C fla > x
+diff -u all.good x
+quse -C -e aflag > x
+diff -u all.good x
+! quse -C -e fla > x
+[[ ! -s x ]]
+tpass "quse -e matches the whole flag name only"
+
+printf 'my-cat/apkg: GPL-2\nmy-cat/bpkg: MIT GPL-2\n' > good
+quse -C -L GPL-2 > x
+diff -u good x
+printf 'my-cat/cpkg: BSD\n' >> good
+quse -C -L -a > x
+diff -u good x
+tpass "quse -L matches LICENSE, an ebuild without IUSE is listed only there"
+
+printf 'my-cat/apkg::utils-rep1: +aflag other nginx_modules_http_lua nodesc\nmy-cat/bpkg::utils-rep1: aflag -other\nmy-cat/dpkg::utils-rep2: aflag\n' > good
+quse -C -R aflag > x
+diff -u good x
+printf 'my-cat/apkg-1::utils-rep1: +aflag other nginx_modules_http_lua nodesc\nmy-cat/bpkg-2::utils-rep1: aflag -other\nmy-cat/dpkg-4::utils-rep2: aflag\n' > good
+quse -C -Rv aflag > x
+diff -u good x
+printf 'my-cat/apkg-1: +aflag other nginx_modules_http_lua nodesc\nmy-cat/bpkg-2: aflag -other\nmy-cat/dpkg-4: aflag\n' > good
+quse -C -v aflag > x
+diff -u good x
+printf 'my-cat/apkg\nmy-cat/bpkg\nmy-cat/dpkg\n' > good
+quse -C -q aflag > x
+diff -u good x
+printf 'apkg: +aflag other nginx_modules_http_lua nodesc\nbpkg: aflag -other\ndpkg: aflag\n' > good
+quse -C -F '%[PN]' aflag > x
+diff -u good x
+tpass "quse -R, -v, -q and -F output forms"
+
+printf 'my-cat/apkg: +aflag other nginx_modules_http_lua nodesc\n' > good
+quse -C -p my-cat/apkg > x
+diff -u good x
+quse -C -p my-cat/apkg:0 aflag > x
+diff -u good x
+quse -C -p my-cat/ > x
+diff -u all.good x
+! quse -C -p my-cat/nopkg > x
+[[ ! -s x ]]
+tpass "quse -p alone lists the package, ignores the slot, accepts a category"
+
+printf 'NGINX_MODULES_HTTP[lua] the lua module\n' > good
+quse -C -D nginx_modules_http_lua > x
+diff -u good x
+printf 'globalutils-rep1[aflag] global aflag description\nmy-cat/apkg[aflag] local aflag for apkg\nmy-cat/bpkg[aflag] local aflag for bpkg\n' > good
+quse -C -RD aflag > x
+diff -u good x
+printf 'global[aflag] global aflag description\nmy-cat/apkg[aflag] local aflag for apkg\nmy-cat/bpkg[aflag] local aflag for bpkg\n' > good
+quse -C -D -e aflag nodesc > x
+diff -u good x
+mkdir ${r}/rep2/profiles/desc
+touch ${r}/rep2/profiles/desc/README
+quse -C -D -e aflag > x
+diff -u good x
+rm ${r}/rep2/profiles/desc/README
+if [[ ${EUID} -ne 0 ]] ; then
+	touch ${r}/rep2/profiles/desc/locked.desc
+	chmod 000 ${r}/rep2/profiles/desc/locked.desc
+	quse -C -D -e aflag > x
+	diff -u good x
+	rm -f ${r}/rep2/profiles/desc/locked.desc
+fi
+rmdir ${r}/rep2/profiles/desc
+touch ${r}/rep2/profiles/desc
+quse -C -D -e aflag > x
+diff -u good x
+rm ${r}/rep2/profiles/desc
+mkdir ${r}/rep2/profiles/desc
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /rep1\n[utils-rep2]\nlocation = /rep2\n[utils-rep3]\nlocation = /rep3\n' \
+	> etc/portage/repos.conf
+quse -C -D -e aflag > x
+diff -u good x
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /rep1\n[utils-rep2]\nlocation = /rep2\n' \
+	> etc/portage/repos.conf
+tpass "quse -D resolves USE_EXPAND files, repo names, exact flags, skips repos and files it cannot read"
+
+printf 'lua - the lua module\n' > ${r}/rep2/profiles/desc/nginx_modules_http.desc
+printf 'my-cat/dpkg\n  aflag   <no description found>\n' > good
+quse -C -D -p my-cat/dpkg > x
+diff -u good x
+tpass "quse -D -p over a repository holding only USE_EXPAND descriptions"
+
+if command -v script >/dev/null 2>&1 ; then
+	printf 'aflag - global aflag description\nother - a rather long global description that has to be wrapped over several lines when the terminal is narrow enough for it and abcdefghijklmnopqrstuvwxyzabcdefghij too\n' \
+		> ${r}/rep1/profiles/use.desc
+	printf 'my-cat/apkg\n +aflag                    local aflag for apkg\n  other                    a rather long global\n                           description that has to\n                           be wrapped over several\n                           lines when the terminal\n                           is narrow enough for it\n                           and\n                           abcdefghijklmnopqrstuvwxyzabcdefghij too\n  nginx_modules_http_lua   the lua module\n  nodesc                   <no description found>\n' > good
+	script -qec "stty cols 50; quse -C -D -p my-cat/apkg" /dev/null \
+		| tr -d '\r' > x
+	diff -u good x
+	printf 'aflag - global aflag description\nother - global other description\nmalformed line\n' \
+		> ${r}/rep1/profiles/use.desc
+	tpass "quse -D -p wraps long descriptions to the terminal width"
+fi
+
+printf 'my-cat/apkg\n +aflag                    local aflag for apkg\n  other                    global other description\n  nginx_modules_http_lua   the lua module\n  nodesc                   <no description found>\n' > good
+quse -C -D -p my-cat/apkg > x
+diff -u good x
+printf 'my-cat/apkg\n +aflag                    local aflag for apkg\n  other                    global other description\n  nginx_modules_http_lua   the lua module\n  nodesc                   <no description found>\nmy-cat/bpkg\n  aflag   local aflag for bpkg\n -other   global other description\nmy-cat/dpkg\n  aflag   <no description found>\n' > good
+quse -C -D -p my-cat/ > x
+diff -u good x
+printf 'my-cat/apkg\n' > good
+quse -C -q -D -p my-cat/apkg > x
+diff -u good x
+tpass "quse -D -p describes every flag of a package below ROOT"
+
+printf 'my-cat/apkg: aflag other nginx_modules_http_lua nodesc\nmy-cat/bpkg: aflag other\n' > good
+quse -C -I aflag > x
+diff -u good x
+printf 'my-cat/apkg: aflag other nginx_modules_http_lua nodesc\nmy-cat/bpkg: aflag  other\n' > good
+quse -C -I -a > x
+diff -u good x
+printf 'my-cat/apkg\n  aflag*                   local aflag for apkg\n  other                    global other description\n  nginx_modules_http_lua   the lua module\n  nodesc*                  <no description found>\n' > good
+quse -C -I -D -p my-cat/apkg > x
+diff -u good x
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /gone\n' \
+	> etc/portage/repos.conf
+! PORTDIR=/gone quse -C -I -D -p my-cat/apkg > x
+[[ ! -s x ]]
+printf '[DEFAULT]\nmain-repo = utils-rep1\n[utils-rep1]\nlocation = /rep1\n[utils-rep2]\nlocation = /rep2\n' \
+	> etc/portage/repos.conf
+tpass "quse -I searches the VDB, -I -D marks the flags enabled in USE, needs the main repository"
+
+! quse -C > x 2>&1
+grep -q "^usage: quse" x
+tpass "quse without arguments prints the usage"
+
+unset ROOT
+rm -rf x good all.good root
+mkportdir "${as}/portdir"
+
 # gtree cache: q -c compression knob + cache-consumer checks
 if [[ -n ${GTREE_ENABLED} ]] ; then
 	unset QGTREE_COMPRESS
