@@ -323,39 +323,69 @@ diff -u good x
 grep -q "Could not open logfile '/nonexistent'" x
 tpass "qlop -w atoms file, --root prefixed log, EMERGE_LOG_DIR default, missing log fails"
 
-while [[ $(date +%N | sed 's/^0*//') -gt 200000000 ]] ; do sleep 0.05 ; done
 now=$(date +%s)
 printf '%s: Started emerge on: x\n%s:  *** emerge  run slow\n%s:  >>> emerge (1 of 2) dev-libs/run-1.0 to /\n%s:  ::: completed emerge (1 of 2) dev-libs/run-1.0 to /\n%s:  >>> emerge (2 of 2) dev-libs/run-1.0 to /\n%s:  ::: completed emerge (2 of 2) dev-libs/run-1.0 to /\n%s:  >>> emerge (3 of 3) dev-libs/slow-1.0 to /\n%s:  ::: completed emerge (3 of 3) dev-libs/slow-1.0 to /\n%s:  *** emerge --sync\n%s:  === sync\n%s: === Sync completed for gentoo\n%s:  *** terminating.\n' \
 	$((now-5000)) $((now-5000)) $((now-5000)) $((now-4900)) $((now-4900)) $((now-4780)) $((now-4780)) $((now-4680)) $((now-4600)) $((now-4600)) $((now-4540)) $((now-4500)) > running.log
 printf '%s:  >>> emerge (1 of 1) dev-libs/late-1.0 to /\n%s:  ::: completed emerge (1 of 1) dev-libs/late-1.0 to /\n%s: === Unmerging... (dev-libs/old-0.9)\n%s:  >>> unmerge success: dev-libs/old-0.9\n%s: === Unmerging... (dev-libs/gone-0.8)\n%s:  >>> unmerge success: dev-libs/gone-0.8\n%s: === Unmerging... (dev-libs/gone-0.9)\n%s:  >>> unmerge success: dev-libs/gone-0.9\n' \
 	$((now-4450)) $((now-4400)) $((now-4400)) $((now-4397)) $((now-4390)) $((now-4385)) $((now-4300)) $((now-4270)) >> running.log
 printf '%s: Started emerge on: y\n%s:  *** emerge  run slow old\n%s:  >>> emerge (1 of 9) dev-libs/stale-1.0 to /\n%s: === Unmerging... (dev-libs/ancient-1.0)\n%s:  >>> emerge (1 of 4) dev-libs/run-1.1 to /\n%s:  >>> emerge (4 of 4) dev-libs/run-1.1 to /\n%s:  >>> emerge (5 of 5) dev-libs/late-1.1 to /\n%s:  >>> emerge (2 of 4) dev-libs/slow-1.1 to /\n%s:  >>> emerge (3 of 4) dev-libs/slow-1.1 to /\n%s:  === Unmerging... (dev-libs/run-1.0)\n%s: === Unmerging... (dev-libs/old-1.0)\n%s: === Unmerging... (dev-libs/old-1.0)\n%s: === Unmerging... (dev-libs/gone-1.0)\n%s:  === sync\n' \
-	$((now-2000000)) $((now-2000000)) $((now-2000000)) $((now-1999999)) $((now-200)) $((now-115)) $((now-60)) $((now-20)) $((now-19)) $((now-15)) $((now-14)) $((now-14)) $((now-12)) $((now-10)) >> running.log
+	$((now-2000000)) $((now-2000000)) $((now-2000000)) $((now-1999999)) $((now-200)) $((now-112)) $((now-60)) $((now-20)) $((now-19)) $((now-15)) $((now-14)) $((now-14)) $((now-6)) $((now-5)) >> running.log
+
+# adding clocked measurements testing for qlop
+rl_clock() {
+	awk '$2 == "***" && $3 == "sync:" { sub(/\.\.\./, "", $4); print $1 + $4; exit }
+		$2 == "***" && $3 == "sync..." { print $1 + 60 - $5; exit }
+		$2 == "<<<" && $3 == "dev-libs/old..." { v = $4; sub(/^\+/, "", v); print $1 + v + 3; exit }' x
+}
+rl_expect() {
+	local tq=$1 mode=$2
+	local esy=$((tq - (now-5))) esl=$((tq - (now-19))) ela=$((tq - (now-60)))
+	local eru=$((tq - (now-112))) eol=$((tq - (now-14))) ego=$((tq - (now-6)))
+	local tsy=$((60 - esy)) tsl=$((100 - esl)) ola=$((ela - 50))
+	local tru=$((120 - eru)) ool=$((eol - 3)) tgo=$((17 - ego))
+	case ${mode} in
+	plain)
+		printf '%s *** sync... ETA: %s\n%s >>> dev-libs/slow... (3 of 4) ETA: %s\n%s >>> dev-libs/late... +%s\n%s >>> dev-libs/run... (4 of 4) ETA: %s\n%s <<< dev-libs/old... +%s\n%s <<< dev-libs/gone... ETA: %s\n' \
+			$((now-5)) ${tsy} $((now-19)) ${tsl} $((now-60)) ${ola} \
+			$((now-112)) ${tru} $((now-14)) ${ool} $((now-6)) ${tgo} ;;
+	t)
+		printf '%s *** sync: %s... ETA: %s\n%s >>> dev-libs/slow: %s... (3 of 4) ETA: %s\n%s >>> dev-libs/late: %s... +%s\n%s >>> dev-libs/run: %s... (4 of 4) ETA: %s\n%s <<< dev-libs/old: %s... +%s\n%s <<< dev-libs/gone: %s... ETA: %s\n' \
+			$((now-5)) ${esy} ${tsy} $((now-19)) ${esl} ${tsl} $((now-60)) ${ela} ${ola} \
+			$((now-112)) ${eru} ${tru} $((now-14)) ${eol} ${ool} $((now-6)) ${ego} ${tgo} ;;
+	v)
+		printf '%s *** sync... ETA: %s\n%s >>> dev-libs/slow-1.1... (3 of 4) ETA: %s (average run)\n%s >>> dev-libs/late-1.1... +%s\n%s >>> dev-libs/run-1.1... (4 of 4) ETA: %s (longest run)\n%s <<< dev-libs/old-1.0... +%s\n%s <<< dev-libs/gone-1.0... ETA: %s (average run)\n' \
+			$((now-5)) ${tsy} $((now-19)) ${tsl} $((now-60)) ${ola} \
+			$((now-112)) ${tru} $((now-14)) ${ool} $((now-6)) ${tgo} ;;
+	uU)
+		printf '%s <<< dev-libs/run... ETA: unknown\n%s <<< dev-libs/old... +%s\n%s <<< dev-libs/gone... ETA: %s\n' \
+			$((now-15)) $((now-14)) ${ool} $((now-6)) ${tgo} ;;
+	s)
+		printf '%s *** sync... ETA: %s\n' $((now-5)) ${tsy} ;;
+	st)
+		printf '%s *** sync: %s... ETA: %s\n' $((now-5)) ${esy} ${tsy} ;;
+	esac
+}
 qlop -C -Mrr -f running.log > x 2> err
-printf '%s *** sync... ETA: 50\n%s >>> dev-libs/slow... (3 of 4) ETA: 81\n%s >>> dev-libs/late... +10\n%s >>> dev-libs/run... (4 of 4) ETA: 5\n%s <<< dev-libs/old... +11\n%s <<< dev-libs/gone... ETA: 5\n' \
-	$((now-10)) $((now-19)) $((now-60)) $((now-115)) $((now-14)) $((now-12)) > good
+rl_expect "$(rl_clock)" plain > good
 diff -u good x
 qlop -C -Mrrt -f running.log > x 2> err
-printf '%s *** sync: 10... ETA: 50\n%s >>> dev-libs/slow: 19... (3 of 4) ETA: 81\n%s >>> dev-libs/late: 60... +10\n%s >>> dev-libs/run: 115... (4 of 4) ETA: 5\n%s <<< dev-libs/old: 14... +11\n%s <<< dev-libs/gone: 12... ETA: 5\n' \
-	$((now-10)) $((now-19)) $((now-60)) $((now-115)) $((now-14)) $((now-12)) > good
+rl_expect "$(rl_clock)" t > good
 diff -u good x
 qlop -C -Mrrv -f running.log > x 2> err
-printf '%s *** sync... ETA: 50\n%s >>> dev-libs/slow-1.1... (3 of 4) ETA: 81 (average run)\n%s >>> dev-libs/late-1.1... +10\n%s >>> dev-libs/run-1.1... (4 of 4) ETA: 5 (longest run)\n%s <<< dev-libs/old-1.0... +11\n%s <<< dev-libs/gone-1.0... ETA: 5 (average run)\n' \
-	$((now-10)) $((now-19)) $((now-60)) $((now-115)) $((now-14)) $((now-12)) > good
+rl_expect "$(rl_clock)" v > good
 diff -u good x
 qlop -C -Mrr -uU -f running.log > x 2> err
-printf '%s <<< dev-libs/run... ETA: unknown\n%s <<< dev-libs/old... +11\n%s <<< dev-libs/gone... ETA: 5\n' \
-	$((now-15)) $((now-14)) $((now-12)) > good
+rl_expect "$(rl_clock)" uU > good
 diff -u good x
 printf '%s:  *** emerge --unmerge x\n%s: === Unmerging... (dev-libs/x-1)\n%s:  *** exiting successfully.\n%s:  *** terminating.\n' \
 	$((now-30)) $((now-29)) $((now-28)) $((now-28)) > term.log
 qlop -C -Mrr -u -f term.log > x 2> err
 [[ ! -s x ]]
 qlop -C -Mrr -s -f running.log > x 2> err
-printf '%s *** sync... ETA: 50\n' $((now-10)) > good
+rl_expect "$(rl_clock)" s > good
 diff -u good x
 qlop -C -Mrr -st -f running.log > x 2> err
-printf '%s *** sync: 10... ETA: 50\n' $((now-10)) > good
+rl_expect "$(rl_clock)" st > good
 diff -u good x
 printf '%s:  === sync\n' $((now-100)) > longsync.log
 qlop -C -Mrr -s -f longsync.log > x 2> err

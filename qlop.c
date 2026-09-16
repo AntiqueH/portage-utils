@@ -476,6 +476,10 @@ static int do_emerge_log(
 	if ((fp = fopen(buf, "r")) == NULL)
 	{
 		warnp("Could not open logfile '%s'", log);
+		array_free(merge_matches);
+		array_free(unmerge_matches);
+		hash_free(merge_averages);
+		hash_free(unmerge_averages);
 		return 1;
 	}
 
