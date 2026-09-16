@@ -191,13 +191,13 @@ parse_date(const char *sdate, time_t *t)
 
 			/* Step down the current time. */
 			if (!strcmp(dur, "year")) {
-				tm.tm_year -= num;
+				tm.tm_year -= (int)num;
 			} else if (!strcmp(dur, "month")) {
 				if (num >= 12) {
-					tm.tm_year -= (num / 12);
+					tm.tm_year -= (int)(num / 12);
 					num %= 12;
 				}
-				tm.tm_mon -= num;
+				tm.tm_mon -= (int)num;
 				if (tm.tm_mon < 0) {
 					tm.tm_mon += 12;
 					tm.tm_year -= 1;
@@ -481,7 +481,8 @@ static int do_emerge_log(
 
 	all_atoms = array_cnt(atoms) == 0;
 	if (all_atoms || flags->show_lastmerge) {
-		atomset = hash_new();
+		if (all_atoms)
+			atomset = hash_new();
 
 		/* assemble list of atoms */
 		while (fgets(buf, sizeof(buf), fp) != NULL) {
@@ -496,8 +497,6 @@ static int do_emerge_log(
 			if (flags->show_lastmerge) {
 				if (strpfx(p, "  *** emerge ") == 0)
 					tstart_emerge = tstart;
-				if (!all_atoms)
-					continue;
 			}
 
 			atom = NULL;
@@ -523,6 +522,12 @@ static int do_emerge_log(
 				}
 			}
 			if (atom != NULL) {
+				if (!all_atoms) {
+					last_merge = tstart_emerge;
+					atom_implode(atom);
+					continue;
+				}
+
 				/* strip off version info, if we generate a list
 				 * ourselves, we will always print everything, so as
 				 * well can keep memory footprint a bit lower by only
@@ -1079,9 +1084,10 @@ static int do_emerge_log(
 				sync_time = 0;
 			if (flags->do_time) {
 				elapsed = tstart - sync_start;
-				printf("%s *** %s%s%s: %s... ETA: %s\n",
+				printf("%s *** %s%s%s: %s",
 						fmt_date(flags, sync_start, 0),
-						YELLOW, "sync", NORM, fmt_elapsedtime(flags, elapsed),
+						YELLOW, "sync", NORM, fmt_elapsedtime(flags, elapsed));
+				printf("... ETA: %s\n",
 						sync_time == 0 ? "unknown" :
 							fmt_elapsedtime(flags, sync_time - elapsed));
 			} else {
@@ -1384,6 +1390,8 @@ static int do_emerge_log(
 	}
 	hash_free(merge_averages);
 	hash_free(unmerge_averages);
+	if (upgrade_atom != NULL)
+		atom_implode(upgrade_atom);
 	array_for_each_rev(merge_matches, i, pkgw)
 		atom_implode(pkgw->atom);
 	array_deepfree(merge_matches, NULL);
@@ -1837,11 +1845,12 @@ int qlop_main(int argc, char **argv)
 		}
 	}
 
+	ret = 0;
 	if (start_time < LONG_MAX)
-		do_emerge_log(logfile, &m, atoms, start_time, end_time);
+		ret = do_emerge_log(logfile, &m, atoms, start_time, end_time);
 
 	array_deepfree(atoms, atom_implode_cb);
 	free(logfile);
 
-	return EXIT_SUCCESS;
+	return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -1,0 +1,45 @@
+1600100000: Started emerge on: Sep 14, 2020 16:13:20
+1600100000:  *** emerge  baz
+1600100000:  >>> emerge (1 of 1) dev-libs/baz-1.0 to /
+1600283845:  ::: completed emerge (1 of 1) dev-libs/baz-1.0 to /
+1600283846:  *** exiting successfully.
+1600283846:  *** terminating.
+1600300000: Started emerge on: Sep 17, 2020 00:00:00
+1600300000:  *** emerge --sync
+1600300000:  === sync
+1600300060:  *** terminating.
+1600400000: Started emerge on: Sep 18, 2020 03:46:40
+1600400000:  *** emerge --unmerge foo bar
+1600400000: === Unmerging... (dev-libs/foo-1.0)
+1600400001: === Unmerging... (dev-libs/bar-1.0)
+1600400003:  >>> unmerge success: dev-libs/foo-1.0
+1600400004:  >>> unmerge success: dev-libs/bar-1.0
+1600400005:  *** exiting successfully.
+1600400005:  *** terminating.
+1600500000: Started emerge on: Sep 19, 2020 07:33:20
+1600500000:  *** emerge --ask --verbose --oneshot --deep --update --depclean --unmerge --keep-going @world world system =dev-libs/foo-2.0 dev-libs/bar
+1600500001:  >>> emerge (1 of 5) dev-libs/foo-1.0 to /
+1600500101:  ::: completed emerge (1 of 5) dev-libs/foo-1.0 to /
+1600500101:  >>> emerge (2 of 5) dev-libs/foo-2.0 to /
+1600500102:  >>> AUTOCLEAN: dev-libs/foo:0
+1600500102:  === Unmerging... (dev-libs/foo-1.0)
+1600500105:  >>> unmerge success: dev-libs/foo-1.0
+1600500221:  ::: completed emerge (2 of 5) dev-libs/foo-2.0 to /
+1600500221:  >>> emerge (3 of 5) dev-libs/foo-2.0-r1 to /
+1600500222:  === Unmerging... (dev-libs/foo-2.0)
+1600500224:  >>> unmerge success: dev-libs/foo-2.0
+1600500351:  ::: completed emerge (3 of 5) dev-libs/foo-2.0-r1 to /
+1600500351:  >>> emerge (4 of 5) dev-libs/foo-2.0-r1 to /
+1600500352:  === Unmerging... (dev-libs/foo-2.0-r1)
+1600500354:  >>> unmerge success: dev-libs/foo-2.0-r1
+1600500486:  ::: completed emerge (4 of 5) dev-libs/foo-2.0-r1 to /
+1600500486:  >>> emerge (5 of 5) dev-libs/foo-1.0 to /
+1600500487:  === Unmerging... (dev-libs/foo-2.0-r1)
+1600500489:  >>> unmerge success: dev-libs/foo-2.0-r1
+1600500591:  ::: completed emerge (5 of 5) dev-libs/foo-1.0 to /
+1600500592:  >>> emerge (9 of 9
+1600500593:  >>> emerge (9 of 9) dev-libs/nospace
+1600500594:  === Unmerging... (dev-libs/noparen
+1600500595:  >>> unmerge success: dev-libs/orphan-1
+1600500596:  *** exiting successfully.
+1600500596:  *** terminating.

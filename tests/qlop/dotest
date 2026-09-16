@@ -86,6 +86,27 @@ diff -u good x
 tpass "qlop -r: an open build.log identifies a merge"
 kill ${p2}; wait ${p2} 2>/dev/null || :
 
+pc="dev-libs/gz$$"
+pd="dev-libs/colon$$"
+printf "%s:  *** emerge  gz colon\n%s:  >>> emerge (1 of 2) ${pc}-1 to /\n%s:  >>> emerge (2 of 2) ${pd}-2 to /\n" \
+	$((now - 100)) $((now - 100)) $((now - 90)) > proc.log
+mkdir -p portage/${pc}-1/temp logs
+sleep 60 3> portage/${pc}-1/temp/build.log.gz &
+p1=$!
+sleep 60 3> "logs/${pd%%/*}:${pd##*/}-2:20260101-000000.log" &
+p2=$!
+bash -c "exec -a '[nocat$$-1] sandbox' sleep 60" &
+p3=$!
+sleep 1
+qlop -C -M -r -f proc.log | grep -E "${pc}|${pd}|nocat$$" > x
+printf "%s >>> ${pd}... (2 of 2) ETA: unknown\n%s >>> ${pc}... (1 of 2) ETA: unknown\n" \
+	$((now - 90)) $((now - 100)) > good
+diff -u good x
+qlop -C -M -r ${pc} dev-libs/absent$$ -f proc.log | grep -E "${pc}|${pd}|nocat$$|absent" > x
+diff -u good x
+tpass "qlop -r: compressed build logs, cat:pf:stamp.log names, no category in the sandbox name"
+kill ${p1} ${p2} ${p3}; wait ${p1} ${p2} ${p3} 2>/dev/null || :
+
 if [[ ${EUID} -ne 0 ]] ; then
 	qlop -C -M -r -f running.log 2> err | ours > x
 	if grep -q "insufficient privileges for full /proc access" err ; then
@@ -105,7 +126,246 @@ diff -u good x
 grep -q "running without /proc scanning" err
 tpass "qlop -rr skips the /proc scan"
 
-rm -rf x good err running.log portage
+rm -rf x good err running.log proc.log portage logs
+
+# history, times, emerge view, averages, prediction, dates and option
+# handling over mixed.log (a two-day merge, a sync in the latest log
+# format, an unmerge session, then a merge session with new, upgrade,
+# reinstall and downgrade steps plus malformed lines)
+export TZ=UTC
+ml=${as}/mixed.log
+
+qlop -C -f ${ml} > x
+printf '2020-09-19T07:20:01 >>> dev-libs/foo: 1m40s\n2020-09-19T07:21:41 >>> dev-libs/foo: 2m00s\n2020-09-19T07:23:41 >>> dev-libs/foo: 2m10s\n2020-09-19T07:25:51 >>> dev-libs/foo: 2m15s\n2020-09-19T07:28:06 >>> dev-libs/foo: 1m45s\n' > good
+diff -u good x
+qlop -C -l -f ${ml} > x
+diff -u good x
+qlop -C -l dev-libs/foo -f ${ml} > x
+diff -u good x
+qlop -C -lM dev-libs/bar -f ${ml} > x
+[[ ! -s x ]]
+tpass "qlop default mode and -l show the last emerge session, also for a named atom"
+
+qlop -C -t -f ${ml} > x
+printf '2020-09-14T16:13:20 >>> dev-libs/baz: 51:04:05\n2020-09-16T23:46:40 *** sync: 1m00s\n2020-09-18T03:33:20 <<< dev-libs/foo: 3s\n2020-09-18T03:33:21 <<< dev-libs/bar: 3s\n2020-09-19T07:20:01 >>> dev-libs/foo: 1m40s\n2020-09-19T07:21:41 >>> dev-libs/foo: 2m00s\n2020-09-19T07:23:41 >>> dev-libs/foo: 2m10s\n2020-09-19T07:25:51 >>> dev-libs/foo: 2m15s\n2020-09-19T07:28:06 >>> dev-libs/foo: 1m45s\n' > good
+diff -u good x
+qlop -C -tH -f ${ml} > x
+printf '2020-09-14T16:13:20 >>> dev-libs/baz: 2 days, 3 hours, 4 minutes, 5 seconds\n2020-09-16T23:46:40 *** sync: 1 minute\n2020-09-18T03:33:20 <<< dev-libs/foo: 3 seconds\n2020-09-18T03:33:21 <<< dev-libs/bar: 3 seconds\n2020-09-19T07:20:01 >>> dev-libs/foo: 1 minute, 40 seconds\n2020-09-19T07:21:41 >>> dev-libs/foo: 2 minutes\n2020-09-19T07:23:41 >>> dev-libs/foo: 2 minutes, 10 seconds\n2020-09-19T07:25:51 >>> dev-libs/foo: 2 minutes, 15 seconds\n2020-09-19T07:28:06 >>> dev-libs/foo: 1 minute, 45 seconds\n' > good
+diff -u good x
+qlop -C -tM -f ${ml} > x
+printf '1600100000 >>> dev-libs/baz: 183845\n1600300000 *** sync: 60\n1600400000 <<< dev-libs/foo: 3\n1600400001 <<< dev-libs/bar: 3\n1600500001 >>> dev-libs/foo: 100\n1600500101 >>> dev-libs/foo: 120\n1600500221 >>> dev-libs/foo: 130\n1600500351 >>> dev-libs/foo: 135\n1600500486 >>> dev-libs/foo: 105\n' > good
+diff -u good x
+qlop -C -e -mM -f ${ml} > x
+printf '1600283845 >>> dev-libs/baz\n1600500101 >>> dev-libs/foo\n1600500221 >>> dev-libs/foo\n1600500351 >>> dev-libs/foo\n1600500486 >>> dev-libs/foo\n1600500591 >>> dev-libs/foo\n' > good
+diff -u good x
+qlop -C -F '%[PN]' -qm -f ${ml} > x
+printf 'baz\nfoo\nfoo\nfoo\nfoo\nfoo\n' > good
+diff -u good x
+tpass "qlop -t plain, human and machine elapsed forms, -e end times, -F format"
+
+qlop -C -qm -f ${ml} > x
+printf 'dev-libs/baz\ndev-libs/foo\ndev-libs/foo\ndev-libs/foo\ndev-libs/foo\ndev-libs/foo\n' > good
+diff -u good x
+qlop -C -qmt -f ${ml} > x
+printf 'dev-libs/baz: 51:04:05\ndev-libs/foo: 1m40s\ndev-libs/foo: 2m00s\ndev-libs/foo: 2m10s\ndev-libs/foo: 2m15s\ndev-libs/foo: 1m45s\n' > good
+diff -u good x
+qlop -C -qu -f ${ml} > x
+printf 'dev-libs/foo\ndev-libs/bar\n' > good
+diff -u good x
+qlop -C -qs -f ${ml} > x
+printf 'sync\n' > good
+diff -u good x
+qlop -C -qst -f ${ml} > x
+printf 'sync: 1m00s\n' > good
+diff -u good x
+qlop -C -s -f ${ml} > x
+printf '2020-09-16T23:46:40 *** sync\n' > good
+diff -u good x
+qlop -C -st -f ${ml} > x
+printf '2020-09-16T23:46:40 *** sync: 1m00s\n' > good
+diff -u good x
+qlop -C -U -f ${ml} > x
+printf '2020-09-19T07:21:42 <<< dev-libs/foo\n2020-09-19T07:23:42 <<< dev-libs/foo\n2020-09-19T07:25:52 <<< dev-libs/foo\n2020-09-19T07:28:07 <<< dev-libs/foo\n' > good
+diff -u good x
+qlop -C -u dev-libs/foo -f ${ml} > x
+printf '2020-09-18T03:33:20 <<< dev-libs/foo\n' > good
+diff -u good x
+qlop -C -qut -f ${ml} > x
+printf 'dev-libs/foo: 3s\ndev-libs/bar: 3s\n' > good
+diff -u good x
+qlop -C -Et -f ${as}/sync.log > x
+printf 'D    sys-fs/devfsd-1.3.25-r8: 1s\n' > good
+diff -u good x
+tpass "qlop quiet forms, sync in the latest log format, autoclean and named unmerges"
+
+qlop -C -E -f ${ml} > x
+printf 'N    dev-libs/foo-1.0\n  U  dev-libs/foo-2.0 [1.0]\n  U  dev-libs/foo-2.0-r1 [2.0]\n R   dev-libs/foo-2.0-r1\n  UD dev-libs/foo-1.0 [2.0-r1]\n' > good
+diff -u good x
+qlop -C -E dev-libs/foo -f ${ml} > x
+diff -u good x
+qlop -C -Ev -f ${ml} > x
+printf 'emerge -av1DucC --keep-going @world world system =dev-libs/foo-2.0 dev-libs/bar\n' | cat - good > goodv
+diff -u goodv x
+qlop -C -Et -f ${ml} > x
+printf 'N    dev-libs/foo-1.0: 1m40s\n  U  dev-libs/foo-2.0 [1.0]: 2m00s\n  U  dev-libs/foo-2.0-r1 [2.0]: 2m10s\n R   dev-libs/foo-2.0-r1: 2m15s\n  UD dev-libs/foo-1.0 [2.0-r1]: 1m45s\n' > good
+diff -u good x
+qlop -C -Ev -f ${as}/sync.log > x
+printf 'emerge unmerge devfsd\nD    sys-fs/devfsd-1.3.25-r8\nemerge sync\nemerge --quiet --keep-going -v --nospinner -1 --quiet-build=n --sync\n' > good
+diff -u good x
+tpass "qlop -E shows new, upgrade, reinstall, downgrade and unmerge steps like emerge -v"
+
+qlop -C -a -f ${ml} > x
+printf 'dev-libs/baz: 51:04:05 average for 1 merge\ndev-libs/foo: 1m58s average for 5 merges\ndev-libs/bar: 3s average for 1 unmerge\ndev-libs/foo: 3s average for 1 unmerge\nsync: 1m00s average for 1 sync\n' > good
+diff -u good x
+qlop -C -c -f ${ml} > x
+printf 'total: 51:15:01 for 6 merges, 2 unmerges, 1 sync\n' >> good
+diff -u good x
+qlop -C -av -f ${ml} > x
+printf 'dev-libs/baz-1.0: 51:04:05 average for 1 merge\ndev-libs/foo-2.0-r1: 2m12s average for 2 merges\ndev-libs/foo-2.0: 2m00s average for 1 merge\ndev-libs/foo-1.0: 1m42s average for 2 merges\ndev-libs/bar-1.0: 3s average for 1 unmerge\ndev-libs/foo-1.0: 3s average for 1 unmerge\nsync: 1m00s average for 1 sync\n' > good
+diff -u good x
+qlop -C -cH -f ${ml} > x
+printf 'dev-libs/baz: 2 days, 3 hours, 4 minutes, 5 seconds average for 1 merge\ndev-libs/foo: 1 minute, 58 seconds average for 5 merges\ndev-libs/bar: 3 seconds average for 1 unmerge\ndev-libs/foo: 3 seconds average for 1 unmerge\nsync: 1 minute average for 1 sync\ntotal: 2 days, 3 hours, 15 minutes, 1 second for 6 merges, 2 unmerges, 1 sync\n' > good
+diff -u good x
+qlop -C -aU -f ${ml} > x
+printf 'dev-libs/foo: 2s average for 4 unmerges\n' > good
+diff -u good x
+tpass "qlop -a, -av, -aU, -c and -cH averages and totals"
+
+qlop -C -p =dev-libs/foo-2.0 -f ${ml} > x
+printf 'dev-libs/foo: prediction 2m12s\n' > good
+diff -u good x
+qlop -C -p dev-libs/foo-2.0-r2 -f ${ml} > x
+diff -u good x
+qlop -C -p '>dev-libs/foo-1.0' -f ${ml} > x
+diff -u good x
+qlop -C -p dev-libs/foo-3.0 -f ${ml} > x
+printf 'dev-libs/foo: prediction 2m24s\n' > good
+diff -u good x
+qlop -C -p dev-libs/foo -f ${ml} > x
+diff -u good x
+qlop -C -pM dev-libs/foo-3.0 dev-libs/baz -f ${ml} > x
+printf 'dev-libs/foo: prediction 144\n' > good
+diff -u good x
+! qlop -C -p -f ${ml} > x 2>&1
+grep -q -- "-p requires at least one atom" x
+qlop -C -p dev-libs/foo-0.5 dev-libs/baz-0.5 -f ${ml} > x
+[[ ! -s x ]]
+tpass "qlop -p predicts from the same version, the previous revision or the version trend"
+
+qlop -C -mM -f ${ml} -d @1600100000 > x
+printf '1600100000 >>> dev-libs/baz\n1600500001 >>> dev-libs/foo\n1600500101 >>> dev-libs/foo\n1600500221 >>> dev-libs/foo\n1600500351 >>> dev-libs/foo\n1600500486 >>> dev-libs/foo\n' > good
+diff -u good x
+qlop -C -mM -f ${ml} -d 2020-09-14T16:13:20 > x
+diff -u good x
+qlop -C -mM -f ${ml} -d '%d.%m.%Y|14.09.2020' > x
+diff -u good x
+qlop -C -mM -f ${ml} -d 1600500000 -d 1600500200 > x
+printf '1600500001 >>> dev-libs/foo\n' > good
+diff -u good x
+qlop -C -qm -f ${ml} -d '30 years ago' > x
+printf 'dev-libs/baz\ndev-libs/foo\ndev-libs/foo\ndev-libs/foo\ndev-libs/foo\ndev-libs/foo\n' > good
+diff -u good x
+for rel in '1 day ago' '2 weeks ago' '13 months ago' '10 months ago' '1 year' today yesterday ; do
+	qlop -C -qm -f ${ml} -d "${rel}" > x
+	[[ ! -s x ]]
+done
+for bad in '%Y|abc' 2020-13-45 'foo bar' '3 days later' '5 fortnights ago' ; do
+	! qlop -C -m -f ${ml} -d "${bad}" > x 2>&1
+	grep -q "invalid date: ${bad}" x
+done
+! qlop -C -m -f ${ml} -d 1 -d 2 -d 3 > x 2>&1
+grep -q "too many -d options" x
+! qlop -C -m -f ${ml} -d 1 -d 'no such date' > x 2>&1
+grep -q "invalid date: no such date" x
+qlop -C -p dev-libs/foo-1.0-r5 -f ${ml} > x
+printf 'dev-libs/foo: prediction 1m42s\n' > good
+diff -u good x
+tpass "qlop -d accepts epoch, ISO, custom, relative and range forms, rejects malformed ones"
+
+qlop -C -a -p dev-libs/foo -f ${ml} > x 2>&1
+printf 'qlop: -a and -p cannot be used together, dropping -a\ndev-libs/foo: prediction 2m24s\n' > good
+diff -u good x
+qlop -C -at dev-libs/foo -f ${ml} > x 2>&1
+printf 'qlop: -a/-p (or -c) and -t cannot be used together, dropping -t\ndev-libs/foo: 1m58s average for 5 merges\ndev-libs/foo: 3s average for 1 unmerge\n' > good
+diff -u good x
+qlop -C -arr -f ${ml} > x 2>&1
+printf 'qlop: -a/-p (or -c) and -r cannot be used together, dropping -a/-p\nqlop: running without /proc scanning, heuristics only\n' > good
+diff -u good x
+qlop -C -HM -st -f ${ml} > x 2>&1
+printf 'qlop: -H and -M cannot be used together, dropping -M: only humans make mistakes\n2020-09-16T23:46:40 *** sync: 1 minute\n' > good
+diff -u good x
+qlop -C -s dev-libs/foo -f ${ml} > x 2>&1
+printf 'qlop: -s cannot be used when specifying atoms, dropping -s\n' > good
+diff -u good x
+qlop -C -l -d 1600500000 -mM -f ${ml} > x 2>&1
+printf 'qlop: -l and -d cannot be used together, dropping -l\n1600500001 >>> dev-libs/foo\n1600500101 >>> dev-libs/foo\n1600500221 >>> dev-libs/foo\n1600500351 >>> dev-libs/foo\n1600500486 >>> dev-libs/foo\n' > good
+diff -u good x
+! qlop -C -f a -f b > x 2>&1
+grep -q "Only use -f once" x
+! qlop -C -w ${ml} -w ${ml} > x 2>&1
+grep -q "Only use -w once" x
+! qlop -C -w /nonexistent > x 2>&1
+grep -q "failed to open file /nonexistent" x
+tpass "qlop option conflicts are reported and resolved"
+
+printf 'dev-libs/foo\n  dev-libs/bar\n' > atoms.txt
+qlop -C -qu -w atoms.txt -f ${ml} > x
+printf 'dev-libs/foo\ndev-libs/bar\n' > good
+diff -u good x
+mkdir -p rootdir/log
+cp ${ml} rootdir/log/emerge.log
+qlop -C --root ${PWD}/rootdir -qs -f /log/emerge.log > x
+printf 'sync\n' > good
+diff -u good x
+EMERGE_LOG_DIR=${PWD}/rootdir/log qlop -C -qs > x
+diff -u good x
+! qlop -C -f /nonexistent > x 2>&1
+grep -q "Could not open logfile '/nonexistent'" x
+tpass "qlop -w atoms file, --root prefixed log, EMERGE_LOG_DIR default, missing log fails"
+
+while [[ $(date +%N | sed 's/^0*//') -gt 200000000 ]] ; do sleep 0.05 ; done
+now=$(date +%s)
+printf '%s: Started emerge on: x\n%s:  *** emerge  run slow\n%s:  >>> emerge (1 of 2) dev-libs/run-1.0 to /\n%s:  ::: completed emerge (1 of 2) dev-libs/run-1.0 to /\n%s:  >>> emerge (2 of 2) dev-libs/run-1.0 to /\n%s:  ::: completed emerge (2 of 2) dev-libs/run-1.0 to /\n%s:  >>> emerge (3 of 3) dev-libs/slow-1.0 to /\n%s:  ::: completed emerge (3 of 3) dev-libs/slow-1.0 to /\n%s:  *** emerge --sync\n%s:  === sync\n%s: === Sync completed for gentoo\n%s:  *** terminating.\n' \
+	$((now-5000)) $((now-5000)) $((now-5000)) $((now-4900)) $((now-4900)) $((now-4780)) $((now-4780)) $((now-4680)) $((now-4600)) $((now-4600)) $((now-4540)) $((now-4500)) > running.log
+printf '%s:  >>> emerge (1 of 1) dev-libs/late-1.0 to /\n%s:  ::: completed emerge (1 of 1) dev-libs/late-1.0 to /\n%s: === Unmerging... (dev-libs/old-0.9)\n%s:  >>> unmerge success: dev-libs/old-0.9\n%s: === Unmerging... (dev-libs/gone-0.8)\n%s:  >>> unmerge success: dev-libs/gone-0.8\n%s: === Unmerging... (dev-libs/gone-0.9)\n%s:  >>> unmerge success: dev-libs/gone-0.9\n' \
+	$((now-4450)) $((now-4400)) $((now-4400)) $((now-4397)) $((now-4390)) $((now-4385)) $((now-4300)) $((now-4270)) >> running.log
+printf '%s: Started emerge on: y\n%s:  *** emerge  run slow old\n%s:  >>> emerge (1 of 9) dev-libs/stale-1.0 to /\n%s: === Unmerging... (dev-libs/ancient-1.0)\n%s:  >>> emerge (1 of 4) dev-libs/run-1.1 to /\n%s:  >>> emerge (4 of 4) dev-libs/run-1.1 to /\n%s:  >>> emerge (5 of 5) dev-libs/late-1.1 to /\n%s:  >>> emerge (2 of 4) dev-libs/slow-1.1 to /\n%s:  >>> emerge (3 of 4) dev-libs/slow-1.1 to /\n%s:  === Unmerging... (dev-libs/run-1.0)\n%s: === Unmerging... (dev-libs/old-1.0)\n%s: === Unmerging... (dev-libs/old-1.0)\n%s: === Unmerging... (dev-libs/gone-1.0)\n%s:  === sync\n' \
+	$((now-2000000)) $((now-2000000)) $((now-2000000)) $((now-1999999)) $((now-200)) $((now-115)) $((now-60)) $((now-20)) $((now-19)) $((now-15)) $((now-14)) $((now-14)) $((now-12)) $((now-10)) >> running.log
+qlop -C -Mrr -f running.log > x 2> err
+printf '%s *** sync... ETA: 50\n%s >>> dev-libs/slow... (3 of 4) ETA: 81\n%s >>> dev-libs/late... +10\n%s >>> dev-libs/run... (4 of 4) ETA: 5\n%s <<< dev-libs/old... +11\n%s <<< dev-libs/gone... ETA: 5\n' \
+	$((now-10)) $((now-19)) $((now-60)) $((now-115)) $((now-14)) $((now-12)) > good
+diff -u good x
+qlop -C -Mrrt -f running.log > x 2> err
+printf '%s *** sync: 10... ETA: 50\n%s >>> dev-libs/slow: 19... (3 of 4) ETA: 81\n%s >>> dev-libs/late: 60... +10\n%s >>> dev-libs/run: 115... (4 of 4) ETA: 5\n%s <<< dev-libs/old: 14... +11\n%s <<< dev-libs/gone: 12... ETA: 5\n' \
+	$((now-10)) $((now-19)) $((now-60)) $((now-115)) $((now-14)) $((now-12)) > good
+diff -u good x
+qlop -C -Mrrv -f running.log > x 2> err
+printf '%s *** sync... ETA: 50\n%s >>> dev-libs/slow-1.1... (3 of 4) ETA: 81 (average run)\n%s >>> dev-libs/late-1.1... +10\n%s >>> dev-libs/run-1.1... (4 of 4) ETA: 5 (longest run)\n%s <<< dev-libs/old-1.0... +11\n%s <<< dev-libs/gone-1.0... ETA: 5 (average run)\n' \
+	$((now-10)) $((now-19)) $((now-60)) $((now-115)) $((now-14)) $((now-12)) > good
+diff -u good x
+qlop -C -Mrr -uU -f running.log > x 2> err
+printf '%s <<< dev-libs/run... ETA: unknown\n%s <<< dev-libs/old... +11\n%s <<< dev-libs/gone... ETA: 5\n' \
+	$((now-15)) $((now-14)) $((now-12)) > good
+diff -u good x
+printf '%s:  *** emerge --unmerge x\n%s: === Unmerging... (dev-libs/x-1)\n%s:  *** exiting successfully.\n%s:  *** terminating.\n' \
+	$((now-30)) $((now-29)) $((now-28)) $((now-28)) > term.log
+qlop -C -Mrr -u -f term.log > x 2> err
+[[ ! -s x ]]
+qlop -C -Mrr -s -f running.log > x 2> err
+printf '%s *** sync... ETA: 50\n' $((now-10)) > good
+diff -u good x
+qlop -C -Mrr -st -f running.log > x 2> err
+printf '%s *** sync: 10... ETA: 50\n' $((now-10)) > good
+diff -u good x
+printf '%s:  === sync\n' $((now-100)) > longsync.log
+qlop -C -Mrr -s -f longsync.log > x 2> err
+printf '%s *** sync... ETA: unknown\n' $((now-100)) > good
+diff -u good x
+qlop -C -Mrr -f ${as}/aborts.log > x 2> err
+[[ ! -s x ]]
+tpass "qlop -rr estimates running merges, unmerges and syncs from the log history"
+
+rm -rf x good goodv err atoms.txt rootdir running.log longsync.log term.log
 
 cleantmpdir
 
