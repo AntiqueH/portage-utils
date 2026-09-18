@@ -26013,15 +26013,49 @@ int qmerge_main(int argc, char **argv)
 
 		array_for_each(keys, n, k) {
 			atom_ctx *a = atom_explode(k);
+			char     *picked = NULL;
 
 			if (a == NULL)
 				continue;
+			if (a->CATEGORY == NULL && a->PN != NULL) {
+				bool ambiguous = false;
+				set *cands = NULL;
+
+				picked = qm_pick_category(a->PN, &ambiguous, &cands);
+				if (ambiguous) {
+					array  *cl = cands != NULL ? set_keys(cands) : NULL;
+					size_t  ci;
+					char   *cc;
+
+					warn("the short package name '%s' is ambiguous, "
+						 "specify one of the following fully-qualified "
+						 "names instead:", a->PN);
+					if (cl != NULL) {
+						array_sort(cl, qm_strcmp_cb);
+						array_for_each(cl, ci, cc)
+							warn("    %s/%s", cc, a->PN);
+						array_free(cl);
+					}
+					if (cands != NULL)
+						free_set(cands);
+					atom_implode(a);
+					array_free(keys);
+					ret = EXIT_FAILURE;
+					goto cleanup;
+				}
+				if (cands != NULL)
+					free_set(cands);
+				if (picked != NULL)
+					a->CATEGORY = picked;
+			}
 			if (best_version(a, BV_INSTALLED) != NULL) {
 				atom_implode(a);
+				free(picked);
 				del_set(k, todo, &ok);
 				continue;
 			}
 			atom_implode(a);
+			free(picked);
 		}
 		array_free(keys);
 		if (cnt_set(todo) == 0) {

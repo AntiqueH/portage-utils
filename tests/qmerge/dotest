@@ -3995,6 +3995,51 @@ tend $? "qmerge-test: [NR] -n merges a target that is not installed" \
 	|| die "${outn2}"
 yes | qmerge -FU dev-libs/wtfail >/dev/null 2>&1
 
+mkdir -p "${ROOT}/packages/dev-cats"
+(
+	cd wtf
+	echo dev-cats > xp/CATEGORY
+	( cd xp && qxpak -c ../amb.xpak $(ls) )
+	echo dev-libs > xp/CATEGORY
+	qtbz2 -j b.tar.bz2 amb.xpak "${ROOT}/packages/dev-cats/wtfail-1.0.tbz2"
+)
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge dev-libs/wtfail >/dev/null 2>&1
+qmerge --deselect dev-libs/wtfail >/dev/null 2>&1
+outn3=$(qmerge --deselect wtfail 2>&1)
+[[ ${outn3} == *"No matching atoms"* ]]
+tend $? "qmerge-test: [NR] deselect of a bare name absent from world" \
+	|| die "${outn3}"
+wpre=$(cat "${wtfile}" 2>/dev/null; echo END)
+outn4=$(yes | qmerge -n wtfail 2>&1)
+rcn4=$?
+wpost=$(cat "${wtfile}" 2>/dev/null; echo END)
+[[ ${rcn4} -ne 0 && ${outn4} == *"'wtfail' is ambiguous"* && \
+   ${outn4} == *"dev-cats/wtfail"* && ${outn4} == *"dev-libs/wtfail"* && \
+   ${outn4} != *"OK add these packages"* && ${outn4} != *"nothing to do"* && \
+   ${wpre} == "${wpost}" ]]
+tend $? "qmerge-test: [NR] -n refuses a bare name found in two categories" \
+	|| die "rc=${rcn4} ${outn4}"
+outn5=$(qmerge --deselect wtfail 2>&1)
+[[ ${outn5} == *"No matching atoms"* ]] && \
+	! grep -q "wtfail" "${wtfile}" 2>/dev/null
+tend $? "qmerge-test: [NR] deselect still finds nothing after the refusal" \
+	|| die "${outn5} world=$(cat "${wtfile}" 2>/dev/null)"
+outn6=$(yes | qmerge -n dev-libs/wtfail 2>&1)
+[[ ${outn6} != *"Installing"* && \
+   ${outn6} == *"Recording dev-libs/wtfail"* ]] && \
+	grep -q "dev-libs/wtfail" "${wtfile}"
+tend $? "qmerge-test: [NR] -n with the category records next to the twin" \
+	|| die "${outn6} world=$(cat "${wtfile}" 2>/dev/null)"
+outn7=$(qmerge --deselect wtfail 2>&1)
+[[ ${outn7} == *'Removing dev-libs/wtfail from "world"'* ]] && \
+	! grep -q "dev-libs/wtfail" "${wtfile}" 2>/dev/null
+tend $? "qmerge-test: [NR] deselect of the bare name removes the entry" \
+	|| die "${outn7} world=$(cat "${wtfile}" 2>/dev/null)"
+rm -rf "${ROOT}/packages/dev-cats"
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge -FU dev-libs/wtfail >/dev/null 2>&1
+
 # ..MORE TESTS..
 # a corrupt cached binpkg is moved aside as .checksum_failure and
 # refetched once. with no reachable source the merge still fails.
