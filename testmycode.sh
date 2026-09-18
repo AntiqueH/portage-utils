@@ -258,6 +258,8 @@ SAN_CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fsaniti
 SAN_LDFLAGS="-fsanitize=address,undefined"
 INT_SAN="address,undefined,integer,implicit-conversion"
 MODERN_C="-Werror=implicit-function-declaration -Werror=implicit-int -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=strict-prototypes"
+HARDENED_CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-clash-protection -fcf-protection=full -fstack-protector-all -ftrivial-auto-var-init=zero -Wtrampolines -fPIE"
+HARDENED_LDFLAGS="-Wl,-z,relro,-z,now -pie"
 WARN_KITCHEN="-Wall -Wextra -Wshadow -Wcast-qual -Wwrite-strings -Wformat=2 -Wformat-overflow=2 -Wformat-truncation=2 -Wstringop-overflow=4 -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wvla -Walloca -Wmissing-prototypes -Wold-style-definition -Werror"
 WARN_ADVISORY="-Wpedantic -Wundef -Wconversion -Wsign-conversion"
 # clang-tidy check set with bugprone/cert/clang-analyzer
@@ -343,13 +345,16 @@ clang_gate() {
 }
 
 opt_gate() {
-    show "check gate opt: optimization + modern-C (-O3 -Werror)"
+    show "check gate opt: optimization + hardening + modern-C (-O3 hardened -Werror) + check"
     make clean >>"$QOUT" 2>&1
-    if ./configure --enable-werror "${FEATURES[@]}" CFLAGS="-O3 -g $MODERN_C" >>"$QOUT" 2>&1 \
-            && make -j"$CPU_JOBS"; then
-        note PASS "gcc -Werror -O3"
+    if ./configure --enable-werror "${FEATURES[@]}" \
+            CFLAGS="-O3 -g $MODERN_C $HARDENED_CFLAGS" \
+            LDFLAGS="$HARDENED_LDFLAGS" >>"$QOUT" 2>&1 \
+            && make -j"$CPU_JOBS" \
+            && make check; then
+        note PASS "gcc -O3 hardened + check"
     else
-        note FAIL "gcc -Werror -O3"
+        note FAIL "gcc -O3 hardened + check"
     fi
 }
 
