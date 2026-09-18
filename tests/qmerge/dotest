@@ -4803,6 +4803,14 @@ dc_vdb dc-libs/A-1 0 "dc-libs/B"
 dc_vdb dc-libs/B-1 0 ""
 dc_vdb dc-libs/C-1 0 ""
 dc_world dc-libs/A
+outdc=$(yes n | qmerge -c 2>&1); rcdc=$?
+[[ ${rcdc} -eq 130 && ${outdc} == *"Quitting."* && \
+   ${outdc} == *"Number to remove:     1"* && \
+   ${outdc} != *"Number removed"* && ${outdc} != *">>> Unmerging"* && \
+   -d ${ROOT}/var/db/pkg/dc-libs/C-1 ]]
+tend $? "qmerge-test: [DC] a No answer quits with the pretend summary" \
+	|| die "rc=${rcdc} ${outdc}"
+qm_merged dc-libs/C-1 "[DC] a No answer removes nothing"
 outdc=$(yes | qmerge -c 2>&1); rcdc=$?
 [[ ${rcdc} -eq 0 && ${outdc} == *">>> Unmerging (1 of 1) dc-libs/C-1..."* && \
    ${outdc} == *"Number removed:       1"* ]]

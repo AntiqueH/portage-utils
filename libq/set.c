@@ -5,6 +5,7 @@
  * Copyright 2005-2010 Ned Ludd        - <solar@gentoo.org>
  * Copyright 2005-2014 Mike Frysinger  - <vapier@gentoo.org>
  * Copyright 2019-     Fabian Groffen  - <grobian@gentoo.org>
+ * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  */
 
 #include "main.h"
@@ -29,8 +30,9 @@ struct setelem_ {
 
 #define _SET_HASH_SIZE 128
 struct set_ {
-  set_elem_t *buckets[_SET_HASH_SIZE];
-  size_t      len;
+  set_elem_t **buckets;
+  size_t       nbuckets;
+  size_t       len;
 };
 
 static unsigned int
@@ -42,13 +44,53 @@ fnv1a32(const char *s)
   return ret;
 }
 
+/* double the bucket table once the chains average two elements, so
+ * lookups and tail appends stay constant for any set size.
+ * bug #19 for qmerge https://github.com/AntiqueH/portage-utils/issues/19  */
+static void
+set_grow(set_t *q)
+{
+  set_elem_t **nb;
+  set_elem_t  *w;
+  set_elem_t  *e;
+  size_t       nn;
+  size_t       i;
+
+  if (q->len <= q->nbuckets * 2)
+    return;
+
+  nn = q->nbuckets * 2;
+  nb = xzalloc(sizeof(*nb) * nn);
+  for (i = 0; i < q->nbuckets; i++)
+  {
+    for (w = q->buckets[i]; w != NULL; w = e)
+    {
+      set_elem_t **tail;
+      size_t       pos = w->hash % nn;
+
+      e = w->next;
+      w->next = NULL;
+      for (tail = &nb[pos]; *tail != NULL; tail = &(*tail)->next)
+        ;
+      *tail = w;
+    }
+  }
+  free(q->buckets);
+  q->buckets  = nb;
+  q->nbuckets = nn;
+}
+
 /* create a set */
 set_t *set_new
 (
   void
 )
 {
-  return xzalloc(sizeof(set_t));
+  set_t *q = xzalloc(sizeof(set_t));
+
+  q->nbuckets = _SET_HASH_SIZE;
+  q->buckets  = xzalloc(sizeof(*q->buckets) * q->nbuckets);
+  return q;
 }
 
 /* add elem to a set (unpure: could add duplicates, basically hash) */
@@ -60,7 +102,7 @@ set_t *set_add
 {
   set_elem_t *ll = xzalloc(sizeof(*ll));
   set_elem_t *w;
-  int         pos;
+  size_t      pos;
 
   if (s == NULL)
     s = set_new();
@@ -68,7 +110,7 @@ set_t *set_add
   ll->name = xstrdup(key);
   ll->hash = fnv1a32(ll->name);
 
-  pos = ll->hash % _SET_HASH_SIZE;
+  pos = ll->hash % s->nbuckets;
   if (s->buckets[pos] == NULL)
   {
     s->buckets[pos] = ll;
@@ -81,6 +123,7 @@ set_t *set_add
   }
 
   s->len++;
+  set_grow(s);
   return s;
 }
 
@@ -95,14 +138,14 @@ set_t *set_add_unique
   set_elem_t  *ll;
   set_elem_t  *w;
   unsigned int hash;
-  int          pos;
+  size_t       pos;
   bool         uniq = false;
 
   if (q == NULL)
     q = set_new();
 
   hash = fnv1a32(name);
-  pos  = hash % _SET_HASH_SIZE;
+  pos  = hash % q->nbuckets;
 
   if (q->buckets[pos] == NULL)
   {
@@ -137,7 +180,10 @@ set_t *set_add_unique
   }
 
   if (uniq)
+  {
     q->len++;
+    set_grow(q);
+  }
   if (unique)
     *unique = uniq;
   return q;
@@ -198,14 +244,20 @@ set_t *set_clone
   set_t      *ret;
   set_elem_t *w;
   set_elem_t *e;
-  int         i;
+  size_t      i;
 
   if (q == NULL)
     return NULL;
 
   ret = set_new();
+  if (q->nbuckets != ret->nbuckets)
+  {
+    free(ret->buckets);
+    ret->nbuckets = q->nbuckets;
+    ret->buckets  = xzalloc(sizeof(*ret->buckets) * ret->nbuckets);
+  }
 
-  for (i = 0; i < _SET_HASH_SIZE; i++)
+  for (i = 0; i < q->nbuckets; i++)
   {
     for (w = q->buckets[i]; w != NULL; w = w->next)
     {
@@ -232,13 +284,13 @@ const char *set_get
   set_elem_t   *w;
   const char   *found;
   unsigned int  hash;
-  int           pos;
+  size_t        pos;
 
   if (q == NULL)
     return NULL;
 
   hash = fnv1a32(name);
-  pos  = hash % _SET_HASH_SIZE;
+  pos  = hash % q->nbuckets;
 
   found = NULL;
   if (q->buckets[pos] != NULL)
@@ -273,7 +325,7 @@ void *set_delete
   set_elem_t  *w;
   void        *ret;
   unsigned int hash;
-  int          pos;
+  size_t       pos;
   bool         rmd;
 
   if (q == NULL)
@@ -284,7 +336,7 @@ void *set_delete
   }
 
   hash = fnv1a32(s);
-  pos  = hash % _SET_HASH_SIZE;
+  pos  = hash % q->nbuckets;
 
   ret = NULL;
   rmd = false;
@@ -329,8 +381,7 @@ bool set_has_intersection
 )
 {
   set_t      *s;
-  set_elem_t *w1;
-  set_elem_t *w2;
+  set_elem_t *w;
   size_t      i;
 
   if (l == NULL ||
@@ -348,16 +399,12 @@ bool set_has_intersection
     s = r;
   }
 
-  for (i = 0; i < _SET_HASH_SIZE; i++)
+  for (i = 0; i < s->nbuckets; i++)
   {
-    for (w1 = s->buckets[i]; w1 != NULL; w1 = w1->next)
+    for (w = s->buckets[i]; w != NULL; w = w->next)
     {
-      for (w2 = l->buckets[i]; w2 != NULL; w2 = w2->next)
-      {
-        if (w1->hash == w2->hash &&
-            strcmp(w1->name, w2->name) == 0)
-          return true;
-      }
+      if (set_get(l, w->name) != NULL)
+        return true;
     }
   }
 
@@ -380,12 +427,12 @@ void clear_set
 {
   set_elem_t *w;
   set_elem_t *e;
-  int         i;
+  size_t      i;
 
   if (q == NULL)
     return;
 
-  for (i = 0; i < _SET_HASH_SIZE; i++)
+  for (i = 0; i < q->nbuckets; i++)
   {
     for (w = q->buckets[i]; w != NULL; w = e)
     {
@@ -407,6 +454,7 @@ void set_free(set_t *q)
     return;
 
   clear_set(q);
+  free(q->buckets);
   free(q);
 }
 
@@ -415,9 +463,9 @@ static void
 set_print(const set_t *q)
 {
   set_elem_t *w;
-  int         i;
+  size_t      i;
 
-  for (i = 0; i < _SET_HASH_SIZE; i++)
+  for (i = 0; i < q->nbuckets; i++)
   {
     for (w = q->buckets[i]; w != NULL; w = w->next)
       puts(w->name);
@@ -430,7 +478,7 @@ hash_t *hash_new
   void
 )
 {
-  return xzalloc(sizeof(hash_t));
+  return set_new();
 }
 
 /* add val to hash under key, return existing value when key
@@ -446,13 +494,13 @@ hash_t *hash_add
   set_elem_t  *ll;
   set_elem_t  *w;
   unsigned int hash;
-  int          pos;
+  size_t       pos;
 
   if (q == NULL)
     q = hash_new();
 
   hash = fnv1a32(key);
-  pos  = hash % _SET_HASH_SIZE;
+  pos  = hash % q->nbuckets;
 
   if (prevval != NULL)
     *prevval = NULL;
@@ -487,6 +535,7 @@ hash_t *hash_add
   }
 
   q->len++;
+  set_grow(q);
   return q;
 }
 
@@ -500,13 +549,13 @@ void *hash_get
 {
   set_elem_t  *w;
   unsigned int hash;
-  int          pos;
+  size_t       pos;
 
   if (q == NULL)
     return NULL;
 
   hash = fnv1a32(key);
-  pos  = hash % _SET_HASH_SIZE;
+  pos  = hash % q->nbuckets;
 
   if (q->buckets[pos] != NULL)
   {
@@ -544,7 +593,7 @@ array *hash_keys
     return NULL;
 
   ret = array_new();
-  for (i = 0; i < _SET_HASH_SIZE; i++)
+  for (i = 0; i < h->nbuckets; i++)
   {
     for (w = h->buckets[i]; w != NULL; w = w->next)
       array_append(ret, w->name);
@@ -566,7 +615,7 @@ array *hash_values
     return NULL;
 
   ret = array_new();
-  for (i = 0; i < _SET_HASH_SIZE; i++)
+  for (i = 0; i < h->nbuckets; i++)
   {
     for (w = h->buckets[i]; w != NULL; w = w->next)
       array_append(ret, w->val);

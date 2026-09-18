@@ -24796,7 +24796,7 @@ qm_depclean_run(set *todo)
 	if (counts[0] > 0)
 		printf("Packages in profile:  %zu\n", counts[0]);
 	printf("Required packages:    %zu\n", res.required);
-	if (pretend)
+	if (pretend || rc == 130)
 		printf("Number to remove:     %zu\n", array_cnt(res.cleanlist));
 	else
 		printf("Number removed:       %zu\n", array_cnt(res.cleanlist));
