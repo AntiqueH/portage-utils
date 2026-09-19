@@ -902,11 +902,9 @@ portage_vars=(
 qbin=$(PATH="${BINDIR}:${PATH}" type -P q)
 
 if [[ -n ${qbin} ]]; then
-	while IFS= read -r qline ; do
-		qvar=${qline%%=*}
-		[[ -n ${!qvar+set} ]] || eval "${qline}"
-	done < <("${qbin}" -e 2>/dev/null | \
+	eval $("${qbin}" -e 2>/dev/null | \
 		grep -E '^(CONFIG_PROTECT|CONFIG_PROTECT_MASK|FEATURES|PORTAGE_CONFIGROOT|PORTAGE_TMPDIR|ROOT|USERLAND|NOCOLOR|NO_COLOR)=')
+	[[ -n ${PORTAGE_CONFIGROOT} ]] && PORTAGE_CONFIGROOT=${PORTAGE_CONFIGROOT%/}/
 	EROOT=${EROOT:-${ROOT:-/}}
 fi
 : "${CONFIG_PROTECT:=/etc /usr/share}"

@@ -22,7 +22,7 @@ mkroot() {
 qeu() {
 	local root=$1; shift
 	ETC_UPDATE_OS_FAMILY=gentoo \
-	CONFIG_PROTECT="/etc" CONFIG_PROTECT_MASK="${QEU_MASK:-}" \
+	CONFIG_PROTECT="${QEU_PROTECT-/etc}" CONFIG_PROTECT_MASK="${QEU_MASK:-}" \
 	PORTAGE_CONFIGROOT="${root}/" EROOT="${root}" ROOT="${root}" \
 	PORTAGE_TMPDIR="${root}/tmp" \
 	FEATURES="" USERLAND=GNU NO_COLOR=1 NOCOLOR=true \
@@ -159,6 +159,16 @@ out=$(QEU_MASK="/etc/masked" qeu "${R}" -p 2>&1)
    ! -e ${R}/etc/masked/._cfg0000_mk.conf ]] && \
 	grep -q 'v=new' "${R}/etc/masked/mk.conf"
 tend $? "qetc-update: masked path updated immediately" || die "${out}"
+
+mkroot r11
+mkdir -p "${R}/etc/portage"
+printf 'CONFIG_PROTECT="/etc"\n' > "${R}/etc/portage/make.conf"
+printf 'v=old\n' > "${R}/etc/pe.conf"
+printf 'v=new\n' > "${R}/etc/._cfg0000_pe.conf"
+out=$(QEU_PROTECT="/var/bind" qeu "${R}" --automode -3 2>&1)
+[[ ! -e ${R}/etc/._cfg0000_pe.conf ]] && grep -q 'v=new' "${R}/etc/pe.conf"
+tend $? "qetc-update: CONFIG_PROTECT comes from the portage config, not the shell" \
+	|| die "${out}"
 
 cleantmpdir
 
