@@ -312,7 +312,7 @@ summary=()
 rc=0
 
 show() {
-    printf '\n\033[1;34m==== %s ====\033[0m\n' "$*"
+    printf '\n\033[1;34m==== %s ====\033[0m  [%s]\n' "$*" "$(date +%H:%M:%S)"
 }
 
 note() {
@@ -1131,10 +1131,10 @@ restore_default() {
 # Each group has its own definition and purpose of course.
 parallel_gate_group() {
     case "$1" in
-        fuzz|cbmc|cppcheck)                 echo 1 ;;
+        fuzz|cbmc|cppcheck|tidy)            echo 1 ;;
         asan|integer|tsan|heap)             echo 2 ;;
-        gcc|warnings|opt|lto|c23|fanalyzer|static) echo 3 ;;
-        clang|tidy|m32|valgrind|flagmatrix) echo 4 ;;
+        gcc|warnings|opt|lto|c23|fanalyzer|static|m32|flagmatrix) echo 3 ;;
+        clang|valgrind)                     echo 4 ;;
         *)                                  echo 0 ;;
     esac
 }

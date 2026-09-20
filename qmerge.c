@@ -219,6 +219,7 @@ static struct option const qmerge_long_opts[] = {
 	{"prune",   no_argument, NULL, 'P'},
 	{"with-bdeps", a_argument, NULL, 148},
 	{"depclean-lib-check", a_argument, NULL, 149},
+	{"verbose-conflicts", no_argument, NULL, 150},
 	{"debug",   no_argument, NULL, 128},
 	COMMON_LONG_OPTS
 };
@@ -262,6 +263,7 @@ static const char * const qmerge_opts_help[] = {
 	"Remove all but the highest installed version of a package if nothing needs the others (emerge --prune); with -O ignoring dependencies",
 	"With --depclean: y/n follow DEPEND/BDEPEND of installed packages (default y)",
 	"With --depclean: y/n keep packages whose libraries other packages still link against (default y)",
+	"List every package that shows either slot conflict and collisions",
 	"Run shell funcs with `set -x`",
 	COMMON_OPTS_HELP
 };
@@ -294,6 +296,7 @@ static char qm_rebuilt_ts_set = 0;
 static int  qm_user_quiet   = 0;
 static int  qm_user_verbose = 0;
 static int  qm_lenient = -1;
+static int  qm_verbose_conflicts = 0;
 static int  qm_slot_unify = -1;
 static set *qm_tolerated = NULL;
 static bool qm_news_force = false;
@@ -679,10 +682,97 @@ lic_parse_and(char **t, size_t n, size_t *i, struct lic_acc *la)
 
 /* ACCEPT_LICENSE rejections collected during silent selection,
  * printed as a resolution-time block like the USE rejects */
+/* remembered answers, one per package build, for the checks made while
+ * choosing candidate pkgs: keywords, license, USE match, USE mismatch count
+ * and the library-version check. Each answer depends only on the build
+ * and this run's config, so computing it once is enough. The library
+ * and USE answers can still change when the resolver masks a package
+ * during the run, so qm_pick_memo_flush() should clear those.
+ * ( for exemplfication reasons: a big @world run calls best_version()
+ * hundreds of thousands of times. )
+ * In the old code every one of those calls re-read ACCEPT_KEYWORDS, the
+ * license groups and the package.use files for every flag of every
+ * candidate.
+ * */
+static hash_t *qm_memo_kw    = NULL;
+static hash_t *qm_memo_lic   = NULL;
+static hash_t *qm_memo_use   = NULL;
+static hash_t *qm_memo_mis   = NULL;
+static hash_t *qm_memo_pins  = NULL;
+static hash_t *qm_memo_fresh = NULL;
+static hash_t *qm_memo_pinatom = NULL;
+
+/*
+identity of a binpkg instance: tree + cat/PF + build id */
+static const char *
+qm_pkg_key(tree_pkg_ctx *pkg, char *buf, size_t len)
+{
+	depend_atom *pa = tree_pkg_atom(pkg, true);
+
+	snprintf(buf, len, "%p:%s/%s~%u", (void *)tree_pkg_get_tree(pkg),
+			 pa->CATEGORY ? : "", pa->PF ? : "", pa->BUILDID);
+	return buf;
+}
+
+/* -1 unknown, else the stored int */
+static int
+qm_memo_get(hash_t *h, const char *key)
+{
+	const char *v = h != NULL ? hash_get(h, key) : NULL;
+
+	return v == NULL ? -1 : atoi(v);
+}
+
+static void
+qm_memo_put(hash_t **h, const char *key, int val)
+{
+	char  vb[16];
+	void *prev = NULL;
+
+	snprintf(vb, sizeof(vb), "%d", val);
+	if (*h == NULL)
+		*h = hash_new();
+	*h = hash_add(*h, key, xstrdup(vb), &prev);
+	free(prev);
+}
+
+static void
+qm_memo_free(hash_t **h)
+{
+	array  *k;
+	size_t  i;
+	char   *key;
+
+	if (*h == NULL)
+		return;
+	k = hash_keys(*h);
+	if (k != NULL) {
+		array_for_each(k, i, key)
+			free(hash_get(*h, key));
+		array_free(k);
+	}
+	hash_free(*h);
+	*h = NULL;
+}
+
+/* forget the remembered answers that can change during the run. once
+ * the resolver masks a package to settle a conflict, the USE, library
+ * and "is this new" checks may come out differently next round */
+static void
+qm_pick_memo_flush(void)
+{
+	qm_memo_free(&qm_memo_use);
+	qm_memo_free(&qm_memo_pins);
+	qm_memo_free(&qm_memo_fresh);
+	qm_memo_free(&qm_memo_pinatom);
+}
+
 static set *qm_lic_rejects = NULL;
+static char qm_lic_last_masked[512] = "";
+static char qm_lic_last_text[_Q_PATH_MAX] = "";
 
 static bool
-binpkg_license_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
+binpkg_license_ok_calc(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 {
 	char          *lic = tree_pkg_meta(pkg, Q_LICENSE);
 	char          *usestr;
@@ -802,6 +892,10 @@ binpkg_license_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 					 ltext != NULL ? ltext : "");
 			qm_lic_rejects = add_set_unique(msg, qm_lic_rejects, NULL);
 		}
+		snprintf(qm_lic_last_masked, sizeof(qm_lic_last_masked), "%s",
+				 masked != NULL ? masked : lic);
+		snprintf(qm_lic_last_text, sizeof(qm_lic_last_text), "%s",
+				 ltext != NULL ? ltext : "");
 		free(masked);
 		free(ltext);
 	}
@@ -811,6 +905,27 @@ binpkg_license_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 	free_set(la.acc);
 	free_set(la.den);
 	free_set(la.use);
+	return ok;
+}
+
+/* license check that remembers its answer per package, so the same
+ * package is not checked again and again while choosing candidates */
+static bool
+binpkg_license_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
+{
+	char        kbuf[600];
+	const char *key;
+	int         m;
+	bool        ok;
+
+	if (!silent)
+		return binpkg_license_ok_calc(pkg, patom, silent);
+	key = qm_pkg_key(pkg, kbuf, sizeof(kbuf));
+	m   = qm_memo_get(qm_memo_lic, key);
+	if (m >= 0)
+		return m == 1;
+	ok = binpkg_license_ok_calc(pkg, patom, silent);
+	qm_memo_put(&qm_memo_lic, key, ok);
 	return ok;
 }
 
@@ -886,7 +1001,7 @@ qm_effective_arch(void)
  * Wildcards per portage: `*` any stable arch, `~*` any testing arch,
  * `**` anything (including empty KEYWORDS). */
 static bool
-binpkg_keywords_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
+binpkg_keywords_ok_calc(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 {
 	char   *kw  = tree_pkg_meta(pkg, Q_KEYWORDS);
 	set    *acc = create_set();
@@ -1000,6 +1115,26 @@ binpkg_keywords_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 	}
 
 	free_set(acc);
+	return ok;
+}
+
+/* cached front for the silent (selection-time) keywords gate */
+static bool
+binpkg_keywords_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
+{
+	char        kbuf[600];
+	const char *key;
+	int         m;
+	bool        ok;
+
+	if (!silent)
+		return binpkg_keywords_ok_calc(pkg, patom, silent);
+	key = qm_pkg_key(pkg, kbuf, sizeof(kbuf));
+	m   = qm_memo_get(qm_memo_kw, key);
+	if (m >= 0)
+		return m == 1;
+	ok = binpkg_keywords_ok_calc(pkg, patom, silent);
+	qm_memo_put(&qm_memo_kw, key, ok);
 	return ok;
 }
 
@@ -2713,6 +2848,22 @@ qm_bintree(size_t i)
 		qm_local_index_populate(loc);
 	qm_bintrees[i] = tree_new(portroot, loc, TREETYPE_BINPKG, true);
 	return qm_bintrees[i];
+}
+
+static ssize_t
+qm_default_repo(void)
+{
+	size_t k;
+
+	if (qm_walk_order == NULL)
+		return -1;
+	for (k = 0; k < qm_nbinrepos; k++) {
+		size_t w = qm_walk_order[k];
+
+		if (qm_binrepos[w].priority > 0)
+			return (ssize_t)w;
+	}
+	return -1;
 }
 
 /* which repo (index into qm_binrepos) advertised this pkg; -1 unknown */
@@ -4463,11 +4614,23 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 	char *tok;
 	char *sp;
 	bool  ok = true;
+	char  kbuf[600];
+	char  ukey[620] = "";
 
 	if (iusestr == NULL || *iusestr == '\0') {
 		if (why == NULL)
 			qm_use_accept_add(patom);
 		return true;
+	}
+
+	if (why == NULL) {
+		int m;
+
+		snprintf(ukey, sizeof(ukey), "%s:%d",
+				 qm_pkg_key(pkg, kbuf, sizeof(kbuf)), strict ? 1 : 0);
+		m = qm_memo_get(qm_memo_use, ukey);
+		if (m >= 0)
+			return m == 1;
 	}
 
 	built = usedep_flags_to_set(tree_pkg_meta(pkg, Q_USE));
@@ -4571,6 +4734,8 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 	free_set(built);
 	if (why == NULL && ok)
 		qm_use_accept_add(patom);
+	if (why == NULL)
+		qm_memo_put(&qm_memo_use, ukey, ok);
 	return ok;
 }
 #define binpkg_use_ok(P,A,R,S) binpkg_use_ok_r(P, A, R, S, NULL, 0)
@@ -4668,7 +4833,22 @@ qm_uc(void)
 	return &qm_uctx;
 }
 
-#define qm_use_mismatch(P)           uc_use_mismatch(qm_uc(), P)
+/* the mismatch count of a binpkg instance against the config
+ * sohuld not change during a run, and -N now evaluates it for every identical-version
+ * rebuild on every best_version() */
+static int
+qm_use_mismatch(tree_pkg_ctx *pkg)
+{
+	char        kbuf[600];
+	const char *key = qm_pkg_key(pkg, kbuf, sizeof(kbuf));
+	int         mis = qm_memo_get(qm_memo_mis, key);
+
+	if (mis >= 0)
+		return mis;
+	mis = uc_use_mismatch(qm_uc(), pkg);
+	qm_memo_put(&qm_memo_mis, key, mis);
+	return mis;
+}
 #define qm_expand_group(T, S)        uc_expand_group(qm_uc(), T, S)
 #define qm_expand_group_hidden(V)    uc_expand_group_hidden(qm_uc(), V)
 #define qm_pkg_flag_override(A, T, L) uc_pkg_flag_override(A, T, L)
@@ -5784,6 +5964,641 @@ qm_cand_usedeps_ok(const depend_atom *atom, tree_pkg_ctx *cand)
 static array *qm_slot_members(const char *cat, const char *pn,
 							  const char *slot);
 
+static tree_pkg_ctx *best_version(const depend_atom *atom, int mode);
+static int qm_strcmp_cb(const void *l, const void *r);
+
+/* builds whose library check is running right now, so that two packages
+ * built against each other do not check each other forever */
+static set *qm_pins_inprog = NULL;
+
+/* for every library version nothing can saatisfy: the packages that were
+ * built against it and had to be left out, one line per package */
+static hash_t *qm_deadpins = NULL;
+
+enum {
+	QM_PINS_OK    = 1,
+	QM_PINS_UNSAT = 3
+};
+
+
+/* check the library versions this build was compiled against, the
+ * ones its dependencies record as foo:0/3= or bar:6/6.11.1. Example:
+ * the binhost rebuilt kwindowsystem against qtbase 6.11.1 while
+ * package.mask keeps this machine on 6.10.x, so no installed package and
+ * no allowed binpkg can satisfy what that build needs. Portage finds
+ * this out as a missing dependency, masks the build in a backtrack
+ * round and falls back to the previous build or the installed copy;
+ * checking it here gives the same result at once and keeps such builds
+ * out of the conflict repair. The answer is cached per build and
+ * cleared with the other caches, since it depends on what the run has
+ * masked so far. */
+static int
+qm_bin_pins_state(tree_pkg_ctx *cand)
+{
+	char        kbuf[600];
+	const char *key;
+	int         m;
+	char       *rdep = tree_pkg_meta(cand, Q_RDEPEND);
+	set        *cuse;
+	set        *saved_puse;
+	dep_node_t *t;
+	array      *flat;
+	size_t      i;
+	atom_ctx   *A;
+	int         state = QM_PINS_OK;
+	bool        ign;
+
+	if (rdep == NULL || *rdep == '\0' || strchr(rdep, '/') == NULL)
+		return QM_PINS_OK;
+
+	key = qm_pkg_key(cand, kbuf, sizeof(kbuf));
+	m   = qm_memo_get(qm_memo_pins, key);
+	if (m >= 0)
+		return m;
+	if (qm_pins_inprog == NULL)
+		qm_pins_inprog = create_set();
+	if (contains_set(key, qm_pins_inprog) != NULL)
+		return QM_PINS_OK;
+	add_set(key, qm_pins_inprog);
+
+	cuse = usedep_flags_to_set(tree_pkg_meta(cand, Q_USE) ? : "");
+	t    = dep_grow_tree(rdep);
+	if (t != NULL) {
+		dep_prune_use(t, cuse);
+		flat = dep_flatten_tree(t);
+		saved_puse        = qm_bv_parent_use;
+		qm_bv_parent_use  = NULL;
+		array_for_each(flat, i, A) {
+			if (A == NULL || A->blocker != ATOM_BL_NONE ||
+					A->CATEGORY == NULL || A->PN == NULL ||
+					A->SLOT == NULL || A->SUBSLOT == NULL ||
+					A->SUBSLOT == A->SLOT)
+				continue;
+			if (best_version(A, BV_INSTALLED) != NULL)
+				continue;
+			if (best_version(A, BV_BINPKG) != NULL)
+				continue;
+			state = QM_PINS_UNSAT;
+			{
+				void *prev = NULL;
+
+				if (qm_memo_pinatom == NULL)
+					qm_memo_pinatom = hash_new();
+				qm_memo_pinatom = hash_add(qm_memo_pinatom, key,
+						xstrdup(atom_to_string(A)), &prev);
+				free(prev);
+			}
+			break;
+		}
+		qm_bv_parent_use = saved_puse;
+		array_free(flat);
+		dep_burn_tree(t);
+	}
+	free_set(cuse);
+	(void)del_set(key, qm_pins_inprog, &ign);
+	qm_memo_put(&qm_memo_pins, key, state);
+	return state;
+}
+
+/* we should remember who needs a library version that nothing available provides.
+ * One entry per wanted version, each holding the names of the packages
+ * that need it: B = a binary package, I = an installed package,
+ * A = something given on the command line */
+static void
+qm_deadpin_add(const char *pin, const char *name, const char *kind)
+{
+	char  line[1024];
+	set  *d;
+
+	snprintf(line, sizeof(line), "%s\1%s", name, kind);
+	if (qm_deadpins == NULL)
+		qm_deadpins = hash_new();
+	d = hash_get(qm_deadpins, pin);
+	if (d == NULL) {
+		d = create_set();
+		hash_add(qm_deadpins, pin, d, NULL);
+	}
+	add_set_unique(line, d, NULL);
+}
+
+/* write the package name the way emerge prints it:
+ * category/name-version::repository */
+static const char *
+qm_pkg_name(tree_pkg_ctx *pkg, char *buf, size_t len)
+{
+	depend_atom *pa = tree_pkg_atom(pkg, true);
+	const char  *rn = pa->REPO;
+
+	if (rn == NULL || *rn == '\0')
+		rn = qm_repo_name_of_pkg(pkg);
+	snprintf(buf, len, "%s/%s%s%s", pa->CATEGORY ? : "", pa->PF ? : "",
+			 rn != NULL ? "::" : "", rn ? : "");
+	return buf;
+}
+
+/* a binary package was skipped because it needs a library version that
+ * nothing available provides, and no other build of it could be used.
+ * let's record who needed what for the report at the end */
+static void
+qm_deadpin_note(tree_pkg_ctx *cand, tree_pkg_ctx *used)
+{
+	char        kbuf[600];
+	const char *key = qm_pkg_key(cand, kbuf, sizeof(kbuf));
+	const char *pin = qm_memo_pinatom != NULL ?
+			hash_get(qm_memo_pinatom, key) : NULL;
+	char        name[600];
+	char        kind[32] = "B";
+
+	if (pin == NULL)
+		return;
+	if (used != NULL) {
+		depend_atom   *ca = tree_pkg_atom(cand, true);
+		depend_atom   *ua = tree_pkg_atom(used, true);
+		atom_equality  r  = atom_compare(ca, ua);
+		bool           newer = r == NEWER;
+
+		/* two builds of one version: the higher build number is the newer one,
+		 * stores without build numbers fall back to the build time */
+		if (r == EQUAL) {
+			if (ca->BUILDID != ua->BUILDID)
+				newer = ca->BUILDID > ua->BUILDID;
+			else
+				newer = qm_rebuilt_newer(cand, used) &&
+						!qm_rebuilt_newer(used, cand);
+		}
+		if (!newer)
+			return;
+		snprintf(kind, sizeof(kind), "S%llu",
+				 (unsigned long long)ca->BUILDID);
+	}
+	qm_deadpin_add(pin, qm_pkg_name(cand, name, sizeof(name)), kind);
+}
+
+/* find which package.mask file and line masked this package, and the
+ * comment lines the mask reader attached to that entry */
+static bool
+qm_mask_source(const depend_atom *pa, char *file, size_t flen, size_t *lno,
+			   size_t *cbeg, size_t *cend)
+{
+	array  *keys;
+	size_t  i;
+	char   *k;
+	bool    found = false;
+
+	if (package_masks == NULL)
+		return false;
+	keys = hash_keys(package_masks);
+	array_for_each(keys, i, k) {
+		depend_atom *m = atom_explode(k);
+		const char  *src;
+		const char  *p;
+		const char  *q;
+
+		if (m == NULL)
+			continue;
+		if (atom_compare(pa, m) == EQUAL &&
+				(src = hash_get(package_masks, k)) != NULL &&
+				(p = strrchr(src, ':')) != NULL && p > src) {
+			for (q = p - 1; q > src && *q != ':'; q--)
+				;
+			if (q > src) {
+				*lno  = (size_t)atol(q + 1);
+				*cbeg = 0;
+				*cend = 0;
+				sscanf(p + 1, "%zu-%zu", cbeg, cend);
+				snprintf(file, flen, "%.*s",
+						 (int)MIN((size_t)(q - src), flen - 1), src);
+				found = true;
+			}
+		}
+		atom_implode(m);
+		if (found)
+			break;
+	}
+	array_free(keys);
+	return found;
+}
+
+static void
+qm_str_add(char *buf, size_t len, const char *text)
+{
+	size_t cur = strlen(buf);
+	size_t n   = strlen(text);
+
+	if (cur + 1 >= len)
+		return;
+	if (n > len - 1 - cur)
+		n = len - 1 - cur;
+	memcpy(buf + cur, text, n);
+	buf[cur + n] = '\0';
+}
+
+static void
+qm_reason_add(char *buf, size_t len, const char *a, const char *b)
+{
+	if (buf[0] != '\0')
+		qm_str_add(buf, len, ", ");
+	qm_str_add(buf, len, a);
+	qm_str_add(buf, len, b);
+}
+
+/* build the "(masked by: ...)" text for a package, with the same words
+ * emerge uses: package.mask, ~arch keyword, missing keyword, the license
+ * names, CHOST, --usepkg-exclude, yawn, yawn */
+static void
+qm_mask_reasons(tree_pkg_ctx *pkg, depend_atom *pa, char *buf, size_t len)
+{
+	buf[0] = '\0';
+	if (binpkg_masked(pa))
+		qm_reason_add(buf, len, "package.mask", "");
+	if (!binpkg_keywords_ok(pkg, pa, true)) {
+		const char *arch = qm_effective_arch();
+		char       *kw   = tree_pkg_meta(pkg, Q_KEYWORDS);
+		char        testing[64] = "";
+
+		if (kw != NULL) {
+			set  *stable = create_set();
+			char *tmp;
+			char *tok;
+			char *sp;
+
+			if (arch != NULL)
+				add_set_unique(arch, stable, NULL);
+			if (accept_keywords != NULL) {
+				tmp = xstrdup(accept_keywords);
+				for (tok = strtok_r(tmp, " \t\n", &sp); tok != NULL;
+					 tok = strtok_r(NULL, " \t\n", &sp))
+					if (tok[0] != '~' && tok[0] != '-' && tok[0] != '*')
+						add_set_unique(tok, stable, NULL);
+				free(tmp);
+			}
+			tmp = xstrdup(kw);
+			for (tok = strtok_r(tmp, " \t\n", &sp); tok != NULL;
+				 tok = strtok_r(NULL, " \t\n", &sp))
+				if (tok[0] == '~' && contains_set(tok + 1, stable) != NULL) {
+					snprintf(testing, sizeof(testing), "%s", tok + 1);
+					break;
+				}
+			free(tmp);
+			free_set(stable);
+		}
+		if (testing[0] != '\0') {
+			qm_reason_add(buf, len, "~", testing);
+			qm_str_add(buf, len, " keyword");
+		} else {
+			qm_reason_add(buf, len, "missing keyword", "");
+		}
+	}
+	if (!binpkg_license_ok_calc(pkg, pa, true)) {
+		qm_reason_add(buf, len, qm_lic_last_masked[0] != '\0' ?
+					  qm_lic_last_masked : "unaccepted", " license(s)");
+	}
+	if (!binpkg_chost_ok(pkg, pa, true)) {
+		char *ch = tree_pkg_meta(pkg, Q_CHOST);
+
+		qm_reason_add(buf, len, "CHOST: ", ch ? : "");
+	}
+	if (binpkg_excluded(pkg, pa, true))
+		qm_reason_add(buf, len, "--usepkg-exclude", "");
+}
+
+struct qm_masked_cand {
+	tree_pkg_ctx *pkg;
+	char         *reasons;
+	char         *lictext;
+};
+
+static void
+qm_masked_cand_free(void *p)
+{
+	struct qm_masked_cand *c = p;
+
+	free(c->reasons);
+	free(c->lictext);
+	free(c);
+}
+
+static int
+qm_masked_cand_cmp(const void *l, const void *r)
+{
+	const struct qm_masked_cand *a = *(struct qm_masked_cand * const *)l;
+	const struct qm_masked_cand *b = *(struct qm_masked_cand * const *)r;
+
+	switch (atom_compare(tree_pkg_atom(a->pkg, true),
+						 tree_pkg_atom(b->pkg, true))) {
+	case NEWER: return -1;
+	case OLDER: return 1;
+	default:    return 0;
+	}
+}
+
+/* list every binary package on every binhost that would fit the user request
+ * but is masked, newest first, each with the reason it is masked */
+static array *
+qm_masked_candidates(depend_atom *A)
+{
+	size_t  rcnt   = qm_bintree_cnt();
+	size_t  ri;
+	array  *out    = array_new();
+	set    *seenpf = create_set();
+
+	for (ri = 0; ri < rcnt; ri++) {
+		tree_ctx     *bt = qm_bintree(ri);
+		array        *t;
+		size_t        n;
+		tree_pkg_ctx *pkg;
+		size_t        rj;
+		bool          seen = false;
+
+		if (bt == NULL)
+			continue;
+		for (rj = 0; rj < ri; rj++)
+			if (qm_bintrees[rj] == bt)
+				seen = true;
+		if (seen)
+			continue;
+		t = tree_match_atom(bt, A, TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
+		array_for_each(t, n, pkg) {
+			depend_atom           *pa = tree_pkg_atom(pkg, true);
+			char                   why[512];
+			char                   pf[600];
+			struct qm_masked_cand *c;
+
+			snprintf(pf, sizeof(pf), "%s/%s", pa->CATEGORY ? : "",
+					 pa->PF ? : "");
+			if (contains_set(pf, seenpf) != NULL)
+				continue;
+			qm_lic_last_text[0] = '\0';
+			qm_mask_reasons(pkg, pa, why, sizeof(why));
+			if (why[0] == '\0')
+				continue;
+			add_set(pf, seenpf);
+			c = xzalloc(sizeof(*c));
+			c->pkg     = pkg;
+			c->reasons = xstrdup(why);
+			if (strstr(why, "license(s)") != NULL &&
+					qm_lic_last_text[0] != '\0')
+				c->lictext = xstrdup(qm_lic_last_text);
+			array_append(out, c);
+		}
+		array_free(t);
+	}
+	free_set(seenpf);
+	array_sort(out, qm_masked_cand_cmp);
+	return out;
+}
+
+/* print the mask file name and the "#" comment lines the mask reader
+ * attached to the entry, the same way emerge shows why something was
+ * masked: the comment block above the entry, kept valid across
+ * consecutive entries until a blank line */
+static void
+qm_print_mask_comment(const char *file, size_t cbeg, size_t cend)
+{
+	char   *buf  = NULL;
+	size_t  len  = 0;
+	size_t  line = 1;
+	char   *l;
+	char   *nl;
+
+	while (file[0] == '/' && file[1] == '/')
+		file++;
+	printf("%s:\n", file);
+	if (cbeg == 0 || cend < cbeg || !eat_file(file, &buf, &len) ||
+			buf == NULL) {
+		free(buf);
+		return;
+	}
+	for (l = buf; l != NULL && line <= cend; line++) {
+		nl = strchr(l, '\n');
+		if (nl != NULL)
+			*nl = '\0';
+		if (line >= cbeg)
+			printf("%s\n", l);
+		l = nl != NULL ? nl + 1 : NULL;
+	}
+	free(buf);
+}
+
+/* print the same "masked packages" report emerge prints after the list
+ * of what would be merged.
+ * for every library version that was needed but could not be used:
+ * the masked packages that would have provided it and why each is
+ * masked, the mask file with its comment, then which packages need it */
+/* the "- pkg (masked by: ...)" lines with each mask file, its comment
+ * and any license pointer, each file once */
+static void
+qm_print_masked_list(array *cands)
+{
+	size_t                 ci;
+	struct qm_masked_cand *c;
+	set                   *files = create_set();
+
+	array_for_each(cands, ci, c) {
+		char name[600];
+
+		printf("- %s (masked by: %s)\n",
+			   qm_pkg_name(c->pkg, name, sizeof(name)), c->reasons);
+		if (strstr(c->reasons, "package.mask") != NULL) {
+			char   file[_Q_PATH_MAX];
+			size_t lno  = 0;
+			size_t cbeg = 0;
+			size_t cend = 0;
+			char   fkey[_Q_PATH_MAX + 32];
+
+			if (qm_mask_source(tree_pkg_atom(c->pkg, true),
+							   file, sizeof(file), &lno, &cbeg, &cend)) {
+				snprintf(fkey, sizeof(fkey), "%s:%zu", file, lno);
+				if (contains_set(fkey, files) == NULL) {
+					add_set(fkey, files);
+					qm_print_mask_comment(file, cbeg, cend);
+				}
+			}
+		}
+		if (c->lictext != NULL && contains_set(c->lictext, files) == NULL) {
+			const char *lb = strrchr(c->lictext, '/');
+
+			add_set(c->lictext, files);
+			printf("A copy of the '%s' license is located at '%s'.\n\n",
+				   lb != NULL ? lb + 1 : c->lictext, c->lictext);
+		}
+	}
+	free_set(files);
+}
+
+/* one "(dependency required by ...)" line from a recorded "name\1kind" */
+static void
+qm_print_parent_line(const char *line)
+{
+	const char *sep = strchr(line, '\1');
+
+	if (sep == NULL)
+		return;
+	switch (sep[1]) {
+	case 'A':
+		/* the masked package is the one the user asked for.
+		 * Nothing else needs it, so emerge prints no
+		 * "required by" line here */
+		break;
+	case 'S':
+		if (strcmp(sep + 2, "0") == 0)
+			printf("(dependency required by \"%.*s\" [binary, newer build "
+				   "skipped])\n", (int)(sep - line), line);
+		else
+			printf("(dependency required by \"%.*s\" [binary, build %s "
+				   "skipped])\n", (int)(sep - line), line, sep + 2);
+		break;
+	default:
+		printf("(dependency required by \"%.*s\" [binary])\n",
+			   (int)(sep - line), line);
+		break;
+	}
+}
+
+/* skipped builds are reported per masked package */
+struct qm_skip_group {
+	array *cands;
+	set   *lines;
+	char   label[2048];
+};
+
+static void
+qm_print_deadpins(void)
+{
+	array   *pins;
+	size_t   n;
+	char    *pin;
+	hash_t  *groups = hash_new();
+	array   *gorder = array_new();
+	struct qm_skip_group *g;
+
+	if (qm_deadpins == NULL || hash_size(qm_deadpins) == 0) {
+		hash_free(groups);
+		array_free(gorder);
+		return;
+	}
+	pins = hash_keys(qm_deadpins);
+	array_sort(pins, qm_strcmp_cb);
+	array_for_each(pins, n, pin) {
+		atom_ctx *A     = atom_explode(pin);
+		set      *d     = hash_get(qm_deadpins, pin);
+		array    *lines = set_keys(d);
+		array    *cands;
+		size_t    ln;
+		char     *line;
+		bool      required = false;
+		bool      skipped  = false;
+
+		/* B and A lines mean the request cannot be completed; S lines
+		 * mean a newer build was passed over and another build used,
+		 * which is only worth a word when the user did not ask for
+		 * quiet */
+		array_for_each(lines, ln, line) {
+			char *sep = strchr(line, '\1');
+
+			if (sep == NULL)
+				continue;
+			if (sep[1] == 'S')
+				skipped = true;
+			else
+				required = true;
+		}
+		if (A == NULL || (!required && (!skipped || qm_user_quiet))) {
+			array_free(lines);
+			if (A != NULL)
+				atom_implode(A);
+			continue;
+		}
+		array_sort(lines, qm_strcmp_cb);
+		cands = qm_masked_candidates(A);
+
+		if (!required) {
+			char   key[2048] = "";
+			size_t ci;
+			struct qm_masked_cand *c;
+
+			array_for_each(cands, ci, c) {
+				char name[600];
+
+				qm_str_add(key, sizeof(key),
+						   qm_pkg_name(c->pkg, name, sizeof(name)));
+				qm_str_add(key, sizeof(key), " ");
+			}
+			if (key[0] == '\0')
+				snprintf(key, sizeof(key), "\2%s/%s:%s/%s=",
+						 A->CATEGORY ? : "", A->PN ? : "", A->SLOT ? : "",
+						 A->SUBSLOT ? : "");
+			g = hash_get(groups, key);
+			if (g == NULL) {
+				g = xzalloc(sizeof(*g));
+				g->cands = cands;
+				g->lines = create_set();
+				snprintf(g->label, sizeof(g->label), "%s",
+						 key[0] == '\2' ? key + 1 : pin);
+				hash_add(groups, key, g, NULL);
+				array_append(gorder, g);
+			} else {
+				array_deepfree(cands, qm_masked_cand_free);
+			}
+			array_for_each(lines, ln, line)
+				add_set_unique(line, g->lines, NULL);
+			array_free(lines);
+			atom_implode(A);
+			continue;
+		}
+
+		printf("\n");
+		if (array_cnt(cands) > 0) {
+			printf("%s!!!%s All binpkgs that could satisfy \"%s\" have "
+				   "been masked.\n", RED, NORM, pin);
+			printf("%s!!!%s One of the following masked packages is "
+				   "required to complete your request:\n", RED, NORM);
+			qm_print_masked_list(cands);
+		} else {
+			printf("qmerge: there are no binary packages to satisfy "
+				   "\"%s\".\n", pin);
+		}
+		printf("\n");
+		array_for_each(lines, ln, line)
+			qm_print_parent_line(line);
+		if (array_cnt(cands) > 0)
+			printf("For more information, see the MASKED PACKAGES section "
+				   "in the emerge\nman page or refer to the Gentoo "
+				   "Handbook.\n");
+		array_deepfree(cands, qm_masked_cand_free);
+		array_free(lines);
+		atom_implode(A);
+	}
+	array_free(pins);
+
+	array_for_each(gorder, n, g) {
+		array  *lines = set_keys(g->lines);
+		size_t  ln;
+		char   *line;
+
+		array_sort(lines, qm_strcmp_cb);
+		printf("\n");
+		if (array_cnt(g->cands) > 0) {
+			printf("%s!!!%s The following binary packages were skipped "
+				   "because they need a masked package:\n", YELLOW, NORM);
+			qm_print_masked_list(g->cands);
+		} else {
+			printf("qmerge: newer builds that need \"%s\" were skipped, "
+				   "no binary package provides it.\n", g->label);
+		}
+		printf("\n");
+		array_for_each(lines, ln, line)
+			qm_print_parent_line(line);
+		array_free(lines);
+		array_deepfree(g->cands, qm_masked_cand_free);
+		free_set(g->lines);
+		free(g);
+	}
+	array_free(gorder);
+	hash_free(groups);
+}
+
+
 /* an installed member of the candidate's slot is newer than the
  * candidate: taking this repo's best would be a downgrade */
 static bool
@@ -5820,6 +6635,7 @@ best_version(const depend_atom *atom, int mode)
 	tree_ctx       *vdb    = qmerge_vdb_tree;
 	tree_pkg_ctx   *tmv    = NULL;
 	tree_pkg_ctx   *tmp    = NULL;
+	tree_pkg_ctx   *deadc  = NULL;
 	tree_pkg_ctx   *ret;
 	int             r;
 
@@ -6027,6 +6843,11 @@ best_version(const depend_atom *atom, int mode)
 									qm_respect_use == 1)) {
 							continue;
 						}
+						if (qm_bin_pins_state(cand) != QM_PINS_OK) {
+							if (deadc == NULL)
+								deadc = cand;
+							continue;
+						}
 						if (rbest == NULL) {
 							rbest = cand;
 							continue;
@@ -6147,6 +6968,8 @@ best_version(const depend_atom *atom, int mode)
 			ret = tmv;
 	}
 
+	if (deadc != NULL)
+		qm_deadpin_note(deadc, tmv);
 	return ret;
 }
 
@@ -8109,6 +8932,9 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 				warn("cannot satisfy %s%s%s", atom_to_string(atom), h, mh);
 			else if (qm_unsat_note(atom_to_string(atom)))
 				warn("cannot satisfy %s%s%s", atom_to_string(atom), h, mh);
+			if (!qm_internal_pull)
+				qm_deadpin_add(atom_to_string(atom), atom_to_string(atom),
+							   "A");
 			return;
 		}
 	} else if (deep && bin != NULL && atom_satisfied_by(atom, bin, parent_use) &&
@@ -8142,6 +8968,10 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		if (qm_unsat_note(atom_to_string(atom)))
 			warn("cannot satisfy dependency %s%s%s",
 				 atom_to_string(atom), h, mh);
+		if (qm_cur_revdep[0] != '\0')
+			qm_deadpin_add(atom_to_string(atom), qm_cur_revdep, "B");
+		else
+			qm_deadpin_add(atom_to_string(atom), atom_to_string(atom), "A");
 		return;
 	}
 
@@ -8214,7 +9044,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 					 atom_to_string(tree_pkg_atom(provider, true)),
 					 qm_binrepos[prov_repo].name);
 
-			if (level > 0 && qm_repo_affinity == prov_repo) {
+			if (level > 0 && qm_repo_affinity == prov_repo &&
+					prov_repo != qm_default_repo()) {
 				snprintf(msg, sizeof(msg),
 						 "pulled as dependency by @%s subtree affinity",
 						 qm_binrepos[prov_repo].name);
@@ -8863,8 +9694,8 @@ qm_report_conflict(struct qm_scctx *sc, const char *revdep,
 		snprintf(tk, sizeof(tk), "%s\1%s", revdep_cpslot, atomstr);
 		if (contains_set(tk, qm_tolerated) != NULL) {
 			if (sc->fixable == NULL)
-				warn("%s: pin %s left unsatisfied (no acceptable "
-					 "rebuilt binpkg on any binhost); continuing. ",
+				warn("%s: pin %s left unsatisfied, tolerated under "
+					 "QMERGE_LENIENT_UPGRADE=1; continuing.",
 					 revdep, atomstr);
 			return;
 		}
@@ -9408,6 +10239,10 @@ qm_is_fresh_install(const char *cpv)
 	tree_pkg_ctx *bpkg;
 	bool          fresh;
 
+	int           m = qm_memo_get(qm_memo_fresh, cpv);
+
+	if (m >= 0)
+		return m == 1;
 	snprintf(ex, sizeof(ex), "=%s", cpv);
 	a = atom_explode(ex);
 	if (a == NULL)
@@ -9423,6 +10258,7 @@ qm_is_fresh_install(const char *cpv)
 	fresh = (sa != NULL && best_version(sa, BV_INSTALLED) == NULL);
 	if (sa != NULL)
 		atom_implode(sa);
+	qm_memo_put(&qm_memo_fresh, cpv, fresh);
 	return fresh;
 }
 
@@ -10071,6 +10907,107 @@ qm_check_slot_conflicts(array *merge, set *fixable, hash_t *fix_edges)
 	return sc.conflicts;
 }
 
+/* installed packages that need a library version that is not installed */
+static set *qm_vdb_broken = NULL;
+
+/* emerge checks the health of already installed packages only during
+ * an update or a deep run.
+ * A plain "install this one package" leaves them alone, so we do the
+ * same */
+static bool
+qm_plan_touches_installed(struct qm_plan *plan)
+{
+	(void)plan;
+	return deep || update_only;
+}
+
+/* check the packages already installed, same way emerge does with a
+ * slot-operator rebuild: find every installed package that needs a
+ * library version which is neither installed nor about to be, and hand
+ * it to Layer 2 to look for a build that fits what is installed here,
+ * even an older one.
+ * Works on the snapshot of the installed packages the sweep made */
+static int
+qm_vdb_broken_strands(struct qm_plan *plan, set *fixable, hash_t *fix_edges)
+{
+	size_t          i;
+	size_t          j;
+	struct qm_vpkg *vp;
+	struct qm_vdep *vd;
+	set            *planned;
+	char           *cpvp;
+	int             added = 0;
+
+	if (qm_vdb_frozen == NULL || !qm_plan_touches_installed(plan))
+		return 0;
+
+	planned = create_set();
+	array_for_each(plan->merge, i, cpvp) {
+		char          ex[560];
+		atom_ctx     *a;
+		tree_pkg_ctx *bp;
+
+		snprintf(ex, sizeof(ex), "=%s", cpvp);
+		a = atom_explode(ex);
+		if (a == NULL)
+			continue;
+		bp = qm_plan_pick(cpvp, a);
+		if (bp != NULL) {
+			atom_ctx *ba = tree_pkg_atom(bp, true);
+			char      cpslot[512];
+
+			snprintf(cpslot, sizeof(cpslot), "%s/%s:%s",
+					 ba->CATEGORY ? : "", ba->PN ? : "", ba->SLOT ? : "");
+			add_set(cpslot, planned);
+		}
+		atom_implode(a);
+	}
+
+	array_for_each(qm_vdb_frozen, i, vp) {
+		if (contains_set(vp->cpslot, planned) != NULL)
+			continue;
+		array_for_each(vp->deps, j, vd) {
+			atom_ctx     *A;
+			set          *cuse;
+			tree_pkg_ctx *inst;
+			bool          met;
+
+			if (vd->is_blocker || !vd->has_slot)
+				continue;
+			A = atom_explode(vd->atomstr);
+			if (A == NULL)
+				continue;
+			if (A->SUBSLOT == NULL || A->SUBSLOT == A->SLOT) {
+				atom_implode(A);
+				continue;
+			}
+			cuse = usedep_flags_to_set(vp->cusestr);
+			inst = best_version(A, BV_INSTALLED);
+			met  = (inst != NULL && atom_satisfied_by(A, inst, cuse)) ||
+					qm_plan_has_match(plan->merge, A, cuse, NULL, NULL, 0);
+			if (!met) {
+				set *es;
+
+				add_set_unique(vp->cpslot, fixable, NULL);
+				es = hash_get(fix_edges, vp->cpslot);
+				if (es == NULL) {
+					es = create_set();
+					hash_add(fix_edges, vp->cpslot, es, NULL);
+				}
+				add_set_unique(vd->atomstr, es, NULL);
+				if (qm_vdb_broken == NULL)
+					qm_vdb_broken = create_set();
+				add_set_unique(vp->cpslot, qm_vdb_broken, NULL);
+				added++;
+			}
+			free_set(cuse);
+			atom_implode(A);
+		}
+	}
+	free_set(planned);
+	return added;
+}
+
 /* Layer 2 (-u): instead of refusing a strand, pull a NEWER binpkg of the
  * stranded revdep (portage would rebuild it; we pull a newer build).
  * That may strand ITS revdeps -> iterate to a fixpoint.
@@ -10173,17 +11110,69 @@ qm_cand_pins_ok(tree_pkg_ctx *cand, hash_t *pinmap)
 	return ok;
 }
 
+/* a binary package remembers the approximate versions of the libraries it was
+ * built with.
+ * it only works if those same versions are present at run time.
+ * each remembered library must either be installed already, or be one
+ * the current run is going to install anyway (those are listed in
+ * pinmap and are checked elsewhere).
+ * a library that is neither means the build would not run here */
+static bool
+qm_cand_pins_installed(tree_pkg_ctx *cand, hash_t *pinmap)
+{
+	char       *rdep = tree_pkg_meta(cand, Q_RDEPEND);
+	set        *cuse;
+	dep_node_t *t;
+	array      *flat;
+	size_t      i;
+	atom_ctx   *A;
+	bool        ok = true;
+
+	if (rdep == NULL || *rdep == '\0')
+		return true;
+	cuse = usedep_flags_to_set(tree_pkg_meta(cand, Q_USE));
+	t    = dep_grow_tree(rdep);
+	if (t == NULL) {
+		free_set(cuse);
+		return true;
+	}
+	dep_prune_use(t, cuse);
+	flat = dep_flatten_tree(t);
+	array_for_each(flat, i, A) {
+		char cpn[512];
+
+		if (A == NULL || A->SUBSLOT == NULL || A->SUBSLOT == A->SLOT ||
+				A->blocker != ATOM_BL_NONE ||
+				A->CATEGORY == NULL || A->PN == NULL)
+			continue;
+		snprintf(cpn, sizeof(cpn), "%s/%s", A->CATEGORY, A->PN);
+		if (hash_get(pinmap, cpn) != NULL)
+			continue;
+		if (best_version(A, BV_INSTALLED) == NULL) {
+			ok = false;
+			break;
+		}
+	}
+	array_free(flat);
+	dep_burn_tree(t);
+	free_set(cuse);
+	return ok;
+}
+
 /* find the best repair candidate for a wayward revdep: newest
  * visible binpkg ACROSS repos (any build id, binpkg-multi-instance
  * rebuilds of the same version count, cf. emerge --rebuilt-binaries)
- * whose baked pins agree with the planned stack */
+ * whose set pins agree with the planned stack */
 static tree_pkg_ctx *
-qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out)
+qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out,
+			   bool allow_down)
 {
 	size_t        rcnt = qm_bintree_cnt();
 	size_t        ri;
 	tree_pkg_ctx *best  = NULL;
 	ssize_t       brepo = -1;
+	tree_pkg_ctx *ip    = best_version(ca, BV_INSTALLED);
+	atom_ctx     *ia    = ip != NULL ? atom_clone(tree_pkg_atom(ip, true)) : NULL;
 
 	for (ri = 0; ri < rcnt; ri++) {
 		tree_ctx     *bt = qm_bintree(ri);
@@ -10200,6 +11189,20 @@ qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out)
 
 			if (binpkg_masked(pa))
 				continue;
+			/* when fixing a package we normally never pick a version
+			 * older than the installed one.
+			 * the deps resolver would reject such a pick anyway, and
+			 * trying it again every round only wastes backtrack
+			 * rounds.
+			 * 
+			 * the one exception is an installed package that already
+			 * needs a library version which is not installed.
+			 * there emerge also accepts an older build, as long as
+			 * that build fits the libraries present here */
+			if (!allow_down && ia != NULL && atom_compare(pa, ia) == OLDER)
+				continue;
+			if (qm_unify_masked(pa) || qm_kg_masked(pa))
+				continue;
 			if (!binpkg_keywords_ok(cand, pa, true) ||
 					!binpkg_chost_ok(cand, pa, true))
 				continue;
@@ -10208,6 +11211,10 @@ qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out)
 			if (binpkg_excluded(cand, pa, true))
 				continue;
 			if (!qm_cand_pins_ok(cand, pinmap))
+				continue;
+			if (qm_bin_pins_state(cand) != QM_PINS_OK)
+				continue;
+			if (allow_down && !qm_cand_pins_installed(cand, pinmap))
 				continue;
 			if (best == NULL ||
 					atom_compare(tree_pkg_atom(cand, true),
@@ -10220,6 +11227,8 @@ qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out)
 		}
 		array_free(t);
 	}
+	if (ia != NULL)
+		atom_implode(ia);
 	*repo_out = brepo;
 	return best;
 }
@@ -10376,6 +11385,9 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 	int  used   = 0;
 	/* cat/pn already held back */
 	set *held   = create_set();
+	/* repair pulls already attempted (=cpv[::@repo]): re-running one
+	 * cannot change the run, so it must not count as progress */
+	set *tried  = create_set();
 
 	if (budget < 0 || budget > QM_MAX_FIXPOINT)
 		budget = QM_MAX_FIXPOINT;
@@ -10392,6 +11404,7 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 
 		/* quiet sweep (fixable != NULL): collect dangling / left behind revdeps */
 		(void)qm_check_slot_conflicts(plan->merge, fixable, fix_edges);
+		(void)qm_vdb_broken_strands(plan, fixable, fix_edges);
 		if (cnt_set(fixable) == 0) {
 			array *ev = hash_values(fix_edges);
 
@@ -10416,11 +11429,14 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 
 			if (ca == NULL)
 				continue;
-			/* strategy A: a rebuilt revdep whose baked pins agree
-			 * with the planned stack, newest across repos, ANY build
-			 * id (a same-version multi-instance rebuild is the normal
-			 * fix when only the provider subslot moved) */
-			newc = qm_repair_pick(ca, pinmap, &nrepo);
+			/* first try: find a newer build of the package that was
+			 * compiled against the library versions this run installs,
+			 * from any binhost, any build number (usually the same
+			 * version rebuilt after the library changed).
+			 * rephrased for the lesser prepared. */
+			newc = qm_repair_pick(ca, pinmap, &nrepo,
+					qm_vdb_broken != NULL &&
+					contains_set(cpslot, qm_vdb_broken) != NULL);
 			if (newc != NULL) {
 				na = tree_pkg_atom(newc, false);
 				snprintf(newcpv, sizeof(newcpv), "%s/%s",
@@ -10446,12 +11462,25 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 				else
 					snprintf(exact, sizeof(exact), "=%s", newcpv);
 				ea = atom_explode(exact);
+				if (ea != NULL && contains_set(exact, tried) != NULL) {
+					atom_implode(ea);
+					ea = NULL;
+				}
 				if (ea != NULL) {
+					size_t nbefore = array_cnt(plan->merge);
+
+					add_set(exact, tried);
 					qm_internal_pull = true;
 					qm_resolve(ea, NULL, plan, 0);
 					qm_internal_pull = false;
 					atom_implode(ea);
-					progress = true;
+					/* count this round as progress only if the package
+					 * really got added. a rejected 'pkg' (older version,
+					 * masked, or w/e missing dependencies) used to count too and
+					 * kept the loop running until it hit the limit */
+					if (array_cnt(plan->merge) != nbefore ||
+							contains_set(newcpv, plan->in_merge) != NULL)
+						progress = true;
 					if (qm_plan_inst != NULL) {
 						char *rp = tree_pkg_meta(newc, Q_PATH);
 
@@ -10467,9 +11496,18 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 						char msg[560];
 						char key[560];
 
-						snprintf(msg, sizeof(msg),
-								 "pulled to repair a dependency conflict "
-								 "(backtrack round %d)", iter + 1);
+						if (qm_vdb_broken != NULL &&
+								contains_set(cpslot, qm_vdb_broken) != NULL)
+							snprintf(msg, sizeof(msg),
+									 "replaced with a build made for the "
+									 "libraries installed here: the installed "
+									 "copy was made for a library version "
+									 "that is not installed "
+									 "(backtrack round %d)", iter + 1);
+						else
+							snprintf(msg, sizeof(msg),
+									 "pulled to repair a dependency conflict "
+									 "(backtrack round %d)", iter + 1);
 						snprintf(key, sizeof(key), "=%s%s%s%s", newcpv,
 								 nrepo >= 0 && qm_nbinrepos > 1 ? " [" : "",
 								 nrepo >= 0 && qm_nbinrepos > 1 ?
@@ -10478,13 +11516,24 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 						qm_notice(key, msg);
 					}
 				}
+			} else if (newc == NULL && qm_vdb_broken != NULL &&
+					   contains_set(cpslot, qm_vdb_broken) != NULL) {
+				/* an installed package was built for a library version
+				 * that is no longer installed, and no binhost has a build
+				 * that fits: keep it as it is and say nothing, like
+				 * emerge treats an installed package it cannot rebuild;
+				 * there is nothing to hold back here */
 			} else if (newc == NULL) {
-				/* strategy B: no rebuilt revdep exists anywhere.
-				 * Lenient (default): keep the provider upgrade and
-				 * tolerate the dangling pin, warning like portage.
-				 * Strict: hold the provider back at its installed
-				 * version and drop planned rebuilds that pin the new
-				 * one, unless the user explicitly asked for it. */
+				/* second try failed too: no binhost has a build of the
+				 * package made for the newer library.
+				 * Lenient (default): upgrade the library anyway, keep
+				 * the package built for the old one and warn, like
+				 * portage. Strict: keep the library at its installed
+				 * version and drop the other packages that were going
+				 * to be reinstalled for the newer one, unless the user
+				 * asked for that library by name.
+				 * ( realized we have to rephrase this pompoous thing too. )*/
+
 				set   *es = hash_get(fix_edges, cpslot);
 				array *ek = es != NULL ? set_keys(es) : NULL;
 				size_t ei;
@@ -10594,6 +11643,7 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 	}
 
 	free_set(held);
+	free_set(tried);
 	/* preview companion line: the pretend/dry-run path runs with
 	 * quiet=1 yet still prints the merge list, so no quiet check here */
 	if (used > 0)
@@ -10916,6 +11966,9 @@ qm_print_dup_demands(array *dups, set *planned)
 			*sep = '\0';
 			if (sata[i] && satb[i]) {
 				either++;
+				if (qm_verbose_conflicts)
+					warn("    %s requires %s -> either side",
+						 rec, sep + 1);
 			} else if (sata[i] != satb[i]) {
 				warn("    %s requires %s -> only %s",
 					 rec, sep + 1, sata[i] ? ca : cb);
@@ -10924,9 +11977,12 @@ qm_print_dup_demands(array *dups, set *planned)
 					 rec, sep + 1);
 			}
 		}
-		if (either > 0)
+		if (either > 0 && !qm_verbose_conflicts) {
 			warn("    (and %d demand%s either side satisfies)",
 				 either, either == 1 ? "" : "s");
+			warn("NOTE: Use the '--verbose-conflicts' option to display "
+				 "parents omitted above");
+		}
 		free(sata);
 		free(satb);
 		array_deepfree(dm, free);
@@ -11142,6 +12198,7 @@ qm_exec_round(struct qm_plan *plan)
 	int     rc = EXIT_SUCCESS;
 
 	qm_print_use_rejects();
+	qm_print_deadpins();
 	/* QMERGE_BLOCKERS feature: drop the soft-blocked installed packages the resolution
 	 * supersedes before merging (with -U, which ideally is safe).
 	 * This is the only place the resolver unmerges a package the user
@@ -11787,6 +12844,7 @@ resolve_again:
 			array_deepfree(dups, free);
 			free_set(planned);
 			qm_verdict_memo_flush();
+			qm_pick_memo_flush();
 			qm_use_rejects_flush();
 			qm_unify_round++;
 			array_deepfree(plan.merge, free);
@@ -11828,6 +12886,7 @@ resolve_again:
 		 * USE-gate rejects explain a respect-use refusal
 		 * that would otherwise read as a bare cannot-satisfy. */
 		qm_print_use_rejects();
+		qm_print_deadpins();
 		if (!qm_kg_summary())
 			warn("nothing to merge (no candidates could be satisfied)");
 		array_deepfree(plan.merge, free);
@@ -12082,6 +13141,7 @@ resolve_again:
 			}
 		}
 		qm_print_use_rejects();
+		qm_print_deadpins();
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
 		/* surface subslot conflicts in the merge list too, like emerge does.
@@ -12139,6 +13199,7 @@ resolve_again:
 
 		if (kg_retry && ++qm_kg_rounds <= QM_MAX_FIXPOINT) {
 			qm_verdict_memo_flush();
+			qm_pick_memo_flush();
 			qm_use_rejects_flush();
 			array_deepfree(plan.merge, free);
 			free_set(plan.in_merge);
@@ -25702,6 +26763,7 @@ int qmerge_main(int argc, char **argv)
 										*optarg == '0' || *optarg == 'f' ||
 										*optarg == 'F') ? 0 : 1;
 					  break;
+			case 150: qm_verbose_conflicts = 1; break;
 			case 127: keep_work = true;    break;
 			case 128: debug = true;        break;
 			COMMON_GETOPTS_CASES(qmerge)
@@ -25768,7 +26830,12 @@ int qmerge_main(int argc, char **argv)
 	/* QMERGE_LENIENT_UPGRADE (default 1): when a strand has no acceptable
 	 * rebuilt binpkg, lenient proceeds with the provider upgrade and warns
 	 * about the dangling pin (portage behavior); strict holds the provider
-	 * back and drops planned rebuilds that pin the new version */
+	 * back and drops planned rebuilds that pin the new version.
+	 * Neither mode ever installs a package built for a library version
+	 * that is not installed and cannot be installed here (the binhost
+	 * moved to qtbase 6.11 while package.mask keeps this machine on
+	 * 6.10): such a build is skipped and the installed copy stays, see
+	 * qm_bin_pins_state */
 	/* lenient-upgrade precedence: $QMERGE_LENIENT_UPGRADE (env prio over
 	 * make.conf) prio over the built-in default (lenient, like portage) */
 	if (qm_lenient < 0) {

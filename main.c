@@ -259,7 +259,7 @@ version_barf(void)
 
 	printf("portage-utils-%s%s\n"
 	       "%s"
-	       "written for Gentoo by solar, vapier and grobian\n",
+	       "written for Gentoo by solar, vapier, grobian and antiqh\n",
 	       VERSION, vcsid, eprefixid);
 	exit(EXIT_SUCCESS);
 }

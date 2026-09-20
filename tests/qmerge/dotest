@@ -2742,7 +2742,7 @@ qmaint binhost -f >/dev/null 2>&1
 # pulls, lenient/strict provider posture, and forward pinned selection
 sostore="${ROOT}/sostore"
 so_craft() {
-	local soname=$1 sover=$2 soslot=$3 sordep=$4 sodest=$5 sobt=$6
+	local soname=$1 sover=$2 soslot=$3 sordep=$4 sodest=$5 sobt=$6 sokw=$7
 	mkdir -p "so-${soname}/xp"
 	(
 		cd "so-${soname}"
@@ -2752,7 +2752,7 @@ so_craft() {
 		echo dev-libs > xp/CATEGORY
 		echo "${soname}-${sover}" > xp/PF
 		echo "${soslot}" > xp/SLOT
-		echo 'amd64 arm64' > xp/KEYWORDS
+		echo "${sokw:-amd64 arm64}" > xp/KEYWORDS
 		printf '%s\n' "${sordep}" > xp/RDEPEND
 		echo "${sobt:-1700000000}" > xp/BUILD_TIME
 		rm -f xp/CHOST
@@ -2817,9 +2817,10 @@ so_craft sopr 1.0 "0" "dev-libs/sopdep:0/2=" dev-libs/sopr/sopr-1.0-2.xpak 18000
 env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
 out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" QMERGE_LENIENT_UPGRADE=0 \
 	qmerge -v "=dev-libs/puller-1.0" 2>&1); rc=$?
-[[ ${rc} -eq 0 && ${out} == *"pulled to repair a dependency conflict"* ]] && \
+[[ ${rc} -eq 0 && ${out} == *"pulled to repair a dependency conflict"* && \
+   ${out} != *"subtree affinity"* ]] && \
 	qlist -Iv 2>/dev/null | grep -q 'sopdep-2.0'
-tend $? "qmerge-test: [SO] rebuilt revdep pulled, provider upgrade kept" \
+tend $? "qmerge-test: [SO] rebuilt revdep pulled, provider upgrade kept, no affinity notice for the only binhost" \
 	|| die "rc=${rc}; $(qlist -Iv 2>&1); ${out}"
 
 grep -q 'sopdep:0/2=' "${ROOT}"/var/db/pkg/dev-libs/sopr-1.0*/RDEPEND
@@ -2827,6 +2828,165 @@ tend $? "qmerge-test: [SO] merged rebuild records the new pin in the VDB" \
 	|| die "$(cat "${ROOT}"/var/db/pkg/dev-libs/sopr-1.0*/RDEPEND 2>&1)"
 
 yes | qmerge -FU puller >/dev/null 2>&1
+yes | qmerge -FU sopr >/dev/null 2>&1
+yes | qmerge -FU sopdep >/dev/null 2>&1
+mkdir -p cfg-so/etc/portage/package.mask
+printf '# unrelated header\n>dev-libs/sonothing-1\n\n# pin sopdep to the 1.x line\n>dev-libs/sopdep-1.5\n' \
+	> cfg-so/etc/portage/package.mask/10-pin
+so_craft sofree 1.0 "0" "" dev-libs/sofree-1.0.tbz2
+so_craft sofree 1.1 "0" "" dev-libs/sofree-1.1.tbz2
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge "=dev-libs/sofree-1.0" >/dev/null 2>&1
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pq "=dev-libs/sopr-1.0" 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} != *"skipped"* && ${out} != *"masked"* ]]
+tend $? "qmerge-test: [SO] --quiet says nothing about a skipped newer build" \
+	|| die "rc=${rc}; ${out}"
+out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -v "=dev-libs/sopr-1.0" 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} != *"have been masked"* && \
+   ${out} == *"The following binary packages were skipped because they need a masked package:"* && \
+   ${out} == *"- dev-libs/sopdep-2.0::local (masked by: package.mask)"* && \
+   ${out} == *"# pin sopdep to the 1.x line"* && \
+   ${out} == *'(dependency required by "dev-libs/sopr-1.0::local" [binary, build '*' skipped])'* && \
+   ${out} != *"For more information"* ]] && \
+	qlist -Iv 2>/dev/null | grep -q 'sopdep-1.0' && \
+	! qlist -Iv 2>/dev/null | grep -q 'sopdep-2.0' && \
+	grep -q 'sopdep:0/1=' "${ROOT}"/var/db/pkg/dev-libs/sopr-1.0*/RDEPEND
+tend $? "qmerge-test: [SO] a build pinned to a masked provider yields to the usable build and is reported as skipped" \
+	|| die "rc=${rc}; $(qlist -Iv 2>&1); ${out}"
+
+rm -f "${sostore}/dev-libs/sopr-1.0.tbz2"
+so_craft sopr 1.1 "0" "dev-libs/sopdep:0/2=" dev-libs/sopr-1.1.tbz2
+so_craft sopr 0.9 "0" "dev-libs/sopdep:0/2=" dev-libs/sopr-0.9.tbz2
+so_craft sonew 1.0 "0" "dev-libs/sopdep:0/2=" dev-libs/sonew-1.0.tbz2
+so_craft sopdep 2.0 "0/2" "" dev-libs/sopdep/sopdep-2.0-2.xpak 1800000000
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv dev-libs/sofree dev-libs/sopr 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sofree-1.1"* && \
+   ${out} != *"dev-libs/sopr-1.1-"* && ${out} != *"dev-libs/sopr-0.9"* && \
+   ${out} == *'All binpkgs that could satisfy "dev-libs/sopdep:0/2=" have been masked.'* && \
+   ${out} == *"- dev-libs/sopdep-2.0::local (masked by: package.mask)"* && \
+   $(grep -c "^- dev-libs/sopdep-2.0::local" <<<"${out}") -eq 1 && \
+   ${out} == *"package.mask/10-pin:"* && \
+   ${out} == *"# pin sopdep to the 1.x line"* && \
+   ${out} != *"# unrelated header"* && \
+   ${out} == *'(dependency required by "dev-libs/sopr-1.1::local" [binary])'* && \
+   ${out} == *"For more information, see the MASKED PACKAGES section in the emerge"* ]]
+tend $? "qmerge-test: [SO] a package whose builds all pin a masked provider is held with emerge's block" \
+	|| die "rc=${rc}; ${out}"
+
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" QMERGE_LENIENT_UPGRADE=1 \
+	qmerge -pv dev-libs/sopr 2>&1); rc=$?
+[[ ${out} != *"dev-libs/sopr-1.1-"* && ${out} != *"[binary "* && \
+   ${out} == *'(dependency required by "dev-libs/sopr-1.1::local" [binary])'* ]]
+tend $? "qmerge-test: [SO] lenient upgrade never installs a build pinned to a masked provider" \
+	|| die "rc=${rc}; ${out}"
+
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv "=dev-libs/sopr-1.1" 2>&1); rc=$?
+[[ ${rc} -ne 0 && ${out} != *"[binary "* && \
+   ${out} == *"have been masked"* && \
+   ${out} == *'"dev-libs/sopr-1.1::local" [binary])'* ]]
+tend $? "qmerge-test: [SO] the explicit build with the dead pin is refused with the block" \
+	|| die "rc=${rc}; ${out}"
+
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv "=dev-libs/sonew-1.0" 2>&1); rc=$?
+[[ ${rc} -ne 0 && ${out} != *"[binary "* && \
+   ${out} == *'(dependency required by "dev-libs/sonew-1.0::local" [binary])'* ]]
+tend $? "qmerge-test: [SO] a fresh install with a dead pin is refused, not held" \
+	|| die "rc=${rc}; ${out}"
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv "=dev-libs/sopdep-2.0" 2>&1); rc=$?
+[[ ${rc} -ne 0 && ${out} != *"[binary "* && \
+   ${out} == *'All binpkgs that could satisfy "=dev-libs/sopdep-2.0" have been masked.'* && \
+   ${out} == *"- dev-libs/sopdep-2.0::local (masked by: package.mask)"* && \
+   ${out} == *"# pin sopdep to the 1.x line"* && \
+   ${out} != *"dependency required by"* && \
+   ${out} == *"For more information, see the MASKED PACKAGES section in the emerge"* ]]
+tend $? "qmerge-test: [SO] a masked argument gets emerge's block without a parent line" \
+	|| die "rc=${rc}; ${out}"
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pq "=dev-libs/sopdep-2.0" 2>&1); rc=$?
+[[ ${rc} -ne 0 && ${out} == *"have been masked."* && \
+   ${out} == *"- dev-libs/sopdep-2.0::local (masked by: package.mask)"* ]]
+tend $? "qmerge-test: [SO] --quiet keeps the masked block like emerge" \
+	|| die "rc=${rc}; ${out}"
+so_craft sokw 1.0 "0" "" dev-libs/sokw-1.0.tbz2 "" "~amd64"
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+printf 'ACCEPT_KEYWORDS="amd64"\n' > cfg-so/etc/portage/make.conf
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv "=dev-libs/sokw-1.0" 2>&1); rc=$?
+rm -f cfg-so/etc/portage/make.conf
+[[ ${rc} -ne 0 && ${out} != *"[binary "* && \
+   ${out} == *'All binpkgs that could satisfy "=dev-libs/sokw-1.0" have been masked.'* && \
+   ${out} == *"- dev-libs/sokw-1.0::local (masked by: ~amd64 keyword)"* ]]
+tend $? "qmerge-test: [SO] a keyword-masked candidate is reported with its keyword" \
+	|| die "rc=${rc}; ${out}"
+
+so_craft soalone 1.0 "0" "" dev-libs/soalone-1.0.tbz2
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -F "=dev-libs/sopdep-2.0" >/dev/null 2>&1
+qlist -Iv 2>/dev/null | grep -q 'sopdep-2.0' && \
+	grep -q 'sopdep:0/1=' "${ROOT}"/var/db/pkg/dev-libs/sopr-1.0*/RDEPEND
+tend $? "qmerge-test: [SO] setup: the VDB holds a revdep pinned to a provider no longer installed" \
+	|| die "$(qlist -Iv 2>&1)"
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv "=dev-libs/soalone-1.0" 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/soalone-1.0"* && \
+   ${out} != *"dev-libs/sopr-"* ]]
+tend $? "qmerge-test: [SO] a run that only adds packages leaves a broken pin in the VDB alone" \
+	|| die "rc=${rc}; ${out}"
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pv dev-libs/sofree 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sofree-1.1"* && \
+   ${out} != *"dev-libs/sopr-"* ]]
+tend $? "qmerge-test: [SO] a plain merge leaves a broken pin in the VDB alone" \
+	|| die "rc=${rc}; ${out}"
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pvu dev-libs/sofree 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sofree-1.1"* && \
+   ${out} == *"[binary U"*"dev-libs/sopr-1.1"* ]]
+tend $? "qmerge-test: [SO] an update run repairs a broken pin with the newest fitting build" \
+	|| die "rc=${rc}; ${out}"
+rm -f "${sostore}/dev-libs/sopr-1.1.tbz2" "${sostore}/dev-libs/sopr/sopr-1.0-2.xpak"
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pvu dev-libs/sofree 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"[binary D"*"dev-libs/sopr-0.9"* ]]
+tend $? "qmerge-test: [SO] the repair downgrades when only an older build fits the installed stack" \
+	|| die "rc=${rc}; ${out}"
+rm -f "${sostore}/dev-libs/sopr-0.9.tbz2"
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pvu dev-libs/sofree 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sofree-1.1"* && \
+   ${out} != *"dev-libs/sopr-"*"KiB"* && \
+   ${out} != *"[installed]"* && ${out} != *"there are no binary packages"* ]]
+tend $? "qmerge-test: [SO] a broken pin nothing repairs stays silent under -v like emerge and the run goes on" \
+	|| die "rc=${rc}; ${out}"
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -pu dev-libs/sofree 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sofree-1.1"* && \
+   ${out} != *"[installed]"* && ${out} != *"there are no binary packages"* ]]
+tend $? "qmerge-test: [SO] without -v the unrepairable pin stays silent like emerge" \
+	|| die "rc=${rc}; ${out}"
+so_craft sopr 0.9 "0" "dev-libs/sopdep:0/2=" dev-libs/sopr-0.9.tbz2
+env PKGDIR="${sostore}" q --root / qmaint binhost -f >/dev/null 2>&1
+out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" \
+	qmerge -vu dev-libs/sofree 2>&1); rc=$?
+[[ ${rc} -eq 0 ]] && qlist -Iv 2>/dev/null | grep -q 'sopr-0.9' && \
+	qlist -Iv 2>/dev/null | grep -q 'sofree-1.1' && \
+	grep -q 'sopdep:0/2=' "${ROOT}"/var/db/pkg/dev-libs/sopr-0.9*/RDEPEND
+tend $? "qmerge-test: [SO] the repair downgrade is merged and records the matching pin" \
+	|| die "rc=${rc}; $(qlist -Iv 2>&1); ${out}"
+
+yes | qmerge -FU soalone >/dev/null 2>&1
+yes | qmerge -FU sofree >/dev/null 2>&1
 yes | qmerge -FU sopr >/dev/null 2>&1
 yes | qmerge -FU sopdep >/dev/null 2>&1
 rm -rf "${sostore}" cfg-so
@@ -4164,6 +4324,20 @@ rcsc=$?
    ${outsc} == *"only dev-libs/prov-"* ]]
 tend $? "qmerge-test: [SU] unresolvable collision refused with listing" \
 	|| die "rc=${rcsc} ${outsc}"
+
+outsv=$(qmerge -p dev-libs/consa dev-libs/consc dev-libs/consb 2>&1)
+rcsv=$?
+[[ ${rcsv} -ne 0 && ${outsv} == *"(and 1 demand either side satisfies)"* && \
+   ${outsv} == *"NOTE: Use the '--verbose-conflicts' option"* && \
+   ${outsv} != *"-> either side"* ]]
+tend $? "qmerge-test: [SU] shared demands are counted and the verbose-conflicts note shown" \
+	|| die "rc=${rcsv} ${outsv}"
+outsv=$(qmerge -p --verbose-conflicts dev-libs/consa dev-libs/consc dev-libs/consb 2>&1)
+rcsv=$?
+[[ ${rcsv} -ne 0 && ${outsv} == *"dev-libs/consb"*"-> either side"* && \
+   ${outsv} != *"either side satisfies)"* && ${outsv} != *"NOTE: Use"* ]]
+tend $? "qmerge-test: [SU] --verbose-conflicts lists the shared demands" \
+	|| die "rc=${rcsv} ${outsv}"
 
 # a user-named target is never masked away to settle a conflict.
 outst=$(qmerge -p dev-libs/consa "=dev-libs/prov-2.0" 2>&1)
