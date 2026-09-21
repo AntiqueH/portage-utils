@@ -4241,7 +4241,37 @@ yes | qmerge -FU dev-libs/wtfail >/dev/null 2>&1
 rm -f "${ROOT}/packages/dev-libs/wtfail-1.0.tbz2"
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
-# same-slot unification (Layer 3). this is hell. 
+qmerge -i >/dev/null 2>&1
+outix4=$(qmerge -i 2>&1)
+[[ ${outix4} =~ indexed\ ([0-9]+)\ binpkgs?\ \(([0-9]+)\ reused\) && \
+   ${BASH_REMATCH[1]} -gt 0 && ${BASH_REMATCH[1]} -eq ${BASH_REMATCH[2]} ]]
+tend $? "qmerge-test: [IX] an unchanged store reuses every index entry" \
+	|| die "${outix4}"
+
+printf 'not a package\n' > "${ROOT}/packages/dev-libs/junk-1.0.tbz2"
+touch -d '2020-01-01' "${ROOT}/packages/dev-libs/junk-1.0.tbz2"
+outix5=$(qmerge -pv qmerge-test 2>&1)
+[[ ${outix5} == *"Invalid binary package"*"junk-1.0.tbz2"* && \
+   -f ${ROOT}/packages/.index-rejected ]] && \
+	grep -q "^dev-libs/junk-1.0.tbz2" "${ROOT}/packages/.index-rejected"
+tend $? "qmerge-test: [IX] an unlisted broken file triggers one refresh that records it as rejected" \
+	|| die "${outix5} $(cat "${ROOT}/packages/.index-rejected" 2>&1)"
+ixm1=$(stat -c %y "${ROOT}/packages/Packages")
+outix6=$(qmerge -pv qmerge-test 2>&1)
+ixm2=$(stat -c %y "${ROOT}/packages/Packages")
+[[ ${outix6} != *"Invalid binary package"* && ${ixm1} == "${ixm2}" ]]
+tend $? "qmerge-test: [IX] the rejected file does not force a refresh on the next run" \
+	|| die "${outix6} before ${ixm1} after ${ixm2}"
+sleep 1
+touch "${ROOT}/packages/dev-libs/junk-1.0.tbz2"
+outix7=$(qmerge -pv qmerge-test 2>&1)
+[[ ${outix7} == *"Invalid binary package"*"junk-1.0.tbz2"* ]]
+tend $? "qmerge-test: [IX] a changed rejected file is looked at again" \
+	|| die "${outix7}"
+rm -f "${ROOT}/packages/dev-libs/junk-1.0.tbz2"
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+
+# same-slot unification (Layer 3). this is hell.
 # a resolution holding two versions of one cat/pn:slot backtracks like portage 
 # (mask the loser, re-resolve).no instant refusal.
 
@@ -5616,7 +5646,58 @@ tend $? "qmerge-test: [DC] a pending package move is applied before the depclean
 outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-dcmv" QMERGE_MOVES=binhost-only qmerge -pc 2>&1); rcdc=$?
 [[ ${rcdc} -eq 0 && ${outdc} != *"applied "*"package move"* ]]
 tend $? "qmerge-test: [DC] an already applied move is not applied twice" || die "rc=${rcdc} ${outdc}"
+dc_vdb dc-libs/old2-1 0 ""
+printf 'move dc-libs/old dc-libs/new\nmove dc-libs/old2 dc-libs/new2\n' > "${ROOT}/mvstore/Moves"
+outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-dcmv" QMERGE_MOVES=binhost-only \
+	qmerge -p sys-devel/qmerge-test 2>&1); rcdc=$?
+[[ -d ${ROOT}/var/db/pkg/dc-libs/new2-1 && ! -d ${ROOT}/var/db/pkg/dc-libs/old2-1 ]]
+tend $? "qmerge-test: [DC] a pretend merge run applies a pending move when the installed database is writable" \
+	|| die "rc=${rcdc} $(ls "${ROOT}/var/db/pkg/dc-libs" 2>&1) ${outdc}"
 rm -rf "${ROOT}/mvstore" "${PWD}/cfg-dcmv"
+
+# a repository's move instructions reach only the packages that came from
+# THAT repository
+# the main repository also covers packages whose repository has no
+# update files of its own, so we had to clone portage behavior on
+# management of updates/profiles, and add our own tests for our
+# own headache moves (profiles/updates)
+dc_reset
+dc_vdb mv-a/apkg-1 0 "" && echo mra > "${ROOT}/var/db/pkg/mv-a/apkg-1/repository"
+dc_vdb mv-b/bpkg-1 0 "" && echo mrb > "${ROOT}/var/db/pkg/mv-b/bpkg-1/repository"
+dc_vdb mv-a/adep-1 0 "mv-b/bpkg mv-a/apkg" && \
+	echo mra > "${ROOT}/var/db/pkg/mv-a/adep-1/repository"
+dc_vdb mv-b/bdep-1 0 "mv-a/apkg mv-b/bpkg" && \
+	echo mrb > "${ROOT}/var/db/pkg/mv-b/bdep-1/repository"
+dc_vdb mv-c/cdep-1 0 "mv-a/apkg mv-b/bpkg"
+dc_world mv-a/adep mv-b/bdep mv-c/cdep mv-a/apkg mv-b/bpkg
+mkdir -p "${PWD}/cfg-mvr/etc/portage" "${ROOT}/mra/profiles/updates" \
+	"${ROOT}/mrb/profiles/updates"
+printf '[DEFAULT]\nmain-repo = mra\n[mra]\nlocation = /mra\n[mrb]\nlocation = /mrb\n' \
+	> "${PWD}/cfg-mvr/etc/portage/repos.conf"
+printf 'move mv-a/apkg mv-a/apkgnew\n' > "${ROOT}/mra/profiles/updates/1Q-2026"
+printf 'move mv-b/bpkg mv-b/bpkgnew\n' > "${ROOT}/mrb/profiles/updates/1Q-2026"
+outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-mvr" QMERGE_MOVES=repo-only qmerge -pc 2>&1); rcdc=$?
+[[ -d ${ROOT}/var/db/pkg/mv-a/apkgnew-1 && ! -d ${ROOT}/var/db/pkg/mv-a/apkg-1 && \
+   -d ${ROOT}/var/db/pkg/mv-b/bpkgnew-1 && ! -d ${ROOT}/var/db/pkg/mv-b/bpkg-1 ]]
+tend $? "qmerge-test: [DC] each repository's move renames its own installed package" \
+	|| die "rc=${rcdc} $(ls -R "${ROOT}/var/db/pkg" 2>&1) ${outdc}"
+[[ $(cat "${ROOT}/var/db/pkg/mv-a/adep-1/RDEPEND") == "mv-b/bpkg mv-a/apkgnew" && \
+   $(cat "${ROOT}/var/db/pkg/mv-b/bdep-1/RDEPEND") == "mv-a/apkg mv-b/bpkgnew" ]]
+tend $? "qmerge-test: [DC] a repository's move never rewrites another repository's dependency records" \
+	|| die "rc=${rcdc} a: $(cat "${ROOT}/var/db/pkg/mv-a/adep-1/RDEPEND") b: $(cat "${ROOT}/var/db/pkg/mv-b/bdep-1/RDEPEND") ${outdc}"
+[[ $(cat "${ROOT}/var/db/pkg/mv-c/cdep-1/RDEPEND") == "mv-a/apkgnew mv-b/bpkg" ]]
+tend $? "qmerge-test: [DC] a package of unknown repository follows the main repository's moves only" \
+	|| die "rc=${rcdc} c: $(cat "${ROOT}/var/db/pkg/mv-c/cdep-1/RDEPEND") ${outdc}"
+grep -qx "mv-a/apkgnew" "${ROOT}/var/lib/portage/world" && \
+	grep -qx "mv-b/bpkgnew" "${ROOT}/var/lib/portage/world" && \
+	! grep -q "mv-a/apkg$\|mv-b/bpkg$" "${ROOT}/var/lib/portage/world"
+tend $? "qmerge-test: [DC] world entries follow the move of the package they name" \
+	|| die "rc=${rcdc} $(cat "${ROOT}/var/lib/portage/world") ${outdc}"
+[[ -f ${ROOT}/var/cache/edb/.qmerge-moves-applied.mra && \
+   -f ${ROOT}/var/cache/edb/.qmerge-moves-applied.mrb ]]
+tend $? "qmerge-test: [DC] every repository keeps its own applied-moves marker" \
+	|| die "$(ls -a "${ROOT}/var/cache/edb" 2>&1)"
+rm -rf "${ROOT}/mra" "${ROOT}/mrb" "${PWD}/cfg-mvr" "${ROOT}"/var/cache/edb/.qmerge-moves-applied.*
 
 dc_reset
 rm -rf "${ROOT}/var/db/pkg"; cp -a "${dc_saved}" "${ROOT}/var/db/pkg"; rm -rf "${dc_saved}"

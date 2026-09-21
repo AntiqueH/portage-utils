@@ -2784,6 +2784,8 @@ qmerge_initialize(void)
 
 		qm_fetch_meta = false;
 
+		/* the repositories' update records are applied before a pretend
+		 * this one is new for us, we will see how we'll handle it. */
 		if (!pretend) {
 			qm_apply_moves_all();
 			qm_apply_news_all();
@@ -3432,6 +3434,85 @@ qm_move_rewrite_file(const char *path, const char *oldcp, const char *newcp)
 	return true;
 }
 
+/* the repository whose move instructions are being applied LIVE:
+ * NULL means no filter (a binhost's fetched Moves file). Portage applies
+ * a repository's moves (update profiles) only to the installed packages
+ * that came from it, the main repo overlay also covering packages
+ * whose repository carries no  update files of its own */
+static const char *qm_mv_repo    = NULL;
+static bool        qm_mv_is_main = false;
+static set        *qm_mv_repos   = NULL;
+
+static bool
+qm_mv_pkg_ok(const char *pdir)
+{
+	char    path[_Q_PATH_MAX];
+	char   *buf = NULL;
+	size_t  len = 0;
+	bool    ok;
+
+	if (qm_mv_repo == NULL)
+		return true;
+	snprintf(path, sizeof(path), "%s/repository", pdir);
+	if (!eat_file(path, &buf, &len) || buf == NULL) {
+		free(buf);
+		return qm_mv_is_main;
+	}
+	rmspace(buf);
+	if (buf[0] == '\0')
+		ok = qm_mv_is_main;
+	else if (strcmp(buf, qm_mv_repo) == 0)
+		ok = true;
+	else
+		ok = qm_mv_is_main &&
+			 (qm_mv_repos == NULL || contains_set(buf, qm_mv_repos) == NULL);
+	free(buf);
+	return ok;
+}
+
+/* the VDB directory of an installed cat/pn, empty when none */
+static void
+qm_mv_installed_dir(const char *cp, char *out, size_t olen)
+{
+	char           cat[128];
+	char           pn[128];
+	char          *cdir;
+	DIR           *d;
+	struct dirent *de;
+	const char    *s = strchr(cp, '/');
+
+	out[0] = '\0';
+	if (s == NULL)
+		return;
+	snprintf(cat, sizeof(cat), "%.*s",
+			 (int)MIN((size_t)(s - cp), sizeof(cat) - 1), cp);
+	snprintf(pn, sizeof(pn), "%s", s + 1);
+	xasprintf(&cdir, "%s%s/%s", portroot, portvdb, cat);
+	d = opendir(cdir);
+	if (d != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			char        *cpvbuf;
+			depend_atom *a;
+			bool         hit;
+
+			if (de->d_name[0] == '.' || de->d_name[0] == '-')
+				continue;
+			xasprintf(&cpvbuf, "%s/%s", cat, de->d_name);
+			a   = atom_explode(cpvbuf);
+			hit = a != NULL && a->PN != NULL && strcmp(a->PN, pn) == 0;
+			if (a != NULL)
+				atom_implode(a);
+			free(cpvbuf);
+			if (hit) {
+				snprintf(out, olen, "%s/%s", cdir, de->d_name);
+				break;
+			}
+		}
+		closedir(d);
+	}
+	free(cdir);
+}
+
 /* rename the VDB entries of oldcp to newcp (dir, CATEGORY, PF);
  * collision with an existing entry under the new name = skip + warn.
  * mammoth of functions that have no architectural explanation bellow. */
@@ -3486,6 +3567,10 @@ qm_apply_move_ent(const char *oldcp, const char *newcp)
 			continue;
 
 		xasprintf(&oldpath, "%s/%s", cdir, de->d_name);
+		if (!qm_mv_pkg_ok(oldpath)) {
+			free(oldpath);
+			continue;
+		}
 		xasprintf(&newcdir, "%s%s/%s", portroot, portvdb, newcat);
 		xasprintf(&newpath, "%s/%s%s", newcdir, newpn,
 				  de->d_name + strlen(oldpn));
@@ -3526,10 +3611,10 @@ qm_apply_move_ent(const char *oldcp, const char *newcp)
 }
 
 static int
-qm_apply_slotmove(const char *atomstr, const char *olds, const char *news)
+qm_apply_slotmove(tree_ctx *vdb, const char *atomstr, const char *olds,
+				  const char *news)
 {
 	depend_atom  *qa = atom_explode(atomstr);
-	tree_ctx     *vdb;
 	array        *t;
 	size_t        n;
 	tree_pkg_ctx *p;
@@ -3539,7 +3624,6 @@ qm_apply_slotmove(const char *atomstr, const char *olds, const char *news)
 		warn("Moves: malformed slotmove atom: %s", atomstr);
 		return 0;
 	}
-	vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
 	if (vdb == NULL) {
 		atom_implode(qa);
 		return 0;
@@ -3553,6 +3637,13 @@ qm_apply_slotmove(const char *atomstr, const char *olds, const char *news)
 
 		if (slot == NULL || strcmp(slot, olds) != 0)
 			continue;
+		xasprintf(&spath, "%s%s/%s/%s",
+				  portroot, portvdb, pa->CATEGORY, pa->PF);
+		if (!qm_mv_pkg_ok(spath)) {
+			free(spath);
+			continue;
+		}
+		free(spath);
 		xasprintf(&spath, "%s%s/%s/%s/SLOT",
 				  portroot, portvdb, pa->CATEGORY, pa->PF);
 		f = fopen(spath, "w");
@@ -3566,7 +3657,6 @@ qm_apply_slotmove(const char *atomstr, const char *olds, const char *news)
 		free(spath);
 	}
 	array_free(t);
-	tree_close(vdb);
 	atom_implode(qa);
 	return hits;
 }
@@ -3575,16 +3665,32 @@ static const char * const qm_move_depfiles[] = {
 	"RDEPEND", "DEPEND", "PDEPEND", "BDEPEND", "IDEPEND", NULL
 };
 
-/* rewrite old cat/pn references in every installed pkg's dep strings
- * (runs even when oldcp itself is not installed: revdeps may still
- * reference the old name) */
+/* rewrite old cat/pn references in every installed pkg's dep strings,
+ * the whole move list in one pass over the installed packages: each
+ * dependency file is read once, every move applied to it in order, and
+ * written once when something changed. Runs even when the moved
+ * package itself is not installed: dependents may still name it */
+static bool qm_move_rewrite_map(const char *in, hash_t *map, char **outp);
+
 static void
-qm_move_vdb_deps(const char *oldcp, const char *newcp)
+qm_move_vdb_deps(array *mv)
 {
 	char          *vdir;
 	DIR           *cd;
 	struct dirent *ce;
+	size_t         mi;
+	struct move   *m;
+	hash_t        *map = NULL;
 
+	array_for_each(mv, mi, m) {
+		if (m->slotmove)
+			continue;
+		if (map == NULL)
+			map = hash_new();
+		hash_add(map, m->a1, m->a2, NULL);
+	}
+	if (map == NULL)
+		return;
 	xasprintf(&vdir, "%s%s", portroot, portvdb);
 	cd = opendir(vdir);
 	if (cd == NULL) {
@@ -3607,32 +3713,161 @@ qm_move_vdb_deps(const char *oldcp, const char *newcp)
 		while ((pe = readdir(pd)) != NULL) {
 			size_t di;
 			char  *mp;
+			char  *pkgd;
 
 			if (pe->d_name[0] == '.' || pe->d_name[0] == '-')
 				continue;
+			xasprintf(&pkgd, "%s/%s", pdir, pe->d_name);
+			if (!qm_mv_pkg_ok(pkgd)) {
+				free(pkgd);
+				continue;
+			}
 			for (di = 0; qm_move_depfiles[di] != NULL; di++) {
-				char *fp;
+				char   *fp;
+				char   *buf = NULL;
+				size_t  len = 0;
+				char   *cur;
+				bool    changed = false;
 
-				xasprintf(&fp, "%s/%s/%s",
-						  pdir, pe->d_name, qm_move_depfiles[di]);
-				(void)qm_move_rewrite_file(fp, oldcp, newcp);
+				xasprintf(&fp, "%s/%s", pkgd, qm_move_depfiles[di]);
+				if (!eat_file(fp, &buf, &len) || buf == NULL) {
+					free(buf);
+					free(fp);
+					continue;
+				}
+				cur = buf;
+				{
+					char *nb = NULL;
+
+					if (qm_move_rewrite_map(buf, map, &nb)) {
+						cur     = nb;
+						changed = true;
+					}
+				}
+				if (changed) {
+					FILE *f = fopen(fp, "w");
+
+					if (f != NULL) {
+						fputs(cur, f);
+						fclose(f);
+					} else {
+						warnp("Moves: cannot rewrite %s", fp);
+					}
+					xasprintf(&mp, "%s/metadata", pkgd);
+					if (access(mp, F_OK) == 0)
+						(void)tree_vdbmeta_consolidate(pkgd, false, true);
+					free(mp);
+				}
+				if (cur != buf)
+					free(cur);
+				free(buf);
 				free(fp);
 			}
-			xasprintf(&mp, "%s/%s/metadata", pdir, pe->d_name);
-			if (access(mp, F_OK) == 0) {
-				char *pkgd;
-
-				xasprintf(&pkgd, "%s/%s", pdir, pe->d_name);
-				(void)tree_vdbmeta_consolidate(pkgd, false, true);
-				free(pkgd);
-			}
-			free(mp);
+			free(pkgd);
 		}
 		closedir(pd);
 		free(pdir);
 	}
 	closedir(cd);
 	free(vdir);
+	hash_free(map);
+}
+
+/* 0times: I will update the docs for this one here */
+static bool
+qm_move_rewrite_map(const char *in, hash_t *map, char **outp)
+{
+	size_t      cap  = strlen(in) + 1;
+	char       *out  = xmalloc(cap);
+	size_t      olen = 0;
+	const char *p    = in;
+	bool        changed = false;
+
+	while (*p != '\0') {
+		const char *tok;
+		size_t      toklen;
+		const char *m;
+		size_t      plen;
+		char        cp[512];
+		const char *cur;
+		int         hops;
+
+		while (*p != '\0' && isspace((unsigned char)*p)) {
+			if (olen + 2 > cap) {
+				cap *= 2;
+				out = xrealloc(out, cap);
+			}
+			out[olen++] = *p++;
+		}
+		if (*p == '\0')
+			break;
+		tok = p;
+		while (*p != '\0' && !isspace((unsigned char)*p))
+			p++;
+		toklen = (size_t)(p - tok);
+
+		m = tok;
+		while (m < tok + toklen &&
+				(*m == '!' || *m == '<' || *m == '>' ||
+				 *m == '=' || *m == '~'))
+			m++;
+		plen = 0;
+		while (m + plen < tok + toklen) {
+			char c = m[plen];
+
+			if (c == ':' || c == '[' || c == '*')
+				break;
+			if (c == '-' && m + plen + 1 < tok + toklen &&
+					isdigit((unsigned char)m[plen + 1]))
+				break;
+			plen++;
+		}
+		cur = NULL;
+		if (plen > 0 && plen < sizeof(cp) && memchr(m, '/', plen) != NULL) {
+			memcpy(cp, m, plen);
+			cp[plen] = '\0';
+			for (hops = 0; hops < 16; hops++) {
+				const char *nx = hash_get(map, cur != NULL ? cur : cp);
+
+				if (nx == NULL)
+					break;
+				cur = nx;
+			}
+		}
+		if (cur != NULL) {
+			size_t nlen = strlen(cur);
+			size_t rest = toklen - (size_t)(m - tok) - plen;
+			size_t need = olen + (size_t)(m - tok) + nlen + rest + 1;
+
+			while (need > cap) {
+				cap *= 2;
+				out = xrealloc(out, cap);
+			}
+			memcpy(out + olen, tok, (size_t)(m - tok));
+			olen += (size_t)(m - tok);
+			memcpy(out + olen, cur, nlen);
+			olen += nlen;
+			memcpy(out + olen, m + plen, rest);
+			olen += rest;
+			changed = true;
+		} else {
+			while (olen + toklen + 1 > cap) {
+				cap *= 2;
+				out = xrealloc(out, cap);
+			}
+			memcpy(out + olen, tok, toklen);
+			olen += toklen;
+		}
+	}
+	if (olen + 1 > cap)
+		out = xrealloc(out, olen + 1);
+	out[olen] = '\0';
+	if (!changed) {
+		free(out);
+		return false;
+	}
+	*outp = out;
+	return true;
 }
 
 static void
@@ -3640,14 +3875,23 @@ qm_move_world(const char *oldcp, const char *newcp)
 {
 	char *wpath;
 
+	if (qm_mv_repo != NULL) {
+		char idir[_Q_PATH_MAX];
+
+		qm_mv_installed_dir(newcp, idir, sizeof(idir));
+		if (idir[0] == '\0')
+			qm_mv_installed_dir(oldcp, idir, sizeof(idir));
+		if (idir[0] == '\0' || !qm_mv_pkg_ok(idir))
+			return;
+	}
 	xasprintf(&wpath, "%svar/lib/portage/world", portroot);
 	if (qm_move_rewrite_file(wpath, oldcp, newcp))
 		qprintf("%s>>>%s world: %s -> %s\n", GREEN, NORM, oldcp, newcp);
 	free(wpath);
 }
 
-/* chronological concatenation of the main repo's profiles/updates
- * files; NULL when this host has no repo checkout */
+/* chronological concatenation of one repository's profiles/updates
+ * files; set as NULL when the repository has none */
 struct qm_updfile {
 	int   year;
 	int   quarter;
@@ -3666,7 +3910,7 @@ qm_updfile_cmp(const void *va, const void *vb)
 }
 
 static char *
-qm_collect_updates(void)
+qm_collect_updates_dir(const char *repopath)
 {
 	char               updir[_Q_PATH_MAX];
 	DIR               *d;
@@ -3678,10 +3922,10 @@ qm_collect_updates(void)
 	char              *out  = NULL;
 	size_t             olen = 0;
 
-	if (main_overlay == NULL)
+	if (repopath == NULL)
 		return NULL;
 	snprintf(updir, sizeof(updir), "%s%s/profiles/updates", portroot,
-			 main_overlay[0] == '/' ? main_overlay + 1 : main_overlay);
+			 repopath[0] == '/' ? repopath + 1 : repopath);
 	d = opendir(updir);
 	if (d == NULL)
 		return NULL;
@@ -3730,6 +3974,13 @@ qm_collect_updates(void)
 	return out;
 }
 
+/* the main repository's update files, for the resolve-time diagnostics */
+static char *
+qm_collect_updates(void)
+{
+	return qm_collect_updates_dir(main_overlay);
+}
+
 /* does any binhost catalog carry cp at all */
 static bool
 qm_bin_has_cp(const char *cp)
@@ -3762,7 +4013,7 @@ qm_bin_has_cp(const char *cp)
  * Returns -1 when skipped (unchanged/refused), else the number of VDB mutations. */
 static int
 qm_apply_moves_buf(const char *mbuf, const char *rname, const char *apath,
-				   bool trusted)
+				   bool trusted, const char *repo, bool is_main)
 {
 	char           *abuf = NULL;
 	size_t          alen = 0;
@@ -3773,9 +4024,12 @@ qm_apply_moves_buf(const char *mbuf, const char *rname, const char *apath,
 
 	if (mbuf == NULL || mbuf[0] == '\0')
 		return -1;
+	qm_mv_repo    = repo;
+	qm_mv_is_main = is_main;
 	if (eat_file(apath, &abuf, &alen) && abuf != NULL &&
 			strcmp(abuf, mbuf) == 0) {
 		free(abuf);
+		qm_mv_repo = NULL;
 		return -1;
 	}
 	free(abuf);
@@ -3785,27 +4039,36 @@ qm_apply_moves_buf(const char *mbuf, const char *rname, const char *apath,
 	if (!trusted && contains_set("binpkg-request-signature", features)) {
 		warn("Moves from %s is unsigned but FEATURES="
 			 "binpkg-request-signature is set -- not applying", rname);
+		qm_mv_repo = NULL;
 		return -1;
 	}
 	mv = moves_parse(mbuf);
-	array_for_each(mv, mi, m) {
-		if (m->slotmove) {
-			applied += qm_apply_slotmove(m->a1, m->a2, m->a3);
-		} else {
-			int mvd = qm_apply_move_ent(m->a1, m->a2);
+	{
+		tree_ctx *vdb = NULL;
 
-			applied += mvd;
-			qm_move_vdb_deps(m->a1, m->a2);
-			qm_move_world(m->a1, m->a2);
-			/* the source tree renamed an INSTALLED pkg but no binhost
-			 * carries the new name yet: tell the user instead of
-			 * letting the next resolve fail bare */
-			if (mvd > 0 && !qm_bin_has_cp(m->a2))
-				warn("source tree moved %s to %s but no prebuilt "
-					 "binary of %s exists on any binhost yet; "
-					 "use emerge to compile it", m->a1, m->a2, m->a2);
+		array_for_each(mv, mi, m) {
+			if (m->slotmove) {
+				if (vdb == NULL)
+					vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+				applied += qm_apply_slotmove(vdb, m->a1, m->a2, m->a3);
+			} else {
+				int mvd = qm_apply_move_ent(m->a1, m->a2);
+
+				applied += mvd;
+				qm_move_world(m->a1, m->a2);
+				/* the source tree renamed an INSTALLED pkg but no
+				 * binhost carries the new name yet: tell the user
+				 * instead of letting the next resolve fail bare */
+				if (mvd > 0 && !qm_bin_has_cp(m->a2))
+					warn("source tree moved %s to %s but no prebuilt "
+						 "binary of %s exists on any binhost yet; "
+						 "use emerge to compile it", m->a1, m->a2, m->a2);
+			}
 		}
+		if (vdb != NULL)
+			tree_close(vdb);
 	}
+	qm_move_vdb_deps(mv);
 	moves_free(mv);
 	if (applied > 0)
 		qprintf("%s>>>%s applied %d package move(s) from %s\n",
@@ -3818,6 +4081,7 @@ qm_apply_moves_buf(const char *mbuf, const char *rname, const char *apath,
 			fclose(f);
 		}
 	}
+	qm_mv_repo = NULL;
 	return applied;
 }
 
@@ -3845,7 +4109,7 @@ qm_apply_moves_binhost(void)
 		if (eat_file(mpath, &mbuf, &mlen) &&
 				mbuf != NULL && mbuf[0] != '\0') {
 			any = true;
-			(void)qm_apply_moves_buf(mbuf, rname, apath, false);
+			(void)qm_apply_moves_buf(mbuf, rname, apath, false, NULL, false);
 		}
 		free(mpath);
 		free(apath);
@@ -3856,18 +4120,37 @@ qm_apply_moves_binhost(void)
 
 /* apply the repo's own profiles/updates; the source of truth portage
  * applies on sync.
- * notice = mention outranked binhost Moves files */
-static void
-qm_apply_moves_repo(const char *repoupd, bool notice)
+ * notice = mention outranked binhost Moves files.
+ * Returns true when at least one repository carries update files */
+static bool
+qm_apply_moves_repos(bool notice)
 {
 	char  *edir;
-	char  *apath;
 	bool   have_moves = false;
+	bool   any_upd    = false;
+	bool   applied    = false;
 	size_t nrepo = qm_nbinrepos > 0 ? qm_nbinrepos : 1;
 	size_t i;
+	char  *path;
+	array *bufs = array_new();
 
-	if (repoupd == NULL)
-		return;
+	if (qm_mv_repos != NULL)
+		free_set(qm_mv_repos);
+	qm_mv_repos = create_set();
+	array_for_each(overlays, i, path) {
+		char *buf  = qm_collect_updates_dir(path);
+		char *name = array_get(overlay_names, i);
+
+		if (buf != NULL && name != NULL) {
+			add_set(name, qm_mv_repos);
+			any_upd = true;
+		}
+		array_append(bufs, buf);
+	}
+	if (!any_upd) {
+		array_free(bufs);
+		return false;
+	}
 	if (notice) {
 		for (i = 0; i < nrepo && !have_moves; i++) {
 			char        locbuf[_Q_PATH_MAX];
@@ -3883,39 +4166,54 @@ qm_apply_moves_repo(const char *repoupd, bool notice)
 	}
 	xasprintf(&edir, "%s%s", portroot, portedb);
 	mkdir_p(edir, 0755);
-	xasprintf(&apath, "%s/.qmerge-moves-applied", edir);
-	if (qm_apply_moves_buf(repoupd, "repo profiles/updates",
-						   apath, true) >= 0 && have_moves)
+	array_for_each(overlays, i, path) {
+		char       *buf  = array_get(bufs, i);
+		const char *name = array_get(overlay_names, i);
+		char       *apath;
+		char       *rname;
+		char        safe[256];
+		size_t      k;
+		bool        is_main;
+
+		if (buf == NULL || name == NULL)
+			continue;
+		is_main = main_overlay != NULL && strcmp(path, main_overlay) == 0;
+		snprintf(safe, sizeof(safe), "%s", name);
+		for (k = 0; safe[k] != '\0'; k++)
+			if (safe[k] == '/' || safe[k] == '<' || safe[k] == '>')
+				safe[k] = '_';
+		xasprintf(&apath, "%s/.qmerge-moves-applied.%s", edir, safe);
+		xasprintf(&rname, "repo %s profiles/updates", name);
+		if (qm_apply_moves_buf(buf, rname, apath, true, name, is_main) >= 0)
+			applied = true;
+		free(rname);
+		free(apath);
+		free(buf);
+	}
+	if (applied && have_moves)
 		qprintf("%s>>>%s repo profiles/updates take priority; "
 				"binhost Moves files ignored\n", GREEN, NORM);
-	free(apath);
+	array_free(bufs);
 	free(edir);
+	return true;
 }
 
 static void
 qm_apply_moves_all(void)
 {
 	enum qm_mvpol pol = qm_moves_policy();
-	char         *repoupd;
 
 	if (pol == QM_MV_NONE)
 		return;
 
 	if (pol == QM_MV_BINHOST || pol == QM_MV_BINHOST_ONLY) {
-		if (!qm_apply_moves_binhost() && pol == QM_MV_BINHOST) {
-			repoupd = qm_collect_updates();
-			qm_apply_moves_repo(repoupd, false);
-			free(repoupd);
-		}
+		if (!qm_apply_moves_binhost() && pol == QM_MV_BINHOST)
+			(void)qm_apply_moves_repos(false);
 		return;
 	}
 
-	repoupd = qm_collect_updates();
-	if (repoupd != NULL)
-		qm_apply_moves_repo(repoupd, pol == QM_MV_REPO);
-	else if (pol == QM_MV_REPO)
+	if (!qm_apply_moves_repos(pol == QM_MV_REPO) && pol == QM_MV_REPO)
 		(void)qm_apply_moves_binhost();
-	free(repoupd);
 }
 
 /* move-instruction map for resolve-time diagnostics: repo updates when
@@ -9695,13 +9993,13 @@ qm_report_conflict(struct qm_scctx *sc, const char *revdep,
 		if (contains_set(tk, qm_tolerated) != NULL) {
 			if (sc->fixable == NULL)
 				warn("%s: pin %s left unsatisfied, tolerated under "
-					 "QMERGE_LENIENT_UPGRADE=1; continuing.",
+					 "QMERGE_LENIENT_UPGRADE=1; continuing. We recommend recompiling.",
 					 revdep, atomstr);
 			return;
 		}
 	}
 	sc->conflicts++;
-	/* Layer 2: a slot/slotless strand is fixable by upgrading the dangling package */
+	/* Layer 2: a broken slot or slotless dependency is fixable by upgrading the package that holds it */
 	if (sc->fixable != NULL) {
 		if (revdep_cpslot != NULL)
 			add_set(revdep_cpslot, sc->fixable);
@@ -10309,8 +10607,9 @@ qm_surviving_installed_satisfies(atom_ctx *pos, set *planned, set *use)
  * groups, but skip `|| ( )` any-of groups entirely. The* alternatives are not
  * individually required, so flattening them into edges invents conflicts (perl
  * virtuals declare `|| ( =perl-5.42* =perl-5.40* ... )`, treating each slot as
- * required fires spurious strands). Presumably safe under-approx: we may miss a conflict
- * where EVERY alternative fails, but never manufactured one.
+ * required reports broken dependencies that do not exist).
+ * Presumably safe under-approx: we may miss a conflict where EVERY alternative
+ * fail.
  * This needs a careful refactoring, portage-parity here can help in not very
  * helpful case.*/
 static void
@@ -10503,8 +10802,8 @@ qm_edges_from_frozen(struct qm_scctx *sc)
 	}
 }
 
-/* Resolve the complete end-state graph and refuse a resolution that would strand a
- * package we can't rebuild from a binpkg.
+/* Resolve the complete end-state graph and refuse a resolution that would break a
+ * dependency of a package we can't rebuild from a binpkg.
  * End-state = (installed pkgs the resolution doesn't replace) + (planned binpkgs).
  * For every RDEPEND edge of every end-state pkg that points at a cat/pn:slot
  * the resolution changes, check the planned version still satisfies the full atom
@@ -10566,7 +10865,7 @@ qm_check_slot_conflicts(array *merge, set *fixable, hash_t *fix_edges)
 		if (prev != NULL && strcmp(prev, cpvp) != 0) {
 			sc.conflicts++;
 			if (sc.fixable == NULL && sc.printed < 12) {
-				warn("slot collision: the plan installs both %s and %s in the "
+				warn("slot collision: the run installs both %s and %s in the "
 					 "same slot (%s) -- contradictory versions, refusing",
 					 prev, cpvp, cpslot);
 				sc.printed++;
@@ -11008,15 +11307,15 @@ qm_vdb_broken_strands(struct qm_plan *plan, set *fixable, hash_t *fix_edges)
 	return added;
 }
 
-/* Layer 2 (-u): instead of refusing a strand, pull a NEWER binpkg of the
- * stranded revdep (portage would rebuild it; we pull a newer build).
- * That may strand ITS revdeps -> iterate to a fixpoint.
+/* Layer 2 (-u): instead of refusing a broken dependency, pull a NEWER binpkg of the
+ * package whose dependency broke (portage would rebuild it; we pull a newer build).
+ * That may break the dependencies of ITS revdeps -> iterate to a fixpoint.
  * Monotone: each step adds a strictly-newer, not-yet-planned version,
  * so it terminates; the cap is only a backstop.
  * Blockers and provider-downgrades never land in `fixable`, so
  * they persist and the caller's sweep refuses on them.
  * Augments plan->merge in place; the loud sweep in the 
- * caller reports whatever is left. Hard safety ceiling over --backtrack s*/
+ * caller reports whatever is left. Hard safety over --backtrack s*/
 #define QM_MAX_FIXPOINT 64
 /* map of cat/pn -> cloned full atom of the provider the resolution installs;
  * used to pin-check repair candidates against the planned stack */
@@ -11062,7 +11361,7 @@ qm_planned_map_free(hash_t *map)
 
 /* do the candidate's baked subslot pins agree with the planned stack?
  * Only atoms with an explicit SUBSLOT whose provider the resolution touches
- * are enforced, the strand class being repaired */
+ * are enforced, the kind of broken dependency being repaired */
 static bool
 qm_cand_pins_ok(tree_pkg_ctx *cand, hash_t *pinmap)
 {
@@ -11236,7 +11535,7 @@ qm_repair_pick(atom_ctx *ca, hash_t *pinmap, ssize_t *repo_out,
 static int qm_plan_drop(struct qm_plan *plan, const char *cpn);
 
 /* same-version rebuilds pinned to the just-held provider version;
- * keeping them would strand THEM next round, so drop every
+ * keeping them would leave THEM with a broken dependency next round, so drop every
  * planned entry whose binpkg pins pcpn at a subslot other 
  * than the installed one */
 static int
@@ -11591,8 +11890,8 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 								 "upgrades it instead)", iter + 1);
 						qm_notice(key, msg);
 						/* consistency: planned same-version rebuilds
-						 * pinned to the held-back version would strand
-						 * next, drop them too */
+						 * pinned to the held-back version would have a
+						 * broken dependency next round, drop them too */
 						qm_plan_drop_pinning(plan, pcpn, todo, iter + 1);
 					} else if (qm_atom_is_target(A, todo)) {
 						char tk[1024];
@@ -11990,7 +12289,7 @@ qm_print_dup_demands(array *dups, set *planned)
 	}
 }
 
-/* strand/blocker/collision count of the current resolution, without output */
+/* broken-dependency/blocker/collision count of the current resolution, without output */
 static int
 qm_quiet_conflict_count(array *merge)
 {
@@ -12774,8 +13073,8 @@ resolve_again:
 		return EXIT_FAILURE;
 	}
 
-	/* Layer 2 (backtrack): resolve strands by pulling a newer build of
-	 * each wayward binpkg, augmenting plan.merge in place; the sweep below then
+	/* Layer 2 (backtrack): repair broken dependencies by pulling a newer build of
+	 * each package whose dependency broke, augmenting plan.merge in place; the sweep below then
 	 * reports (and refuses on) whatever couldn't be resolved.
 	 * Runs for every resolve like portage's backtrack_depgraph; --backtrack
 	 * 0 restores single-shot refuse-on-conflict behavior. */
@@ -13175,8 +13474,8 @@ resolve_again:
 		}
 	} else if (qm_blk_sweep(plan.merge) > 0 &&
 			   !qm_ignore_slot_conflicts()) {
-		/* the resolution would strand installed packages we can't rebuild from a
-		 * binpkg; fail instead of half-migrating and breaking the system */
+		/* the resolution would break dependencies of installed packages we can't rebuild
+		 * from a binpkg; fail instead of half-migrating and breaking the system */
 		if (qm_print_blocks())
 			printf("\n * Error: The above package list contains "
 				   "packages which cannot be\n * installed at the "
@@ -16053,7 +16352,25 @@ struct qm_idx_state {
 	array  *entries;
 	/* struct qm_rr pairs seen in package metadata */
 	array  *rrs;
+	/* "relpath\tmtime\tsize" of every file the refresh rejected, so the
+	 * next store scan does not take them for new packages */
+	array  *rejected;
 };
+
+static void
+qm_idx_reject(struct qm_idx_state *st, const char *relpath,
+			  const struct stat *stt)
+{
+	char *line;
+
+	if (st->rejected == NULL)
+		st->rejected = array_new();
+	xasprintf(&line, "%s\t%lld\t%lld", relpath,
+			  (long long)stt->st_mtime, (long long)stt->st_size);
+	array_append(st->rejected, line);
+}
+
+static const char qm_idx_rejected_name[] = ".index-rejected";
 
 /* one finished index entry, kept for sorting */
 struct qm_entry {
@@ -16190,7 +16507,7 @@ binpkg_index_load_old(const char *file, array **blocks)
  * for the cat/pn/file store layout */
 static bool
 qm_populate_scan(const char *base, const char *rel, int depth,
-		set *old, size_t *nseen)
+		set *old, size_t *nseen, size_t *nmatched, set *rejected)
 {
 	char           path[_Q_PATH_MAX + 810];
 	char           sub[800];
@@ -16218,10 +16535,10 @@ qm_populate_scan(const char *base, const char *rel, int depth,
 		if (S_ISDIR(st.st_mode)) {
 			if (depth < 2)
 				drift = qm_populate_scan(base, sub, depth + 1,
-										 old, nseen);
+										 old, nseen, nmatched, rejected);
 			continue;
 		}
-		if (!S_ISREG(st.st_mode) || depth == 0)
+		if (!S_ISREG(st.st_mode) || depth == 0 || st.st_size == 0)
 			continue;
 		if (!((nlen > 5 && strcmp(de->d_name + nlen - 5, ".tbz2") == 0) ||
 			  (nlen > 9 && strcmp(de->d_name + nlen - 9, ".gpkg.tar") == 0)))
@@ -16234,10 +16551,21 @@ qm_populate_scan(const char *base, const char *rel, int depth,
 			struct qm_oldblock *ob =
 				(struct qm_oldblock *)get_set(sub, old);
 
-			if (ob == NULL ||
-					ob->mtime != (long long)st.st_mtime ||
-					ob->size  != (long long)st.st_size)
+			if (ob == NULL) {
+				const char *rj = rejected != NULL ?
+						get_set(sub, rejected) : NULL;
+				char        want[64];
+
+				snprintf(want, sizeof(want), "%lld\t%lld",
+						 (long long)st.st_mtime, (long long)st.st_size);
+				if (rj == NULL || strcmp(rj, want) != 0)
+					drift = true;
+			} else if (ob->mtime != (long long)st.st_mtime ||
+					   ob->size  != (long long)st.st_size) {
 				drift = true;
+			} else {
+				(*nmatched)++;
+			}
 		}
 	}
 	closedir(d);
@@ -16255,9 +16583,11 @@ qm_local_index_populate(const char *loc)
 	array              *oldmem = NULL;
 	struct qm_oldblock *ob;
 	size_t              i;
-	size_t              nseen  = 0;
-	size_t              nold   = 0;
+	size_t              nseen    = 0;
+	size_t              nmatched = 0;
+	size_t              nold     = 0;
 	bool                drift;
+	set                *rejected = NULL;
 
 	if (done)
 		return;
@@ -16276,11 +16606,43 @@ qm_local_index_populate(const char *loc)
 
 	old = binpkg_index_load_old(finp, &oldmem);
 	nold = oldmem != NULL ? array_cnt(oldmem) : 0;
+	{
+		char    rjp[_Q_PATH_MAX + 32];
+		char   *rbuf = NULL;
+		size_t  rlen = 0;
 
-	drift = qm_populate_scan(base, "", 0, old, &nseen);
+		snprintf(rjp, sizeof(rjp), "%s/%s", base, qm_idx_rejected_name);
+		if (eat_file(rjp, &rbuf, &rlen) && rbuf != NULL) {
+			char *line;
+			char *sp;
+
+			rejected = create_set();
+			for (line = strtok_r(rbuf, "\n", &sp); line != NULL;
+				 line = strtok_r(NULL, "\n", &sp)) {
+				char *tab = strchr(line, '\t');
+
+				if (tab == NULL)
+					continue;
+				*tab = '\0';
+				add_set_value(line, xstrdup(tab + 1), NULL, rejected);
+			}
+		}
+		free(rbuf);
+	}
+
+	drift = qm_populate_scan(base, "", 0, old, &nseen, &nmatched, rejected);
 	if (!drift)
-		drift = nseen != nold;
+		drift = nmatched != nold;
 
+	if (rejected != NULL) {
+		array *rk = set_keys(rejected);
+		char  *k;
+
+		array_for_each(rk, i, k)
+			free(get_set(k, rejected));
+		array_free(rk);
+		free_set(rejected);
+	}
 	if (old != NULL)
 		free_set(old);
 	if (oldmem != NULL) {
@@ -16355,6 +16717,7 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 			fprintf(stderr,
 					"\n!!! Binary package name is invalid: '%s%s'\n",
 					portroot, tree_pkg_get_path(pkg));
+			qm_idx_reject(st, relpath, &stt);
 			return 0;
 		}
 		free(vcpv);
@@ -16366,10 +16729,11 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 		struct qm_oldblock *ob =
 			(struct qm_oldblock *)get_set(relpath, st->old);
 
+		/* an entry without a SLOT line is a slot 0 package, the index
+		 * leaves the default out the way portage does */
 		if (ob != NULL &&
 				ob->mtime == (long long)stt.st_mtime &&
-				ob->size  == (long long)stt.st_size &&
-				strstr(ob->raw, "SLOT: ") != NULL)
+				ob->size  == (long long)stt.st_size)
 		{
 			ent = xzalloc(sizeof(*ent));
 			ent->atom = atom;
@@ -16411,6 +16775,7 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 			fprintf(stderr,
 					"!!! Missing metadata key(s): %s. This binary package "
 					"is not recoverable and should be deleted.\n", missing);
+			qm_idx_reject(st, relpath, &stt);
 			return 0;
 		}
 	}
@@ -16422,6 +16787,7 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 	{
 		warn("index: skipping %s: cannot hash %s",
 			 atom_to_string(atom), tree_pkg_get_path(pkg));
+		qm_idx_reject(st, relpath, &stt);
 		return 0;
 	}
 
@@ -16654,9 +17020,10 @@ binpkg_index_regen(void)
 	st.fp      = NULL;
 	st.count   = 0;
 	st.reused  = 0;
-	st.old     = oldset;
-	st.entries = NULL;
-	st.rrs     = NULL;
+	st.old      = oldset;
+	st.entries  = NULL;
+	st.rrs      = NULL;
+	st.rejected = NULL;
 	bin = tree_new(portroot, pkgdir, TREETYPE_BINPKG, false);
 	if (bin == NULL) {
 		warn("cannot open %s", pdir);
@@ -17042,6 +17409,25 @@ binpkg_index_regen(void)
 			close(edfd);
 	}
 
+	{
+		char rjp[_Q_PATH_MAX + 32];
+
+		snprintf(rjp, sizeof(rjp), "%s/%s", pdir, qm_idx_rejected_name);
+		if (st.rejected != NULL && array_cnt(st.rejected) > 0) {
+			FILE  *rf = fopen(rjp, "w");
+			size_t ri;
+			char  *rl;
+
+			if (rf != NULL) {
+				array_for_each(st.rejected, ri, rl)
+					fprintf(rf, "%s\n", rl);
+				fclose(rf);
+			}
+		} else {
+			unlink(rjp);
+		}
+	}
+
 	qprintf("%s>>>%s indexed %zu binpkg%s (%zu reused) in %s\n",
 			GREEN, NORM, st.count, st.count == 1 ? "" : "s",
 			st.reused, pdir);
@@ -17077,6 +17463,9 @@ binpkg_index_regen(void)
 			free(rr);
 		}
 		array_free(st.rrs);
+	}
+	if (st.rejected != NULL) {
+		array_deepfree(st.rejected, free);
 	}
 	if (oldmem != NULL) {
 		struct qm_oldblock *ob;
@@ -26827,8 +27216,8 @@ int qmerge_main(int argc, char **argv)
 	qm_user_quiet   = quiet;
 	qm_user_verbose = verbose;
 
-	/* QMERGE_LENIENT_UPGRADE (default 1): when a strand has no acceptable
-	 * rebuilt binpkg, lenient proceeds with the provider upgrade and warns
+	/* QMERGE_LENIENT_UPGRADE (default 1): when a package with a broken dependency
+	 * has no acceptable rebuilt binpkg, lenient proceeds with the provider upgrade and warns
 	 * about the dangling pin (portage behavior); strict holds the provider
 	 * back and drops planned rebuilds that pin the new version.
 	 * Neither mode ever installs a package built for a library version
@@ -27050,7 +27439,12 @@ int qmerge_main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	if ((uninstall || qm_depclean || deselect_action) && qm_vdb_writable()) {
+	/* the (binrepos) repositories' update records go before every run/change that
+	 * reads the installed database, --pretend runs included, whenever
+	 * that database can be written. emerge does the same, we only clone
+	 * behavior. */
+	if ((uninstall || qm_depclean || deselect_action || todo != NULL) &&
+			qm_vdb_writable()) {
 		binrepos_load();
 		qm_apply_moves_all();
 	}
