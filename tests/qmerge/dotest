@@ -3139,6 +3139,17 @@ outa=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=n \
    ${outa} != *"ignored due to non matching USE"* ]]
 tend $? "qmerge-test: [S] check off accepts USE mismatch" || die "${outa}"
 
+# a search SHOULD list a package whose only builds fail the USE
+# check, and should say why
+outsr=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+	qmerge -s "=qmerge-test-1.3-r50" 2>&1)
+outsn=$(qmerge -s "no-such-package-anywhere" 2>&1)
+[[ ${outsr} == *"binary"*" N "*"] sys-devel/qmerge-test-1.3-r50"*"(no installable binpkg: "*"built with check_flag (config disables it)"* && \
+   ${outsr} != *"no matching packages"* && \
+   ${outsn} == *"no matching packages in the binhost index"* ]]
+tend $? "qmerge-test: [S] plain -s lists a USE-refused package with the reason" \
+	|| die "sr: ${outsr} sn: ${outsn}"
+
 rm -f "${ROOT}/packages/sys-devel/qmerge-test-1.3-r50.tbz2"
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
@@ -3517,6 +3528,44 @@ rcmi=$?
 tend $? "qmerge-test: [MI] merged instance matches the displayed build id" \
 	|| die "rc=${rcmi} vdb=$(cat "${ROOT}/var/db/pkg/dev-libs/uex-1.0/BUILD_ID" \
 		2>/dev/null) ${outmi}"
+yes | qmerge -FU dev-libs/uex >/dev/null 2>&1
+
+# short test to check out qmerge =cat/pn-ver-N if it picks build N succesfully
+outb1=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -p -N -v "=dev-libs/uex-1.0-1" 2>&1)
+outb2=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -p -N -v "=dev-libs/uex-1.0-2" 2>&1)
+outb3=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -p -N -v "=dev-libs/uex-1.0-3" 2>&1)
+[[ ${outb1} == *"uex-1.0-1"* && ${outb1} != *"uex-1.0-2"* && \
+   ${outb2} == *"uex-1.0-2"* && ${outb2} != *"uex-1.0-1"* && \
+   ${outb3} == *"cannot satisfy"* && ${outb3} != *"uex-1.0-1"* && \
+   ${outb3} != *"uex-1.0-2"* ]]
+tend $? "qmerge-test: [MI] =pkg-ver-N on the command line picks that build like emerge" \
+	|| die "b1: ${outb1} b2: ${outb2} b3: ${outb3}"
+
+# a search for "=dev-libs/uex-1.0-1" (build 1 named the emerge way, with
+# "-1" after the version) must list build 1 and not build 2, and the
+# other way round
+outs1=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -s -vv "=dev-libs/uex-1.0-1" 2>&1)
+outs2=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -s -vv "=dev-libs/uex-1.0-2" 2>&1)
+[[ ${outs1} == *"uex-1.0-1"* && ${outs1} != *"uex-1.0-2"* && \
+   ${outs2} == *"uex-1.0-2"* && ${outs2} != *"uex-1.0-1"* ]]
+tend $? "qmerge-test: [MI] -s =pkg-ver-N lists that build only" \
+	|| die "s1: ${outs1} s2: ${outs2}"
+
+# checking whether unmerge and depclean with a build number brings build 2 as installed (merged
+# above), so naming build 1 must touch nothing and say which build is
+# installed, naming build 2 must select the package
+# this is part of the series of build_id pretends and tests
+yes | PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -N "=dev-libs/uex-1.0" >/dev/null 2>&1
+outu1=$(qmerge -pU "=dev-libs/uex-1.0-1" 2>&1)
+outu2=$(qmerge -pU "=dev-libs/uex-1.0-2" 2>&1)
+outc1=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -pc "=dev-libs/uex-1.0-1" 2>&1)
+outc2=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -pc "=dev-libs/uex-1.0-2" 2>&1)
+[[ ${outu1} == *"Couldn't find"*"is build 2"* && ${outu1} != *"unmerging dev-libs/uex"* && \
+   ${outu2} == *"unmerging dev-libs/uex-1.0"* && \
+   ${outc1} == *"Couldn't find"* && ${outc1} == *"No packages selected for removal"* && \
+   ${outc2} != *"Couldn't find"* && ${outc2} == *"dev-libs/uex"*"selected: 1.0"* ]]
+tend $? "qmerge-test: [MI] -U and -c with =pkg-ver-N act on the installed build only" \
+	|| die "u1: ${outu1} u2: ${outu2} c1: ${outc1} c2: ${outc2}"
 yes | qmerge -FU dev-libs/uex >/dev/null 2>&1
 
 rm -rf cfgue "${ROOT}/packages/dev-libs/uex"
@@ -4854,6 +4903,16 @@ tend $? "qmerge-test: [DC] --exclude beats the argument" || die "${outdc}"
 outdc=$(qmerge -pcv dc-libs/A 2>/dev/null)
 [[ ${outdc} == *"  dc-libs/A-1 pulled in by:"*"    dc-libs/B-1 requires dc-libs/A"* ]]
 tend $? "qmerge-test: [DC] -v prints the revdep reason" || die "${outdc}"
+
+# sequence to test the "pulled in by" printed explanation, together with -v.
+# if we use -q, no reason is printed, and can be used as clean run in scripts 
+outdc=$(qmerge -pc dc-libs/A 2>/dev/null)
+outdq=$(qmerge -pcq dc-libs/A 2>/dev/null)
+[[ ${outdc} == *"  dc-libs/A-1 pulled in by:"*"    dc-libs/B-1 requires dc-libs/A"* && \
+   ${outdc} != *"To see reverse dependencies"* && \
+   ${outdq} != *"pulled in by:"* && ${outdq} != *"To see reverse dependencies"* ]]
+tend $? "qmerge-test: [DC] a kept argument is explained without -v, not under -q" \
+	|| die "dc: ${outdc} dq: ${outdq}"
 
 # we give the arguments but nothing gets cleaned: failure unless pretending
 outdc=$(yes | qmerge -c dc-libs/A 2>&1); rcdc=$?

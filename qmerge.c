@@ -19131,6 +19131,55 @@ struct qm_unmerge_batch {
 	hash_t *counts;
 };
 
+/* one installed package against one unmerge target.
+ * the installed vdb holds one copy per version, and that copy
+ * has a build number in its BUILD_ID file.
+ * when the user names a build (pn-1.0~2, typed as pn-1.0-2), we only
+ * remove the installed copy if it is that same build.
+ * if it is another build we leave it alone and, when loud is set, tell
+ * the user which build is installed. */
+/* a target we rewrote to pn-1.0~2 is shown back to the user the way
+ * emerge writes it, pn-1.0-2 */
+static const char *
+qm_bid_shown(const char *s, char *out, size_t olen)
+{
+	char *t;
+
+	snprintf(out, olen, "%s", s);
+	t = strchr(out, '~');
+	if (t != NULL && isdigit((unsigned char)t[1]))
+		*t = '-';
+	return out;
+}
+
+static bool
+qm_unmerge_hit(tree_pkg_ctx *pkg_ctx, const char *p, bool loud)
+{
+	depend_atom *na  = NULL;
+	bool         hit = qlist_match(pkg_ctx, p, &na, true, false);
+
+	if (hit && na != NULL && na->BUILDID > 0) {
+		const char *ib = tree_pkg_meta(pkg_ctx, Q_BUILD_ID);
+
+		if (ib == NULL || (unsigned int)atoi(ib) != na->BUILDID) {
+			if (loud) {
+				atom_ctx *ia = tree_pkg_atom(pkg_ctx, true);
+				char      shown[_Q_PATH_MAX];
+
+				printf("--- Couldn't find '%s' to unmerge: the installed "
+					   "%s/%s is build %s.\n",
+					   qm_bid_shown(p, shown, sizeof(shown)),
+					   ia->CATEGORY ? : "", ia->PF ? : "",
+					   ib != NULL ? ib : "0");
+			}
+			hit = false;
+		}
+	}
+	if (na != NULL)
+		atom_implode(na);
+	return hit;
+}
+
 static int
 qm_unmerge_interest_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 {
@@ -19140,12 +19189,7 @@ qm_unmerge_interest_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	char                    *p;
 
 	array_for_each(todo, n, p) {
-		depend_atom *na  = NULL;
-		bool         hit = qlist_match(pkg_ctx, p, &na, true, false);
-
-		if (na != NULL)
-			atom_implode(na);
-		if (hit) {
+		if (qm_unmerge_hit(pkg_ctx, p, false)) {
 			array  *paths = qm_owned_paths(pkg_ctx);
 			size_t  i;
 			char   *pt;
@@ -19178,12 +19222,7 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	todo = set_keys(ub->todo);
 	array_for_each(todo, n, p)
 	{
-		depend_atom *na  = NULL;
-		bool         hit = qlist_match(pkg_ctx, p, &na, true, false);
-
-		if (na != NULL)
-			atom_implode(na);
-		if (hit) {
+		if (qm_unmerge_hit(pkg_ctx, p, true)) {
 			atom_ctx *a     = tree_pkg_atom(pkg_ctx, true);
 			array    *paths = qm_owned_paths(pkg_ctx);
 			set      *keep  = ub->counts == NULL
@@ -19638,13 +19677,84 @@ qmerge_expand_setname(const char *name, set *q)
 							   false, q);
 }
 
+/* emerge lets the user pick one build of a version by adding "-2" after
+ * the version: =cat/pn-1.0-r1-2 means build 2 of pn-1.0-r1.
+ * The only build-id spelling the parser knows in an atom is the tilde,
+ * pn-1.0-r1~2, so we turn the "-2" into "~2" here.
+ * We do it only when the argument ends in "-<number>" and what stays
+ * before it is a normal package name with a version.
+ * Things after the number (slot, repo, USE flags) stay as they are. */
+static bool
+qm_arg_buildid(const char *arg, char *out, size_t olen)
+{
+	depend_atom *a;
+	depend_atom *b;
+	char         head[_Q_PATH_MAX];
+	const char  *end;
+	const char  *dash;
+	const char  *p;
+	size_t       hl;
+	bool         ok = false;
+
+	end = arg + strcspn(arg, ":[@");
+	hl  = (size_t)(end - arg);
+	if (hl == 0 || hl >= sizeof(head) || strlen(arg) + 1 > olen)
+		return false;
+	memcpy(head, arg, hl);
+	head[hl] = '\0';
+
+	a = atom_explode(head);
+	if (a == NULL)
+		return false;
+	if (a->PN == NULL || a->PVR == NULL || a->PVR[0] == '\0' ||
+			strpbrk(a->PVR, "._r") != NULL) {
+		atom_implode(a);
+		return false;
+	}
+	for (p = a->PN; (p = strchr(p, '-')) != NULL; p++)
+		if (isdigit((unsigned char)p[1]))
+			break;
+	atom_implode(a);
+	if (p == NULL)
+		return false;
+
+	for (dash = end; dash > arg && isdigit((unsigned char)dash[-1]); dash--)
+		;
+	if (dash == end || dash == arg || dash[-1] != '-')
+		return false;
+	dash--;
+	hl = (size_t)(dash - arg);
+	head[hl] = '\0';
+
+	b = atom_explode(head);
+	if (b != NULL && b->PN != NULL && b->PVR != NULL && b->PVR[0] != '\0') {
+		ok = true;
+		for (p = b->PN; (p = strchr(p, '-')) != NULL; p++)
+			if (isdigit((unsigned char)p[1])) {
+				ok = false;
+				break;
+			}
+	}
+	if (b != NULL)
+		atom_implode(b);
+	if (!ok)
+		return false;
+	memcpy(out, head, hl);
+	out[hl] = '~';
+	memcpy(out + hl + 1, dash + 1, strlen(dash + 1) + 1);
+	return true;
+}
+
 static set *
 qmerge_add_set(char *buf, set *q)
 {
 	char *name = NULL;
 	char *at;
+	char  bid[_Q_PATH_MAX];
 
 	rmspace(buf);
+	if (buf[0] != '@' && qm_arg_buildid(buf, bid, sizeof(bid)))
+		buf = bid;
 
 	/* leading @ = a set reference (@world, @system, @myset); the bare
 	 * words world/system/all stay as historic aliases */
@@ -19692,7 +19802,10 @@ qmerge_add_set(char *buf, set *q)
 		char tmp[_Q_PATH_MAX];
 
 		*at = '\0';
-		snprintf(tmp, sizeof(tmp), "%s::@%s", buf, at + 1);
+		tmp[0] = '\0';
+		qm_str_add(tmp, sizeof(tmp), buf);
+		qm_str_add(tmp, sizeof(tmp), "::@");
+		qm_str_add(tmp, sizeof(tmp), at + 1);
 		return add_set_unique(tmp, q, NULL);
 	}
 	return add_set_unique(buf, q, NULL);
@@ -19719,6 +19832,7 @@ qm_search_atom_key(const char *pat)
 {
 	const char  *p;
 	depend_atom *a;
+	char         bid[_Q_PATH_MAX];
 
 	for (p = pat; *p != '\0'; p++) {
 		if (isalnum((unsigned char)*p) ||
@@ -19728,6 +19842,8 @@ qm_search_atom_key(const char *pat)
 		return NULL;
 	}
 
+	if (qm_arg_buildid(pat, bid, sizeof(bid)))
+		pat = bid;
 	a = atom_explode(pat);
 	if (a == NULL)
 		return NULL;
@@ -19740,7 +19856,7 @@ qm_search_atom_key(const char *pat)
 	}
 	if (a->pfx_op == ATOM_OP_NONE && a->PVR != NULL) {
 		a->pfx_op = ATOM_OP_EQUAL;
-		if (a->sfx_op == ATOM_OP_NONE)
+		if (a->sfx_op == ATOM_OP_NONE && a->BUILDID == 0)
 			a->sfx_op = ATOM_OP_STAR;
 	}
 	a->REPO = NULL;
@@ -19955,6 +20071,93 @@ qm_use_string(tree_pkg_ctx *bv, tree_pkg_ctx *iv, char *out, size_t osz)
 		free_set(iu);
 	if (oldiuse != NULL)
 		free_set(oldiuse);
+}
+
+/* a search can find a package on the binhost and still have no build of it
+ * that we are allowed to install here (wrong USE flags, masked, wrong
+ * keyword, license not accepted).
+ * we still show the package in the search result, and this function
+ * writes the reason we print next to it.
+ * first we look for a USE flag mismatch that was recorded while the
+ * builds were checked.
+ * if there is none, we take the mask text of the newest build in
+ * the binhost list. */
+/* the newest build of this name in the binhost lists, whatever its
+ * state; NULL when no list carries the name */
+static tree_pkg_ctx *
+qm_search_newest(depend_atom *a)
+{
+	size_t        vrcnt = qm_bintree_cnt();
+	size_t        vri;
+	tree_pkg_ctx *best  = NULL;
+
+	for (vri = 0; vri < vrcnt; vri++) {
+		tree_ctx *bt = qm_bintree(vri);
+		array    *t;
+		size_t    rj;
+		bool      seen = false;
+
+		if (bt == NULL)
+			continue;
+		if (qm_nbinrepos > 0 && qm_binrepos[vri].priority == 0)
+			continue;
+		for (rj = 0; rj < vri; rj++)
+			if (qm_bintrees[rj] == bt)
+				seen = true;
+		if (seen)
+			continue;
+		t = tree_match_atom(bt, a, TREE_MATCH_SORT | TREE_MATCH_VIRTUAL |
+							TREE_MATCH_ACCT);
+		if (array_cnt(t) > 0) {
+			tree_pkg_ctx *cand = array_get(t, 0);
+
+			if (best == NULL ||
+					atom_compare(tree_pkg_atom(cand, true),
+								 tree_pkg_atom(best, true)) == NEWER)
+				best = cand;
+		}
+		array_free(t);
+	}
+	return best;
+}
+
+static void
+qm_search_why(const char *cpn, tree_pkg_ctx *newest, char *out, size_t olen)
+{
+	size_t cl = strlen(cpn);
+
+	out[0] = '\0';
+	if (qm_use_rejects != NULL) {
+		array  *keys = hash_keys(qm_use_rejects);
+		size_t  i;
+		char   *k;
+
+		array_for_each(keys, i, k) {
+			set   *d;
+			array *ms;
+
+			if (strncmp(k, cpn, cl) != 0 || (k[cl] != '\0' && k[cl] != ':'))
+				continue;
+			d  = hash_get(qm_use_rejects, k);
+			ms = d != NULL ? set_keys(d) : NULL;
+			if (ms != NULL && array_cnt(ms) > 0) {
+				char shown[_Q_PATH_MAX];
+
+				qm_str_add(out, olen,
+						   qm_bid_shown(array_get(ms, 0), shown, sizeof(shown)));
+				qm_str_add(out, olen,
+						   "; QMERGE_BINPKG_RESPECT_USE=n takes it anyway");
+			}
+			if (ms != NULL)
+				array_free(ms);
+			if (out[0] != '\0')
+				break;
+		}
+		array_free(keys);
+	}
+	if (out[0] != '\0' || newest == NULL)
+		return;
+	qm_mask_reasons(newest, tree_pkg_atom(newest, true), out, olen);
 }
 
 /* one emerge -pvK style search result line for candidate bv (installed
@@ -20447,10 +20650,16 @@ qm_search_binpkgs(int npat, char **pats)
 			if (qa != NULL) {
 				char mbuf[_Q_PATH_MAX + 64];
 
-				snprintf(mbuf, sizeof(mbuf), "%s%s%s%s%s%s%s%s%s",
+				char bidbuf[32];
+
+				bidbuf[0] = '\0';
+				if (qa->BUILDID > 0)
+					snprintf(bidbuf, sizeof(bidbuf), "~%u", qa->BUILDID);
+				snprintf(mbuf, sizeof(mbuf), "%s%s%s%s%s%s%s%s%s%s",
 						 atom_op_str[qa->pfx_op], cpn,
 						 qa->PVR != NULL ? "-" : "",
 						 qa->PVR != NULL ? qa->PVR : "",
+						 bidbuf,
 						 qa->sfx_op == ATOM_OP_STAR ? "*" : "",
 						 qa->SLOT != NULL ? ":" : "",
 						 qa->SLOT != NULL ? qa->SLOT : "",
@@ -20507,20 +20716,30 @@ qm_search_binpkgs(int npat, char **pats)
 			 * the resolver uses, so results == what qmerge could merge;
 			 * -v also lists names with no currently installable binpkg */
 			bv = best_version(ma, BV_BINPKG);
-			if (bv == NULL && !verbose) {
-				if (ma != a)
-					atom_implode(ma);
-				atom_implode(a);
-				continue;
-			}
 			iv = best_version(a, BV_VDB);
 
 			/* emerge -pvK line format:
 			 * [binary   R    ] cat/pn-PVR-BID:SLOT/SUB::repo [old] SIZE KiB
-			 * the verbose mode can only be reached with -v */
+			 * A package with no build we may install is listed anyway,
+			 * with the reason, so the user sees the binhost has it. */
 			if (bv == NULL) {
-				printf("[%sbinary%s        ] %s%s%s (no installable binpkg)\n",
-					   GREEN, NORM, BOLD, cpn, NORM);
+				tree_pkg_ctx *newest = qm_search_newest(ma);
+				char          why[1024];
+				char          note[1100];
+
+				qm_search_why(cpn, newest, why, sizeof(why));
+				note[0] = '\0';
+				qm_str_add(note, sizeof(note), "(no installable binpkg");
+				if (why[0] != '\0') {
+					qm_str_add(note, sizeof(note), ": ");
+					qm_str_add(note, sizeof(note), why);
+				}
+				qm_str_add(note, sizeof(note), ")");
+				if (newest != NULL)
+					qm_search_print_line(cpn, newest, iv, note);
+				else
+					printf("[%sbinary%s        ] %s%s%s  %s\n",
+						   MAGENTA, NORM, MAGENTA, cpn, NORM, note);
 			} else {
 				qm_search_print_line(cpn, bv, iv, NULL);
 
@@ -20700,6 +20919,7 @@ struct qm_dc_pkg {
 	char     *deps[QM_DC_NDEPS];
 	char     *restrict_;
 	unsigned long long build_time;
+	unsigned int build_id;
 	bool      pmask;
 	bool      kwmask;
 	int       equiv;
@@ -20756,6 +20976,7 @@ struct qm_dc {
 	set    *virt_stack;
 	bool    bdeps;
 	bool    args_given;
+	bool    user_args;
 	bool    prune;
 	size_t  ngraph;
 };
@@ -24575,6 +24796,8 @@ qm_dc_load_cb(tree_pkg_ctx *pkg, void *priv)
 	p->restrict_ = xstrdup(v ? : "");
 	v = tree_pkg_meta(pkg, Q_BUILD_TIME);
 	p->build_time = v != NULL ? strtoull(v, NULL, 10) : 0;
+	v = tree_pkg_meta(pkg, Q_BUILD_ID);
+	p->build_id = v != NULL ? (unsigned int)atoi(v) : 0;
 	p->pmask  = binpkg_masked(a);
 	p->kwmask = !binpkg_keywords_ok(pkg, a, true);
 	p->parents = array_new();
@@ -24783,6 +25006,8 @@ qm_dc_arg_matches(const struct qm_dc_arg *ar, const struct qm_dc_pkg *p)
 	}
 	if (ar->atom == NULL)
 		return false;
+	if (ar->atom->BUILDID > 0 && ar->atom->BUILDID != p->build_id)
+		return false;
 	return qm_dc_atom_matches(ar->atom, p, NULL, true);
 }
 
@@ -24951,6 +25176,7 @@ qm_dc_cleanlist(struct qm_dc *dc, array *args, array *cleanlist,
 {
 	size_t            i;
 	struct qm_dc_pkg *pkg;
+	bool              shown = false;
 
 	array_for_each(dc->pkgs, i, pkg) {
 		bool hit = !dc->prune;
@@ -24969,14 +25195,15 @@ qm_dc_cleanlist(struct qm_dc *dc, array *args, array *cleanlist,
 		if (!pkg->in_graph) {
 			array_append(cleanlist, pkg);
 			add_set(pkg->cpv, clean_set);
-		} else if (verbose) {
+		} else if (verbose || (dc->user_args && !quiet)) {
 			qm_dc_show_parents(pkg);
+			shown = true;
 		}
 	}
 	if (array_cnt(cleanlist) == 0) {
 		printf(">>> No packages selected for removal by %s\n",
 			   dc->prune ? "prune" : "depclean");
-		if (!verbose)
+		if (!verbose && !quiet && !shown)
 			printf(">>> To see reverse dependencies, use %s--verbose%s\n",
 				   GREEN, NORM);
 		if (dc->prune)
@@ -25266,6 +25493,7 @@ qm_dc_calc(struct qm_dc *dc, array *args, struct qm_dc_result *res)
 	res->ordered   = false;
 	res->required  = 0;
 	dc->args_given = array_cnt(args) > 0;
+	dc->user_args  = dc->args_given;
 	dc->bdeps      = qm_dc_bdeps != 0;
 	dc->prune      = qm_prune != 0;
 
@@ -26096,8 +26324,12 @@ qm_prune_nodeps(set *todo)
 			array_free(m);
 		}
 		array_free(cps);
-		if (!matched)
-			fprintf(stderr, "\n--- Couldn't find '%s' to prune.\n", k);
+		if (!matched) {
+			char shown[_Q_PATH_MAX];
+
+			fprintf(stderr, "\n--- Couldn't find '%s' to prune.\n",
+					qm_bid_shown(k, shown, sizeof(shown)));
+		}
 		qm_dc_arg_free(ar);
 	}
 	array_free(keys);
@@ -26171,10 +26403,14 @@ qm_depclean_run(set *todo)
 			array_for_each(dc.pkgs, q, p)
 				if (qm_dc_arg_matches(ar, p))
 					hit = true;
-			if (hit)
+			if (hit) {
 				matched = true;
-			else
-				fprintf(stderr, "--- Couldn't find '%s' to %s.\n", k, act);
+			} else {
+				char shown[_Q_PATH_MAX];
+
+				fprintf(stderr, "--- Couldn't find '%s' to %s.\n",
+						qm_bid_shown(k, shown, sizeof(shown)), act);
+			}
 			array_append(args, ar);
 		}
 		array_free(keys);
