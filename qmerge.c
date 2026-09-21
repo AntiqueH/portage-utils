@@ -4835,6 +4835,7 @@ qm_emit_moves(int dfd, const char *pdir)
  * NO instance survived the checks are shown, a accepted duplicate makes
  * the stale-instance rejects irrelevant (emerge NOTE behavior). */
 static hash_t *qm_use_rejects = NULL;
+static const char *qm_bid_shown(const char *s, char *out, size_t olen);
 static hash_t *qm_use_accepts = NULL;
 
 static void
@@ -5005,6 +5006,50 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 			}
 			continue;
 		}
+		/* /etc/portage/package.use has priority over USE in
+		 * make.conf for the package it names.
+		 * Example: make.conf has USE="gtk3" and package.use has
+		 * "media-libs/opencv -gtk3".
+		 * then an gtk3-based pkg build made without gtk3 is the right
+		 * one and must not be refused.
+		 * the other way round too: package.use "foo gtk3" asks for a
+		 * build with gtk3 even if make.conf does not list the flag. */
+		po = uc_pkg_flag_override(patom, tok, qm_uc()->pkg_use);
+		if (po == 0) {
+			if (have) {
+				if (why != NULL) {
+					snprintf(why, whylen,
+							 "built with %s (package.use disables it)", tok);
+				} else {
+					snprintf(msg, sizeof(msg),
+							 "=%s [%s] built with %s (package.use disables it)",
+							 atom_to_string(patom),
+							 rname != NULL ? rname : "?", tok);
+					qm_use_reject_add(patom, msg);
+				}
+				ok = false;
+				break;
+			}
+			continue;
+		}
+		if (po == 1) {
+			if (!have) {
+				if (why != NULL) {
+					snprintf(why, whylen,
+							 "built without %s (package.use wants it)", tok);
+				} else {
+					snprintf(msg, sizeof(msg),
+							 "=%s [%s] built without %s (package.use wants it)",
+							 atom_to_string(patom),
+							 rname != NULL ? rname : "?", tok);
+					qm_use_reject_add(patom, msg);
+				}
+				ok = false;
+				break;
+			}
+			continue;
+		}
+
 		po = uc_pkg_flag_override(patom, tok, pkg_use_force);
 		if (po == 1 ||
 				(po == -1 &&
@@ -6136,7 +6181,12 @@ qm_print_use_rejects(void)
 						   "ignored due to non matching USE:\n", RED, NORM);
 					hdr = true;
 				}
-				printf("    %s\n", line);
+				{
+					char shown[_Q_PATH_MAX];
+
+					printf("    %s\n",
+						   qm_bid_shown(line, shown, sizeof(shown)));
+				}
 			}
 			array_free(lines);
 		}
@@ -6149,8 +6199,11 @@ qm_print_use_rejects(void)
 		printf("\n%s!!!%s The following binary packages were ignored due "
 			   "to ACCEPT_LICENSE:\n", RED, NORM);
 		keys = set_keys(qm_lic_rejects);
-		array_for_each(keys, n, msg)
-			printf("    %s\n", msg);
+		array_for_each(keys, n, msg) {
+			char shown[_Q_PATH_MAX];
+
+			printf("    %s\n", qm_bid_shown(msg, shown, sizeof(shown)));
+		}
 		array_free(keys);
 		printf("\n");
 	}
@@ -20741,7 +20794,47 @@ qm_search_binpkgs(int npat, char **pats)
 					printf("[%sbinary%s        ] %s%s%s  %s\n",
 						   MAGENTA, NORM, MAGENTA, cpn, NORM, note);
 			} else {
-				qm_search_print_line(cpn, bv, iv, NULL);
+				/* the build we may install is older than what is
+				 * installed while the binhost has a newer one we
+				 * refused: say which one and why, so a UD line does
+				 * not look like the binhost has nothing newer */
+				char note[1200];
+
+				note[0] = '\0';
+				if (iv != NULL &&
+						atom_compare_flg(tree_pkg_atom(bv, true),
+										 tree_pkg_atom(iv, true),
+										 ATOM_COMP_NOSUBSLOT |
+										 ATOM_COMP_NOREPO) == OLDER) {
+					tree_pkg_ctx *newest = qm_search_newest(ma);
+
+					if (newest != NULL && newest != bv &&
+							atom_compare_flg(tree_pkg_atom(newest, true),
+											 tree_pkg_atom(bv, true),
+											 ATOM_COMP_NOSUBSLOT |
+											 ATOM_COMP_NOREPO) == NEWER) {
+						depend_atom *na = tree_pkg_atom(newest, true);
+						char         why[1024];
+						char         bidbuf[32];
+
+						qm_search_why(cpn, newest, why, sizeof(why));
+						bidbuf[0] = '\0';
+						if (na->BUILDID > 0)
+							snprintf(bidbuf, sizeof(bidbuf), "-%u",
+									 na->BUILDID);
+						qm_str_add(note, sizeof(note), "(newer ");
+						qm_str_add(note, sizeof(note), na->PVR ? : "");
+						qm_str_add(note, sizeof(note), bidbuf);
+						qm_str_add(note, sizeof(note), " refused");
+						if (why[0] != '\0') {
+							qm_str_add(note, sizeof(note), ": ");
+							qm_str_add(note, sizeof(note), why);
+						}
+						qm_str_add(note, sizeof(note), ")");
+					}
+				}
+				qm_search_print_line(cpn, bv, iv,
+									 note[0] != '\0' ? note : NULL);
 
 				/* -v with several binrepos: also list what the OTHER
 				 * repos carry for this name, annotated with why it was

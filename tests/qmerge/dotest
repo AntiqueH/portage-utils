@@ -3150,6 +3150,50 @@ outsn=$(qmerge -s "no-such-package-anywhere" 2>&1)
 tend $? "qmerge-test: [S] plain -s lists a USE-refused package with the reason" \
 	|| die "sr: ${outsr} sn: ${outsn}"
 
+# What we test here: the newer build 1.3-r50 is installed (we take it with
+# the USE check off).
+# with the USE check on, the only build we may install below 2.0 is the
+# older 1.3, so the search shows a downgrade line.
+# that line must also say that the newer 1.3-r50 was refused, and why.
+yes | USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=n \
+	qmerge -q "=qmerge-test-1.3-r50" >/dev/null 2>&1
+outsd=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+	qmerge -s "<sys-devel/qmerge-test-2.0" 2>&1)
+[[ ${outsd} == *"sys-devel/qmerge-test-1.3"*"[1.3-r50:0]"*"(newer 1.3-r50 refused: "*"built with check_flag (config disables it)"* ]]
+tend $? "qmerge-test: [S] a downgrade search line names the refused newer build" \
+	|| die "${outsd}"
+yes | qmerge -FU qmerge-test >/dev/null 2>&1
+
+# add new test: make.conf turns check_flag on for everything, but
+# package.use turns it off for sys-devel/qmerge-test.
+# a build made without check_flag (r51) must be accepted, and a
+mkdir -p check2 cfgpu/etc/portage/binrepos.conf "${ROOT}/puA/sys-devel"
+(
+	cd check2
+	cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" .
+	qtbz2 -s qmerge-test-1.3.tbz2 >/dev/null
+	mkdir xp
+	( cd xp && qxpak -x ../qmerge-test-1.3.xpak >/dev/null )
+	echo "check_flag" > xp/IUSE
+	( cd xp && qxpak -c ../new.xpak $(ls) )
+	qtbz2 -j qmerge-test-1.3.tar.bz2 new.xpak \
+		"${ROOT}/puA/sys-devel/qmerge-test-1.3-r51.tbz2"
+)
+cp "${ROOT}/packages/sys-devel/qmerge-test-1.3-r50.tbz2" "${ROOT}/puA/sys-devel/"
+PKGDIR=/puA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/puA/Packages"
+printf 'ACCEPT_KEYWORDS="**"\nUSE="check_flag"\n' > cfgpu/etc/portage/make.conf
+printf '[purepo]\npriority = 1\nlocation = /puA\nsync-uri = http://127.0.0.1:1/\n' \
+	> cfgpu/etc/portage/binrepos.conf/p.conf
+echo "sys-devel/qmerge-test -check_flag" > cfgpu/etc/portage/package.use
+outpu1=$(PORTAGE_CONFIGROOT=${PWD}/cfgpu qmerge -p "=qmerge-test-1.3-r51@purepo" 2>&1)
+outpu2=$(PORTAGE_CONFIGROOT=${PWD}/cfgpu qmerge -p "=qmerge-test-1.3-r50@purepo" 2>&1)
+[[ ${outpu1} == *"would be merged"* && ${outpu1} != *"non matching USE"* && \
+   ${outpu2} == *"built with check_flag (package.use disables it)"* ]]
+tend $? "qmerge-test: [S] package.use -flag beats make.conf USE in the binpkg USE check" \
+	|| die "pu1: ${outpu1} pu2: ${outpu2}"
+rm -rf check2 cfgpu "${ROOT}/puA"
+
 rm -f "${ROOT}/packages/sys-devel/qmerge-test-1.3-r50.tbz2"
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
