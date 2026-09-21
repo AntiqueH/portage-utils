@@ -16076,8 +16076,12 @@ pkg_verify_checksums(
 	if (!found)
 		return -1;
 
-	if (strict && ret)
-		errf("strict is set in features");
+	/* FEATURES=strict should not end the run here, clone feature from
+	 * portage. the run action moves the bad file aside, fetches it again
+	 * and checks once more. a package that is still bad is skipped
+	 * and listed at the end, the other packages are merged. */
+	if (strict && ret && display)
+		warn("FEATURES=strict: %s is moved aside and fetched again", path);
 
 	return ret;
 }

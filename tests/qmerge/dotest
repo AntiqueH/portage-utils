@@ -655,6 +655,22 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	   -z $(qlist -Iv 2>/dev/null) ]]
 	tend $? "qmerge-test: [gpkg verify] forged-mtime tamper quarantined by checksum" \
 		|| die "rc=${rc}; ${out}"
+	rm -f "${gvgpkg}.checksum_failure"
+
+	# the same tamper with FEATURES=strict, portage's default.
+	# strict must not end the run on the spot: the file is still moved
+	# aside and fetched again, the package is skipped when the second
+	# copy is bad too, and the run reports it instead of dying.
+	( cd "${gvex}" && tar --format=ustar -cf "${gvgpkg}" ${gvmem} )
+	touch -r "${PWD}/gv.ref" "${gvgpkg}"
+	out=$(yes | FEATURES="strict" qmerge -Fv =${gvpv} 2>&1); rc=$?
+	[[ ${rc} -ne 0 && ${out} == *"checksum mismatch"* && \
+	   ${out} == *"moving aside"* && -e "${gvgpkg}.checksum_failure" && \
+	   ${out} == *"could not be merged"* && \
+	   ${out} != *"strict is set in features"* && \
+	   -z $(qlist -Iv 2>/dev/null) ]]
+	tend $? "qmerge-test: [gpkg verify] FEATURES=strict moves aside and skips, never exits" \
+		|| die "rc=${rc}; ${out}"
 	rm -f "${gvgpkg}.checksum_failure" "${PWD}/gv.ref"
 
 	# the manifest/member branches are only reachable through a binhost
