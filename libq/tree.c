@@ -345,6 +345,7 @@ static int tree_foreach_pkg_gtree
     else if (strncmp(fname, "caches/", sizeof("caches/") - 1) == 0)
     {
       char *nexttok = NULL;
+      la_int64_t asize;
 
       foundcaches = true;
       fname += sizeof("caches/") - 1;
@@ -375,7 +376,7 @@ static int tree_foreach_pkg_gtree
       tree_cat_add_pkg(cat, pkg);
 
       /* ok, we're in business */
-      la_int64_t asize = archive_entry_size(entry);
+      asize = archive_entry_size(entry);
       if (asize < 0 || asize > (la_int64_t)256 * 1024 * 1024)
         continue;
       len = (size_t)asize;

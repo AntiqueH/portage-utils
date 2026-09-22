@@ -260,7 +260,7 @@ INT_SAN="address,undefined,integer,implicit-conversion"
 MODERN_C="-Werror=implicit-function-declaration -Werror=implicit-int -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=strict-prototypes"
 HARDENED_CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-clash-protection -fcf-protection=full -fstack-protector-all -ftrivial-auto-var-init=zero -Wtrampolines -fPIE"
 HARDENED_LDFLAGS="-Wl,-z,relro,-z,now -pie"
-WARN_KITCHEN="-Wall -Wextra -Wshadow -Wcast-qual -Wwrite-strings -Wformat=2 -Wformat-overflow=2 -Wformat-truncation=2 -Wstringop-overflow=4 -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wvla -Walloca -Wmissing-prototypes -Wold-style-definition -Werror"
+WARN_KITCHEN="-Wall -Wextra -Wshadow -Wcast-qual -Wwrite-strings -Wformat=2 -Wformat-overflow=2 -Wformat-truncation=2 -Wstringop-overflow=4 -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wvla -Walloca -Wmissing-prototypes -Wold-style-definition -Wdeclaration-after-statement -Werror"
 WARN_ADVISORY="-Wpedantic -Wundef -Wconversion -Wsign-conversion"
 # clang-tidy check set with bugprone/cert/clang-analyzer
 TIDY_CHECKS="-*,bugprone-*,cert-*,clang-analyzer-*"

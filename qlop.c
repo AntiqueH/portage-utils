@@ -151,13 +151,15 @@ parse_date(const char *sdate, time_t *t)
 			/* Handle the formats:
 			 * <#> <day|week|month|year>[s] [ago]
 			 */
-			len = strlen(sdate) + 1;
-
 			unsigned long num;
-			char *dur = xmalloc(len * 2);
-			char *ago = dur + len;
-			int ret = sscanf(sdate, "%lu %s %s", &num, dur, ago);
+			char *dur;
+			char *ago;
+			int ret;
 
+			len = strlen(sdate) + 1;
+			dur = xmalloc(len * 2);
+			ago = dur + len;
+			ret = sscanf(sdate, "%lu %s %s", &num, dur, ago);
 			if (ret < 2) {
 				if (strcmp(sdate, "today") == 0) {
 					num = 1;

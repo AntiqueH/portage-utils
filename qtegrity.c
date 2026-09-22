@@ -124,6 +124,8 @@ static void get_known_good_digest(const char * fn_store, char * recorded_fname, 
 	/* Open file with known good hashes */
 	int fd_store;
 	FILE *fp_store;
+	char *line;
+	size_t linelen;
 
 	fd_store = open(fn_store, O_RDONLY|O_CLOEXEC, 0);
 	if (fd_store == -1) {
@@ -136,9 +138,6 @@ static void get_known_good_digest(const char * fn_store, char * recorded_fname, 
 		close(fd_store);
 		return;
 	}
-
-	char *line;
-	size_t linelen;
 
 	/* Iterate over lines in known-good-hashes-file.
 	 * every line being "<algo>:<digest> file:<path>" ( --add writes them)
@@ -184,6 +183,8 @@ static int get_size_digest(char * line)
 	if (pfound != NULL) {
 		int dpfound = pfound - line;
 		int cutoff_prefix = 0;
+		int dsegment;
+		char *line_segment;
 
 		if (dpfound == 55 || dpfound == 6) {
 			ret = SHA1_DIGEST_LENGTH;
@@ -193,9 +194,7 @@ static int get_size_digest(char * line)
 			cutoff_prefix = 0;
 		}
 
-		int dsegment = dpfound - cutoff_prefix;
-
-		char *line_segment;
+		dsegment = dpfound - cutoff_prefix;
 		line_segment = xmalloc(dsegment + 1);
 		/* chop off the first chars to get to the hash func */
 		memcpy(line_segment, line + cutoff_prefix, dsegment);
@@ -268,6 +267,9 @@ int qtegrity_main(int argc, char **argv)
 		int fd_ima;
 		FILE *fp_ima;
 		struct stat st;
+		char *buffered_line, *line, *recorded_fname;
+		int recorded_digest_size = 0;
+		size_t linelen;
 
 		snprintf(fn_ima, sizeof(fn_ima),
 				 "%ssys/kernel/security/ima/ascii_runtime_measurements",
@@ -288,10 +290,6 @@ int qtegrity_main(int argc, char **argv)
 			close(fd_ima);
 			exit(0);
 		}
-
-		char *buffered_line, *line, *recorded_fname;
-		int recorded_digest_size = 0;
-		size_t linelen;
 
 		/* Iterate over IMA file, grab fname and digest, get known good
 		 * digest for fname and compare */
@@ -403,6 +401,12 @@ int qtegrity_main(int argc, char **argv)
 		FILE *fp_qtegrity_custom;
 		struct stat st;
 		int flush_status;
+		char *hash_algo = q_deconst("sha256");
+		char *file_digest;
+		char *line, *fname;
+		size_t linelen;
+		int recorded_digest_size = 0;
+		int skip = 0;
 
 		if (stat(state.add_file, &st) < 0)
 			err("Couldn't access file '%s'\n", state.add_file);
@@ -413,8 +417,6 @@ int qtegrity_main(int argc, char **argv)
 			err("File '%s' is not executable\n", state.add_file);
 
 		/* add digest */
-		char *hash_algo = q_deconst("sha256");
-		char *file_digest;
 		file_digest = xmalloc(SHA256_DIGEST_LENGTH+1);
 		file_digest[0] = '\0';
 		if (check_sha(file_digest, state.add_file, hash_algo) != 0 ||
@@ -439,10 +441,6 @@ int qtegrity_main(int argc, char **argv)
 		printf("Adding %s to %s\n", state.add_file, fn_qtegrity_custom);
 
 		/* Iterate over lines; if fname matches, exit-loop */
-		char *line, *fname;
-		size_t linelen;
-		int recorded_digest_size = 0;
-		int skip = 0;
 		line = fname = NULL;
 		while (getline(&line, &linelen, fp_qtegrity_custom) != -1) {
 			recorded_digest_size = get_size_digest(line);

@@ -762,6 +762,8 @@ qkeyword_load_arches(const char *overlay)
 
 	buf = NULL;
 	while ((linelen = getline(&buf, &buflen, fp)) >= 0) {
+		bool ok;
+
 		if ((s = strchr(buf, '#')) != NULL) {
 			*s = '\0';
 			linelen = s - buf;
@@ -770,7 +772,6 @@ qkeyword_load_arches(const char *overlay)
 		if (buf[0] == '\0')
 			continue;
 
-		bool ok;
 		archs = add_set_unique(buf, archs, &ok);
 		if (ok) {
 			buflen = strlen(buf);

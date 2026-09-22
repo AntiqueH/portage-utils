@@ -1279,9 +1279,10 @@ qm_gb_conflict_prune(array *lst, array *against, const char *what,
 	if (lst == NULL || against == NULL)
 		return;
 	for (i = array_cnt(lst); i > 0; ) {
-		i--;
-		depend_atom *x = array_get(lst, i);
+		depend_atom *x;
 
+		i--;
+		x = array_get(lst, i);
 		if (qm_gb_list_find(against, x) < 0)
 			continue;
 		warn("[%s] %s atom %s is overridden by %s", rname, what,
@@ -1300,10 +1301,12 @@ qm_gb_mutual_prune(array *ex, array *in, const char *where)
 	if (ex == NULL || in == NULL)
 		return;
 	for (i = array_cnt(ex); i > 0; ) {
-		i--;
-		depend_atom *x = array_get(ex, i);
-		ssize_t      j = qm_gb_list_find(in, x);
+		depend_atom *x;
+		ssize_t      j;
 
+		i--;
+		x = array_get(ex, i);
+		j = qm_gb_list_find(in, x);
 		if (j < 0)
 			continue;
 		warn("%s: %s appears in both the exclude and include list, "
@@ -4622,6 +4625,7 @@ qm_apply_news_one(const char *loc, const char *rname)
 	set            *relevant = NULL;
 	char            ndir[_Q_PATH_MAX];
 	int             fresh = 0;
+	bool            apply_ok = true;
 
 	snprintf(tpath, sizeof(tpath), "%s%s/News.tar", portroot, loc);
 	if (access(tpath, R_OK) != 0)
@@ -4691,7 +4695,6 @@ qm_apply_news_one(const char *loc, const char *rname)
 
 	/* pass 2: store the matching items and list them as unread,
 	 * the way portage records a fresh news item */
-	bool apply_ok = true;
 	snprintf(ndir, sizeof(ndir), "%svar/lib/gentoo/news", portroot);
 	mkdir_p(ndir, 0755);
 	ar = archive_read_new();
@@ -7324,17 +7327,16 @@ best_version(const depend_atom *atom, int mode)
 			for (k = 0; k < qm_nbinrepos; k++) {
 				size_t    kw = qm_walk_order[k];
 				tree_ctx *ktree;
+				array    *t;
+				size_t    n;
+				tree_pkg_ctx *cand;
+				bool      found = false;
 
 				if (kw == (size_t)only)
 					break;
 				if (qm_binrepos[kw].priority == 0)
 					continue;
 				ktree = qm_bintree(kw);
-				array    *t;
-				size_t    n;
-				tree_pkg_ctx *cand;
-				bool      found = false;
-
 				if (ktree == NULL)
 					continue;
 				t = tree_match_atom(ktree, qq,
@@ -8414,6 +8416,7 @@ qm_confmem_write(void)
 	FILE             *fp;
 	size_t            i;
 	struct qm_cm_ent *e;
+	bool              ok = true;
 
 	if (!qm_confmem_dirty || qm_confmem == NULL || pretend)
 		return;
@@ -8436,7 +8439,6 @@ qm_confmem_write(void)
 		warnp("cannot write %s", path);
 		return;
 	}
-	bool ok = true;
 	array_for_each(qm_confmem, i, e)
 		if (fprintf(fp, "%s %s\n", e->path, e->val) < 0)
 			ok = false;
@@ -8830,6 +8832,7 @@ merge_tree_at(int fd_src, const char *src, int fd_dst, const char *dst,
 			char sym[_Q_PATH_MAX];
 			ssize_t symlen = readlinkat(subfd_src, name, sym,
 										sizeof(sym) - 1);
+			struct timespec times[2];
 
 			if (symlen < 0) {
 				warnp("could not read link %s", cpath);
@@ -8859,7 +8862,6 @@ merge_tree_at(int fd_src, const char *src, int fd_dst, const char *dst,
 				}
 			}
 
-			struct timespec times[2];
 			times[0] = get_stat_atime(&st);
 			times[1] = get_stat_mtime(&st);
 			utimensat(subfd_dst, name, times, AT_SYMLINK_NOFOLLOW);
@@ -8897,9 +8899,10 @@ pkg_extract_xpak_cb(
 {
 	FILE *out;
 	struct qm_xpak_extract_ctx *xc = ctx;
-	(void)pathname_len;
+	int fd;
 
-	int fd = openat(xc->fd, pathname,
+	(void)pathname_len;
+	fd = openat(xc->fd, pathname,
 			O_WRONLY | O_CLOEXEC | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0) {
 		xc->error = true;
@@ -11727,8 +11730,7 @@ qm_plan_drop_pinning(struct qm_plan *plan, const char *pcpn,
 		return 0;
 
 	for (i = array_cnt(plan->merge); i > 0; ) {
-		i--;
-		char         *cpvp = array_get(plan->merge, i);
+		char         *cpvp;
 		char          cex[560];
 		atom_ctx     *ca;
 		atom_ctx     *cba;
@@ -11741,6 +11743,8 @@ qm_plan_drop_pinning(struct qm_plan *plan, const char *pcpn,
 		char          ccpn[512];
 		bool          disagree = false;
 
+		i--;
+		cpvp = array_get(plan->merge, i);
 		snprintf(cex, sizeof(cex), "=%s", cpvp);
 		ca = atom_explode(cex);
 		if (ca == NULL)
@@ -11812,12 +11816,13 @@ qm_plan_drop(struct qm_plan *plan, const char *cpn)
 	int    dropped = 0;
 
 	for (i = array_cnt(plan->merge); i > 0; ) {
-		i--;
-		char     *cpvp = array_get(plan->merge, i);
+		char     *cpvp;
 		char      ex[560];
 		atom_ctx *a;
 		bool      match = false;
 
+		i--;
+		cpvp = array_get(plan->merge, i);
 		snprintf(ex, sizeof(ex), "=%s", cpvp);
 		a = atom_explode(ex);
 		if (a != NULL) {
@@ -12838,8 +12843,7 @@ qm_kg_drop_dependents(struct qm_plan *plan)
 
 		again = false;
 		for (i = array_cnt(plan->merge); i > 0; ) {
-			i--;
-			char         *cpvp = array_get(plan->merge, i);
+			char         *cpvp;
 			char          ex[560];
 			atom_ctx     *ca;
 			tree_pkg_ctx *bp;
@@ -12848,6 +12852,8 @@ qm_kg_drop_dependents(struct qm_plan *plan)
 			bool          gone = false;
 			size_t        mi;
 
+			i--;
+			cpvp = array_get(plan->merge, i);
 			snprintf(ex, sizeof(ex), "=%s", cpvp);
 			ca = atom_explode(ex);
 			if (ca == NULL)
@@ -13150,6 +13156,7 @@ qm_resolve_and_merge(set *todo)
 	bool   ambig_names = false;
 	array *final_dups    = NULL;
 	set   *final_planned = NULL;
+	int    rc = EXIT_SUCCESS;
 	int    uni_budget    = qm_slot_unify != 0 ? qm_backtrack : 0;
 	int    uni_masks     = 0;
 	int    base_unsat    = -1;
@@ -13340,8 +13347,6 @@ resolve_again:
 		(void)qm_kg_drop_dependents(&plan);
 
 	qm_keypkg_promote(&plan);
-
-	int rc = EXIT_SUCCESS;
 
 	if (array_cnt(plan.merge) == 0) {
 		/* nothing resolved, the request couldn't be satisfied (no candidate
@@ -13873,8 +13878,10 @@ qm_get_counter_tick_core(void)
 	snprintf(path, sizeof(path), "%s%s/counter", portroot, portedb);
 	if (eat_file(path, &buf, &buf_len) && buf != NULL && buf[0] != '\0') {
 		char *end;
+		long  v;
+
 		errno = 0;
-		long v = strtol(buf, &end, 10);
+		v = strtol(buf, &end, 10);
 		if (end != buf && errno == 0)
 			counter = v;
 		else
@@ -13905,8 +13912,10 @@ qm_get_counter_tick_core(void)
 				if (eat_file(path, &buf, &buf_len) &&
 						buf != NULL && buf[0] != '\0') {
 					char *end;
+					long  v;
+
 					errno = 0;
-					long v = strtol(buf, &end, 10);
+					v = strtol(buf, &end, 10);
 					if (end != buf && errno == 0 && v > max_counter)
 						max_counter = v;
 				}
@@ -14916,6 +14925,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	size_t          pm_phases_len = 0;
 	char           *eapi          = NULL;
 	size_t          eapi_len      = 0;
+	int             ar;
+	set            *mseen;
 
 	if ((!install && !fetch_only) || !mpkg || !qatom)
 		return;
@@ -15084,8 +15095,6 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		}
 
 		xchdir("temp");
-		int  ar;
-		set *mseen;
 		a = archive_read_new();
 		t = archive_write_disk_new();
 		archive_read_support_format_tar(a);
@@ -19053,6 +19062,8 @@ pkg_fetch(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	atom_ctx *patom     = tree_pkg_atom(mpkg, false);
 	int       verifyret;
 	char      pkg_key[512];
+	bool      forced;
+	bool      was_present;
 
 	/* remember CATEGORY/PF of everything queued in this run, so
 	 * cyclic or duplicate dependencies are processed only once */
@@ -19071,7 +19082,7 @@ pkg_fetch(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	/* -F if they're not forced, they're like before.
 	 * if they're forced, we skip the regular soft checks.
 	 * this is the best we could do here. */
-	bool forced = qm_force_soft() && qm_force_targets != NULL &&
+	forced = qm_force_soft() && qm_force_targets != NULL &&
 			contains_set(pkg_key, qm_force_targets) != NULL;
 
 	/* package.mask visibility checks (backstop; selection already filters) */
@@ -19115,8 +19126,8 @@ pkg_fetch(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 
 	/* download into PKGDIR (a no-op when a parallel prefetch already
 	 * pulled it, or when the package is otherwise present). */
-	bool was_present = faccessat(tree_pkg_get_portroot_fd(mpkg),
-								 tree_pkg_get_path(mpkg), R_OK, 0) == 0;
+	was_present = faccessat(tree_pkg_get_portroot_fd(mpkg),
+							tree_pkg_get_path(mpkg), R_OK, 0) == 0;
 	if (!pkg_download(mpkg)) {
 		qm_exec_fail(patom);
 		return;

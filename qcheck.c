@@ -243,6 +243,7 @@ qcheck_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 		if (entry->digest && S_ISREG(st.st_mode)) {
 			char *f_digest;
 			int   hash_algo;
+			hash_cb_t hash_cb;
 
 			/* Validate digest (handles MD5 / SHA1)
 			 * Digest-check 1/3:
@@ -271,8 +272,7 @@ qcheck_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			}
 
 			/* compute hash for file */
-			hash_cb_t hash_cb =
-				state->undo_prelink ? hash_cb_prelink_undo : NULL;
+			hash_cb = state->undo_prelink ? hash_cb_prelink_undo : NULL;
 			f_digest = hash_file_at_cb(portroot_fd,
 									   entry->name + 1, hash_algo, hash_cb);
 
