@@ -4495,6 +4495,55 @@ plansd=$(echo "${outsd}" | grep '\[binary')
 tend $? "qmerge-test: [SU] usedep-driven collision unified on the older build" \
 	|| die "rc=${rcsd} ${outsd}"
 
+# testing a version masked in one backtrack round and checked to set again in the next
+# must not be reported as missing at the end.
+# installed: tprov-1.0, toldc-1.0 (wants ~tprov-1.0), tstale-1.0 (pins
+# tprov:0/1= and has no rebuild). binhost: tprov-2.0 and toldc-2.0 (wants
+# ~tprov-2.0).
+while read -r tname tver tslot tdep; do
+	mkdir -p "su-${tname}/xp"
+	(
+		cd "su-${tname}"
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+		qtbz2 -s b.tbz2 >/dev/null
+		( cd xp && qxpak -x ../b.xpak >/dev/null )
+		echo dev-libs > xp/CATEGORY
+		echo "${tname}-${tver}" > xp/PF
+		echo "${tslot}" > xp/SLOT
+		printf '%s\n' "${tdep}" > xp/RDEPEND
+		: > xp/USE
+		: > xp/IUSE
+		( cd xp && rm -f ./*.ebuild; touch "${tname}-${tver}.ebuild"
+		  qxpak -c ../new.xpak $(ls) )
+		qtbz2 -j b.tar.bz2 new.xpak \
+			"${ROOT}/packages/dev-libs/${tname}-${tver}.tbz2"
+	)
+	rm -rf "su-${tname}"
+done <<-EOF
+	tprov 1.0 0/1
+	tprov 2.0 0/2
+	toldc 1.0 0 ~dev-libs/tprov-1.0
+	toldc 2.0 0 ~dev-libs/tprov-2.0
+	tstale 1.0 0 dev-libs/tprov:0/1=
+EOF
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge =dev-libs/toldc-1.0 =dev-libs/tstale-1.0 >/dev/null 2>&1
+outsr=$(qmerge -puDN dev-libs/toldc dev-libs/tstale 2>&1)
+rcsr=$?
+plansr=$(echo "${outsr}" | grep '\[binary')
+[[ ${rcsr} -eq 0 && ${plansr} == *"dev-libs/tprov-2.0"* && \
+   ${plansr} == *"dev-libs/toldc-2.0"* && \
+   ${outsr} != *"cannot satisfy"* && \
+   ${outsr} != *"no binary packages to satisfy"* ]]
+tend $? "qmerge-test: [SU] a version planned after backtracking is not reported missing" \
+	|| die "rc=${rcsr} ${outsr}"
+yes | qmerge -FU dev-libs/toldc dev-libs/tstale dev-libs/tprov >/dev/null 2>&1
+rm -f "${ROOT}/packages/dev-libs/tprov-1.0.tbz2" \
+	"${ROOT}/packages/dev-libs/tprov-2.0.tbz2" \
+	"${ROOT}/packages/dev-libs/toldc-1.0.tbz2" \
+	"${ROOT}/packages/dev-libs/toldc-2.0.tbz2" \
+	"${ROOT}/packages/dev-libs/tstale-1.0.tbz2"
+
 rm -f "${ROOT}/packages/dev-libs/prov-1.0.tbz2" \
 	"${ROOT}/packages/dev-libs/prov-2.0.tbz2" \
 	"${ROOT}/packages/dev-libs/consa-1.0.tbz2" \

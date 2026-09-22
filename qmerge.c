@@ -6317,6 +6317,10 @@ static array *qm_slot_members(const char *cat, const char *pn,
 
 static tree_pkg_ctx *best_version(const depend_atom *atom, int mode);
 static int qm_strcmp_cb(const void *l, const void *r);
+static tree_pkg_ctx *qm_plan_pick(const char *cpvp, atom_ctx *ca);
+static bool atom_satisfied_by(atom_ctx *dep, tree_pkg_ctx *cand,
+							  set *parent_use);
+static void qm_unsat_warns_print(void);
 
 /* builds whose library check is running right now, so that two packages
  * built against each other do not check each other forever */
@@ -6430,6 +6434,27 @@ qm_deadpin_add(const char *pin, const char *name, const char *kind)
 		hash_add(qm_deadpins, pin, d, NULL);
 	}
 	add_set_unique(line, d, NULL);
+}
+
+/* function to forget the records above when qmerge starts the
+ * resolution again after masking a package. */
+static void
+qm_deadpins_flush(void)
+{
+	array  *k;
+	size_t  i;
+	char   *key;
+
+	if (qm_deadpins == NULL)
+		return;
+	k = hash_keys(qm_deadpins);
+	if (k != NULL) {
+		array_for_each(k, i, key)
+			free_set(hash_get(qm_deadpins, key));
+		array_free(k);
+	}
+	hash_free(qm_deadpins);
+	qm_deadpins = NULL;
 }
 
 /* write the package name the way emerge prints it:
@@ -6813,8 +6838,50 @@ struct qm_skip_group {
 	char   label[2048];
 };
 
+/* function to check whether the version a record says is missing is in
+ * fact there: about to be merged, or already installed and not checked
+ * by this merge. a record like that is old news and stays out of the
+ * report. */
+static bool
+qm_deadpin_satisfied(atom_ctx *A, array *merge)
+{
+	size_t        i;
+	char         *cpvp;
+	bool          touched = false;
+	tree_pkg_ctx *inst;
+
+	if (merge != NULL) {
+		array_for_each(merge, i, cpvp) {
+			char          exact[520];
+			atom_ctx     *a;
+			tree_pkg_ctx *bpkg;
+
+			snprintf(exact, sizeof(exact), "=%s", cpvp);
+			a = atom_explode(exact);
+			if (a == NULL)
+				continue;
+			if (a->CATEGORY != NULL && A->CATEGORY != NULL &&
+					a->PN != NULL && A->PN != NULL &&
+					strcmp(a->CATEGORY, A->CATEGORY) == 0 &&
+					strcmp(a->PN, A->PN) == 0) {
+				touched = true;
+				bpkg = qm_plan_pick(cpvp, a);
+				if (bpkg != NULL && atom_satisfied_by(A, bpkg, NULL)) {
+					atom_implode(a);
+					return true;
+				}
+			}
+			atom_implode(a);
+		}
+	}
+	if (touched)
+		return false;
+	inst = best_version(A, BV_INSTALLED);
+	return inst != NULL && atom_satisfied_by(A, inst, NULL);
+}
+
 static void
-qm_print_deadpins(void)
+qm_print_deadpins(array *merge)
 {
 	array   *pins;
 	size_t   n;
@@ -6823,6 +6890,7 @@ qm_print_deadpins(void)
 	array   *gorder = array_new();
 	struct qm_skip_group *g;
 
+	qm_unsat_warns_print();
 	if (qm_deadpins == NULL || hash_size(qm_deadpins) == 0) {
 		hash_free(groups);
 		array_free(gorder);
@@ -6854,6 +6922,8 @@ qm_print_deadpins(void)
 			else
 				required = true;
 		}
+		if (A != NULL && required && qm_deadpin_satisfied(A, merge))
+			required = false;
 		if (A == NULL || (!required && (!skipped || qm_user_quiet))) {
 			array_free(lines);
 			if (A != NULL)
@@ -9034,6 +9104,48 @@ static int     qm_unify_round = 0;
 static set    *qm_unsat_noted = NULL;
 static bool    qm_internal_pull = false;
 
+static array  *qm_unsat_warns = NULL;
+
+/* "cannot satisfy" lines of the current resolution attempt, printed only
+ * when the attempt is the last one */
+static void
+qm_unsat_warn(const char *atomstr, const char *hint, const char *mhint)
+{
+	char *line;
+
+	xasprintf(&line, "%s%s%s", atomstr, hint, mhint);
+	if (qm_unsat_warns == NULL)
+		qm_unsat_warns = array_new();
+	array_append(qm_unsat_warns, line);
+}
+
+static void
+qm_unsat_warns_flush(void)
+{
+	if (qm_unsat_warns != NULL) {
+		array_deepfree(qm_unsat_warns, free);
+		qm_unsat_warns = NULL;
+	}
+	if (qm_unsat_noted != NULL) {
+		free_set(qm_unsat_noted);
+		qm_unsat_noted = NULL;
+	}
+}
+
+static void
+qm_unsat_warns_print(void)
+{
+	size_t  i;
+	char   *line;
+
+	if (qm_unsat_warns == NULL)
+		return;
+	array_for_each(qm_unsat_warns, i, line)
+		warn("cannot satisfy dependency %s", line);
+	array_deepfree(qm_unsat_warns, free);
+	qm_unsat_warns = NULL;
+}
+
 static void
 qm_demands_free(void)
 {
@@ -9282,7 +9394,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 			if (qm_internal_pull)
 				warn("cannot satisfy %s%s%s", atom_to_string(atom), h, mh);
 			else if (qm_unsat_note(atom_to_string(atom)))
-				warn("cannot satisfy %s%s%s", atom_to_string(atom), h, mh);
+				qm_unsat_warn(atom_to_string(atom), h, mh);
 			if (!qm_internal_pull)
 				qm_deadpin_add(atom_to_string(atom), atom_to_string(atom),
 							   "A");
@@ -9317,8 +9429,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		const char *mh = qm_move_fail_hint(atom);
 
 		if (qm_unsat_note(atom_to_string(atom)))
-			warn("cannot satisfy dependency %s%s%s",
-				 atom_to_string(atom), h, mh);
+			qm_unsat_warn(atom_to_string(atom), h, mh);
 		if (qm_cur_revdep[0] != '\0')
 			qm_deadpin_add(atom_to_string(atom), qm_cur_revdep, "B");
 		else
@@ -12550,7 +12661,7 @@ qm_exec_round(struct qm_plan *plan)
 	int     rc = EXIT_SUCCESS;
 
 	qm_print_use_rejects();
-	qm_print_deadpins();
+	qm_print_deadpins(plan->merge);
 	/* QMERGE_BLOCKERS feature: drop the soft-blocked installed packages the resolution
 	 * supersedes before merging (with -U, which ideally is safe).
 	 * This is the only place the resolver unmerges a package the user
@@ -13198,6 +13309,8 @@ resolve_again:
 			qm_verdict_memo_flush();
 			qm_pick_memo_flush();
 			qm_use_rejects_flush();
+			qm_deadpins_flush();
+			qm_unsat_warns_flush();
 			qm_unify_round++;
 			array_deepfree(plan.merge, free);
 			free_set(plan.in_merge);
@@ -13238,7 +13351,7 @@ resolve_again:
 		 * USE-gate rejects explain a respect-use refusal
 		 * that would otherwise read as a bare cannot-satisfy. */
 		qm_print_use_rejects();
-		qm_print_deadpins();
+		qm_print_deadpins(plan.merge);
 		if (!qm_kg_summary())
 			warn("nothing to merge (no candidates could be satisfied)");
 		array_deepfree(plan.merge, free);
@@ -13493,7 +13606,7 @@ resolve_again:
 			}
 		}
 		qm_print_use_rejects();
-		qm_print_deadpins();
+		qm_print_deadpins(plan.merge);
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
 		/* surface subslot conflicts in the merge list too, like emerge does.
@@ -13553,6 +13666,8 @@ resolve_again:
 			qm_verdict_memo_flush();
 			qm_pick_memo_flush();
 			qm_use_rejects_flush();
+			qm_deadpins_flush();
+			qm_unsat_warns_flush();
 			array_deepfree(plan.merge, free);
 			free_set(plan.in_merge);
 			free_set(plan.examined);
