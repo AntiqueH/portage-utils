@@ -152,6 +152,7 @@ qdepends_results_cb
   size_t                     m;
   int                        ret        = 0;
   bool                       firstmatch = false;
+  bool                       hit;
 
   /* matrix consists of:
    * - QMODE_*DEPEND
@@ -167,6 +168,7 @@ qdepends_results_cb
   if ((state->qmode & QMODE_REVERSE) == 0)
   {
     /* see if this cat/pkg is requested */
+    hit = false;
     array_for_each(state->atoms, i, atom)
     {
       if (atom->blocker != ATOM_BL_NONE ||
@@ -175,13 +177,13 @@ qdepends_results_cb
         datom = tree_pkg_atom(pkg_ctx, true);
       if (atom_compare(datom, atom) == EQUAL)
       {
-        atom = NULL;
+        hit = true;
         break;
       }
     }
 
     /* nothing matched */
-    if (atom != NULL)
+    if (!hit)
       return ret;
 
     ret = 1;
@@ -249,23 +251,21 @@ qdepends_results_cb
     if (verbose) {
       if (state->qmode & QMODE_REVERSE)
       {
+        hit = false;
         array_for_each(deps, m, atom)
         {
           array_for_each(state->atoms, n, fatom)
           {
             if (atom_compare(atom, fatom) == EQUAL)
             {
-              fatom = NULL;
+              hit = true;
               break;
             }
           }
-          if (fatom == NULL)
-          {
-            atom = NULL;
+          if (hit)
             break;
-          }
         }
-        if (atom == NULL)
+        if (hit)
         {
           ret = 1;
 
@@ -302,15 +302,16 @@ qdepends_results_cb
       {
         array_for_each(deps, m, atom)
         {
+          hit = false;
           array_for_each(state->atoms, n, fatom)
           {
             if (atom_compare(atom, fatom) == EQUAL)
             {
-              fatom = NULL;
+              hit = true;
               break;
             }
           }
-          if (fatom == NULL)
+          if (hit)
           {
             ret = 1;
 
