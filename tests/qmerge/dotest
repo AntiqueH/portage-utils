@@ -360,6 +360,54 @@ yes | qmerge -FU qmerge-test >/dev/null 2>&1
 rm -rf ffref
 rm -Rf "${ROOT}"/etc "${ROOT}"/usr
 
+# checkig the whole [OWN]ership of everything.
+# root only things, as always.
+if [[ $(id -u) -eq 0 ]] ; then
+	mkdir -p "own-1.0/xp" "own-1.0/img/usr/bin"
+	(
+		cd "own-1.0"
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+		qtbz2 -s b.tbz2 >/dev/null
+		( cd xp && qxpak -x ../b.xpak >/dev/null )
+		printf '#!/bin/sh\necho own\n' > img/usr/bin/owntool
+		chmod 2750 img/usr/bin/owntool
+		tar --owner=0 --group=1 -cjf image.tar.bz2 -C img .
+		echo dev-libs > xp/CATEGORY
+		echo own-1.0 > xp/PF
+		echo 0 > xp/SLOT
+		: > xp/RDEPEND
+		( cd xp && rm -f ./*.ebuild; touch own-1.0.ebuild
+		  qxpak -c ../new.xpak $(ls) )
+		mkdir -p "${ROOT}/packages/dev-libs"
+		qtbz2 -j image.tar.bz2 new.xpak "${ROOT}/packages/dev-libs/own-1.0.tbz2"
+	)
+	rm -rf "own-1.0"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	out=$(yes | qmerge -F =dev-libs/own-1.0 2>&1); rc=$?
+	[[ ${rc} -eq 0 && \
+	   $(stat -c '%u:%g %a' "${ROOT}/usr/bin/owntool" 2>/dev/null) == "0:1 2750" ]]
+	tend $? "qmerge-test: [OWN] tbz2 merge keeps the recorded group and the setgid bit" \
+		|| die "rc=${rc}; $(stat -c '%u:%g %a' "${ROOT}/usr/bin/owntool" 2>&1); ${out}"
+
+	out=$(qpkg -g dev-libs/own 2>&1); rc=$?
+	yes | qmerge -FU dev-libs/own >/dev/null 2>&1
+	rm -f "${ROOT}/packages/dev-libs/own-1.0.tbz2"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	[[ ${rc} -eq 0 && ! -e ${ROOT}/usr/bin/owntool ]] && \
+		ls "${ROOT}"/packages/dev-libs/own-1.0*.gpkg.tar >/dev/null 2>&1
+	tend $? "qmerge-test: [OWN] gpkg rebuilt from the installed copy" || die "${out}"
+	out=$(yes | qmerge -F =dev-libs/own-1.0 2>&1); rc=$?
+	[[ ${rc} -eq 0 && \
+	   $(stat -c '%u:%g %a' "${ROOT}/usr/bin/owntool" 2>/dev/null) == "0:1 2750" ]]
+	tend $? "qmerge-test: [OWN] gpkg merge keeps the recorded group and the setgid bit" \
+		|| die "rc=${rc}; $(stat -c '%u:%g %a' "${ROOT}/usr/bin/owntool" 2>&1); ${out}"
+	yes | qmerge -FU dev-libs/own >/dev/null 2>&1
+	rm -f "${ROOT}"/packages/dev-libs/own-1.0*
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+else
+	echo "${WARN}SKIPPED:${NORMAL} [OWN] owner and group restore: needs root (a normal user cannot chown to another group)"
+fi
+
 # check if INSTALL_MASK is applied well
 export INSTALL_MASK="/etc"
 out=$(yes | qmerge -F qmerge-test)

@@ -14892,6 +14892,28 @@ qm_collision_protect(atom_ctx *matom, array *slotmembers,
 }
 
 
+/* what to restore when a package image is unpacked onto disk: file
+ * modes, times, acls, xattrs and the path safety checks, and when we
+ * run as root also the owner and group the builder recorded.
+ * this has escaped everyone, implementing as per bug #31 reported
+ * by 0times. */
+static int
+qm_image_extract_flags(void)
+{
+	int flags = ARCHIVE_EXTRACT_PERM |
+			ARCHIVE_EXTRACT_TIME |
+			ARCHIVE_EXTRACT_ACL |
+			ARCHIVE_EXTRACT_FFLAGS |
+			ARCHIVE_EXTRACT_XATTR |
+			ARCHIVE_EXTRACT_SECURE_SYMLINKS |
+			ARCHIVE_EXTRACT_SECURE_NODOTDOT |
+			ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS;
+
+	if (geteuid() == 0)
+		flags |= ARCHIVE_EXTRACT_OWNER;
+	return flags;
+}
+
 /* we need some explanations here for each of the elements bellow,
  * this is probably some of the most important stuff here,
  * since pkg_merge is a ship icebreaker in our functions, basically */
@@ -15230,14 +15252,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		a = archive_read_new();
 		t = archive_write_disk_new();
 		qarchive_read_taronly(a);
-		archive_write_disk_set_options(t, (ARCHIVE_EXTRACT_PERM |
-									   	   ARCHIVE_EXTRACT_TIME |
-									   	   ARCHIVE_EXTRACT_ACL |
-									   	   ARCHIVE_EXTRACT_FFLAGS |
-									   	   ARCHIVE_EXTRACT_XATTR |
-									   	   ARCHIVE_EXTRACT_SECURE_SYMLINKS |
-									   	   ARCHIVE_EXTRACT_SECURE_NODOTDOT |
-									   	   ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS));
+		archive_write_disk_set_options(t, qm_image_extract_flags());
 		if (archive_read_open_filename(a, "../temp/image",
 									   BUFSIZ) != ARCHIVE_OK)
 			err("failed to open metadata: %s", archive_error_string(a));
@@ -15368,14 +15383,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 						archive_error_string(a));
 			} else
 				qarchive_read_taronly(a);
-			archive_write_disk_set_options(t, (ARCHIVE_EXTRACT_PERM |
-											   ARCHIVE_EXTRACT_TIME |
-											   ARCHIVE_EXTRACT_ACL |
-											   ARCHIVE_EXTRACT_FFLAGS |
-											   ARCHIVE_EXTRACT_XATTR |
-									   	   ARCHIVE_EXTRACT_SECURE_SYMLINKS |
-									   	   ARCHIVE_EXTRACT_SECURE_NODOTDOT |
-									   	   ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS));
+			archive_write_disk_set_options(t, qm_image_extract_flags());
 			if (archive_read_open(a, &stream, NULL,
 								  qm_tar_read_cb, NULL) != ARCHIVE_OK)
 				err("failed to open binpkg %s: %s",
