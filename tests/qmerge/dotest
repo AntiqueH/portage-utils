@@ -408,6 +408,44 @@ else
 	echo "${WARN}SKIPPED:${NORMAL} [OWN] owner and group restore: needs root (a normal user cannot chown to another group)"
 fi
 
+# [ID] IDEPEND: check what a package needs on the system while its install
+# hooks run (EAPI 8), merged before the package like emerge does.
+# idtool is named only in the IDEPEND of idep.
+for idn in idtool idep; do
+	mkdir -p "id-${idn}/xp"
+	(
+		cd "id-${idn}"
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+		qtbz2 -s b.tbz2 >/dev/null
+		( cd xp && qxpak -x ../b.xpak >/dev/null )
+		echo dev-libs > xp/CATEGORY
+		echo "${idn}-1.0" > xp/PF
+		echo 0 > xp/SLOT
+		echo 8 > xp/EAPI
+		: > xp/RDEPEND
+		if [[ ${idn} == idep ]] ; then
+			echo "dev-libs/idtool" > xp/IDEPEND
+		fi
+		( cd xp && rm -f ./*.ebuild; touch "${idn}-1.0.ebuild"
+		  qxpak -c ../new.xpak $(ls) )
+		mkdir -p "${ROOT}/packages/dev-libs"
+		qtbz2 -j b.tar.bz2 new.xpak "${ROOT}/packages/dev-libs/${idn}-1.0.tbz2"
+	)
+	rm -rf "id-${idn}"
+done
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+outid=$(qmerge -p =dev-libs/idep-1.0 2>&1); rcid=$?
+planid=$(echo "${outid}" | grep '\[binary' | awk '{print $3}' | tr '\n' ' ')
+[[ ${rcid} -eq 0 && ${planid} == "dev-libs/idtool-1.0"*"dev-libs/idep-1.0"* ]]
+tend $? "qmerge-test: [ID] an IDEPEND package is planned, before the package that needs it" \
+	|| die "rc=${rcid} plan='${planid}' ${outid}"
+out=$(yes | qmerge =dev-libs/idep-1.0 2>&1); rc=$?
+[[ ${rc} -eq 0 && $(qlist -Iv 2>/dev/null | grep -c 'dev-libs/id') -eq 2 ]]
+tend $? "qmerge-test: [ID] both landed in the vdb" || die "rc=${rc} $(qlist -Iv) ${out}"
+yes | qmerge -FU dev-libs/idep dev-libs/idtool >/dev/null 2>&1
+rm -f "${ROOT}/packages/dev-libs/idep-1.0.tbz2" "${ROOT}/packages/dev-libs/idtool-1.0.tbz2"
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+
 # check if INSTALL_MASK is applied well
 export INSTALL_MASK="/etc"
 out=$(yes | qmerge -F qmerge-test)

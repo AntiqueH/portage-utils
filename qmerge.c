@@ -9309,6 +9309,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	set          *use;
 	char          cpv[512];
 	char         *rdep;
+	char         *idep;
 	char         *pdep;
 	char         *usestr;
 	bool          pull;
@@ -9548,6 +9549,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	}
 	usestr = xstrdup(tree_pkg_meta(provider, Q_USE)     ? : "");
 	rdep   = xstrdup(tree_pkg_meta(provider, Q_RDEPEND) ? : "");
+	idep   = xstrdup(tree_pkg_meta(provider, Q_IDEPEND) ? : "");
 	pdep   = xstrdup(tree_pkg_meta(provider, Q_PDEPEND) ? : "");
 	/* provider ctx must not be used past this point */
 
@@ -9556,6 +9558,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 			qm_plan_add(plan, cpv);
 		free(usestr);
 		free(rdep);
+		free(idep);
 		free(pdep);
 		return;
 	}
@@ -9568,7 +9571,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	 * ( Yes, we know this is slightly dangerous, but it's the closest to optimized
 	 * solution we found. ) */
 	if ((pull || level == 0 || deep) && follow_rdepends) {
-		char    *deps[2];
+		char    *deps[3];
 		int      di;
 		ssize_t  aff_save = qm_repo_affinity;
 		char     csave[sizeof(qm_cur_revdep)];
@@ -9583,10 +9586,15 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		if (aff_new > 0)
 			qm_repo_affinity = aff_new;
 
+		/* IDEPEND: does what the package needs on the system while its
+		 * installs' run, very much like an eselect module.
+		 * emerge merges these before the package like RDEPEND
+		 * */
 		use = usedep_flags_to_set(usestr);
 		deps[0] = rdep;
-		deps[1] = pdep;
-		for (di = 0; di < 2; di++) {
+		deps[1] = idep;
+		deps[2] = pdep;
+		for (di = 0; di < 3; di++) {
 			dep_node_t *t;
 
 			if (deps[di][0] == '\0')
@@ -9610,6 +9618,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 
 	free(usestr);
 	free(rdep);
+	free(idep);
 	free(pdep);
 }
 
