@@ -1374,8 +1374,8 @@ static size_t             qm_nbinrepos = 0;
 static size_t            *qm_walk_order = NULL;
 
 /* priority scale: 1 is the top, larger sinks lower; 0 is reserved for
- * the emergency store, reachable only through an explicit @name
- * selector; the local store defaults below every configured binhost */
+ * the emergency repos, reachable only through an explicit @name
+ * selector; @local defaults below every configured binhost */
 #define QM_PRIO_LOWEST (1 << 30)
 
 static void
@@ -1450,7 +1450,7 @@ binrepos_add(const char *name, const char *uri, const char *loc, int priority,
 	qm_nbinrepos++;
 }
 
-/* effective store dir of repo i: explicit location = (or @local's
+/* the PKGDIR of repo i: explicit location = (or @local's
  * PKGDIR), else /var/cache/binhost/<name> (portage default when
  * PORTAGE_BINHOST is unset) */
 static const char *
@@ -1579,7 +1579,7 @@ binrepos_load(void)
 		qsort(qm_binrepos, qm_nbinrepos, sizeof(*qm_binrepos),
 			  binrepos_cmp);
 
-	/* PKGDIR == local store in our case.
+	/* PKGDIR == @local in our case.
 	 * in portage case, they're both unset and have no
 	 * real collision with each other, but in multibinhost
 	 * case they would need to have a collisionary conflict. */
@@ -1598,18 +1598,18 @@ binrepos_load(void)
 					strcmp(qm_binrepos[i].loc, npkg) != 0)
 				continue;
 			warn("binrepo '%s': location = PKGDIR conflicts with the "
-				 "local store; using /var/cache/binhost/%s instead",
+				 "@local PKGDIR; using /var/cache/binhost/%s instead",
 				 qm_binrepos[i].name, qm_binrepos[i].name);
 			free(qm_binrepos[i].loc);
 			qm_binrepos[i].loc = NULL;
 		}
 
 		/* by default the LOWEST scan priority (QMERGE_LOCAL_PRIORITY overrides,
-		 * 0 makes itthe emergency store):
+		 * 0 makes it an emergency repo):
 		 * a distinct repo with no uri (never fetched), holding locally-
 		 * built binpkgs; its index is (re)generated only by
 		 * `qmerge -i`.This replaces the old qm_repo_loc i==0->pkgdir
-		 * aliasing that conflated the local store with the top-
+		 * aliasing that conflated @local's PKGDIR with the top-
 		 * priority binhost. */
 		qm_binrepos = xrealloc(qm_binrepos,
 							   sizeof(*qm_binrepos) * (qm_nbinrepos + 1));
@@ -2262,8 +2262,8 @@ fetch(const char *destdir, const char *src)
 	base = strrchr(src, '/');
 	base = base != NULL ? base + 1 : src;
 
-	/* scan the repos in priority order until one delivers; the local
-	 * store (no uri) can't serve downloads, fetch_repo skips it */
+	/* scan the repos in priority order until one delivers; @local
+	 * (no uri) can't serve downloads, fetch_repo skips it */
 	for (i = 0; i < qm_nbinrepos; i++) {
 		if (qm_binrepos[i].uri == NULL || qm_binrepos[i].uri[0] == '\0')
 			continue;
@@ -2321,7 +2321,7 @@ static bool qm_index_force = false;
 
 /* a cached index younger than its own TTL header needs no refetch
  * QMERGE_IGNORE_TTL=1 forces (portage bintree TTL semantics, with
- * the store file's mtime as the download timestamp) */
+ * the cached file's mtime as the download timestamp) */
 static bool
 qm_index_hdr_val(const char *path, const char *key, char *val, size_t vlen)
 {
@@ -2548,7 +2548,7 @@ qmerge_initialize(void)
 				 "(binrepos.conf missing and PORTAGE_BINHOST unset)");
 
 		/* every repo gets its own index, fetched into the tempdir
-		 * first so the existing one in the store survives a failed
+		 * first so the existing one in the PKGDIR survives a failed
 		 * fetch; per-repo failure is not fatal */
 		qm_fetch_meta = true;
 		for (i = 0; i < qm_nbinrepos; i++) {
@@ -2635,7 +2635,7 @@ qmerge_initialize(void)
 				continue;
 			}
 
-			/* the store copy is a metadata cache, portage refreshes its
+			/* the local copy is a metadata cache, portage refreshes its
 			 * binhost cache under --pretend too: without this a fresh
 			 * box resolves against an empty (or stale) index.
 			 * dropping !pretend */
@@ -2799,9 +2799,9 @@ qmerge_initialize(void)
 }
 
 static tree_ctx *qmerge_vdb_tree    = NULL;
-/* one binpkg tree per binrepo store (parallel to qm_binrepos, or a
+/* one binpkg tree per binrepo PKGDIR (parallel to qm_binrepos, or a
  * single PKGDIR tree when no repos are configured)
- * repos sharing a store share the ctx pointer */
+ * repos sharing a PKGDIR share the ctx pointer */
 static tree_ctx **qm_bintrees  = NULL;
 static size_t     qm_nbintrees = 0;
 
@@ -2812,7 +2812,7 @@ qm_bintree_cnt(void)
 	return qm_nbinrepos > 0 ? qm_nbinrepos : 1;
 }
 
-/* warn when the local index exists but the store's contents
+/* warn when the local index exists but the PKGDIR contents
  * changed after it was written;
  * `qmerge -i' still overwrites it if invoked manually, same
  * as portage does */
@@ -2895,7 +2895,7 @@ qm_repo_name_of_pkg(tree_pkg_ctx *pkg)
 }
 
 /* --repos: emerge-info-style listing of the configured binhosts in
- * fallback (priority) order; -v adds the local store path.
+ * fallback (priority) order; -v adds the PKGDIR path.
  * we should have had these from the beginning*/
 /* position of a repo in the priority scan */
 static size_t
@@ -2925,8 +2925,8 @@ qm_print_repos(void)
 	for (i = 0; i < qm_nbinrepos; i++) {
 		size_t w = qm_walk_order[i];
 
-		/* this would be the local pkgs store
-		 * the one established in the PKGDIR, for now */
+		/* this would be @local, the one established in the
+		 * PKGDIR, for now */
 		if (qm_binrepos[w].uri == NULL) {
 			printf("  %s%-16s%s (local)     %s%s%s%s\n",
 				   MAGENTA, qm_binrepos[w].name, NORM,
@@ -2953,7 +2953,7 @@ qm_print_repos(void)
 		if (verbose) {
 			char locbuf[_Q_PATH_MAX];
 
-			printf("  %-16s store    %s\n", "",
+			printf("  %-16s pkgdir   %s\n", "",
 				   qm_repo_loc(w, locbuf, sizeof(locbuf)));
 			if (qm_binrepos[w].gb_excl != NULL &&
 					array_cnt(qm_binrepos[w].gb_excl) > 0)
@@ -3330,10 +3330,10 @@ qm_excl_hint(const depend_atom *atom)
 }
 
 /* package moves: portage profiles/updates instructions, fetched from the
- * binhost as <store>/Moves (the repo-less transport, published next to
+ * binhost as <PKGDIR>/Moves (the repo-less transport, published next to
  * Packages).
  * Applied to VDB + world during -f; the applied content is
- * kept in <store>/.moves-applied so a instruction set runs once.
+ * kept in <PKGDIR>/.moves-applied so a instruction set runs once.
  * a1 = move old cat/pn, or slotmove atom
  * a2 = move new cat/pn, or slotmove old slot
  * a3 = slotmove new slot */
@@ -4088,7 +4088,7 @@ qm_apply_moves_buf(const char *mbuf, const char *rname, const char *apath,
 	return applied;
 }
 
-/* apply every store's fetched Moves; true when any store had one */
+/* apply every repo's fetched Moves; true when any repo had one */
 static bool
 qm_apply_moves_binhost(void)
 {
@@ -4224,9 +4224,9 @@ qm_apply_moves_all(void)
 static array *qm_moves_map        = NULL;
 static bool   qm_moves_map_loaded = false;
 
-/* concatenation of every store's fetched Moves content */
+/* concatenation of every repo's fetched Moves content */
 static char *
-qm_collect_store_moves(void)
+qm_collect_repo_moves(void)
 {
 	char  *buf   = NULL;
 	size_t olen  = 0;
@@ -4273,13 +4273,13 @@ qm_moves_map_load(void)
 		return;
 	/* mirror the apply policy so hints never cite a disabled source */
 	if (pol == QM_MV_BINHOST || pol == QM_MV_BINHOST_ONLY) {
-		buf = qm_collect_store_moves();
+		buf = qm_collect_repo_moves();
 		if (buf == NULL && pol == QM_MV_BINHOST)
 			buf = qm_collect_updates();
 	} else {
 		buf = qm_collect_updates();
 		if (buf == NULL && pol == QM_MV_REPO)
-			buf = qm_collect_store_moves();
+			buf = qm_collect_repo_moves();
 	}
 	if (buf != NULL) {
 		qm_moves_map = moves_parse(buf);
@@ -4609,7 +4609,7 @@ qm_news_mark_unread(const char *ndir, const char *repoid, const char *nid)
 	return ok;
 }
 
-/* filter one store's fetched News.tar and cache relevant item bodies;
+/* filter one repo's fetched News.tar and cache relevant item bodies;
  * one-shot per content via an md5 marker next to it */
 static void
 qm_apply_news_one(const char *loc, const char *rname)
@@ -5895,7 +5895,7 @@ qm_uvgrp_cmp(const void *a, const void *b)
  * use.mask/use.force'd flags (not user-toggleable).
  * USE_EXPAND groups split out with the prefix stripped (hidden groups dropped),
  * members alpha-sorted enabled-block-then-disabled-block, then the
- * download size (0 for a store-cached gpkg), emerge-rounded */
+ * download size (0 for a gpkg already in the PKGDIR), emerge-rounded */
 static void
 qm_print_use_verbose(tree_pkg_ctx *bpkg)
 {
@@ -6497,7 +6497,7 @@ qm_deadpin_note(tree_pkg_ctx *cand, tree_pkg_ctx *used)
 		bool           newer = r == NEWER;
 
 		/* two builds of one version: the higher build number is the newer one,
-		 * stores without build numbers fall back to the build time */
+		 * repos without build numbers fall back to the build time */
 		if (r == EQUAL) {
 			if (ca->BUILDID != ua->BUILDID)
 				newer = ca->BUILDID > ua->BUILDID;
@@ -7146,7 +7146,7 @@ best_version(const depend_atom *atom, int mode)
 		 * Exceptions: a repo whose best is older than the installed
 		 * slot member is skipped (downgrade guard; the priority-first
 		 * pick remains the last resort when nothing serves newer);
-		 * priority-0 repos form the emergency store and join only via
+		 * priority-0 repos are the emergency repos and join only via
 		 * an explicit @name selector; @local sits at the bottom of the
 		 * scan unless QMERGE_LOCAL_PRIORITY raises it.
 		 * QMERGE_PREFER_NEWEST=1 switches to portage-style newest-
@@ -9632,7 +9632,7 @@ qm_strcmp_cb(const void *l, const void *r)
 
 /* portage cpv_expand disambiguation (lib/portage/dbapi/cpv_expand.py):
  * qualify a bare package name: collect every category that carries it,
- * across PKGDIR, the VDB and every configured binhost store.
+ * across PKGDIR, the VDB and every configured binhost repo.
  * Portage clone (dep_expand AmbiguousPackageName): one category =>
  * qualified; more than one => ambiguous, the caller must
  * refuse and list the candidates.
@@ -10351,7 +10351,7 @@ qm_report_blocker(struct qm_scctx *sc, const char *who, const char *atomstr,
 * best_version here is safe, callers run it outside the vdb enumeration. */
 
 /* falling back to best_version for entries without a record
- * record (installed-provider cpvs, stores without PATH metadata). */
+ * record (installed-provider cpvs, repos without PATH metadata). */
 static tree_pkg_ctx *
 qm_plan_pick(const char *cpvp, atom_ctx *ca)
 {
@@ -14222,7 +14222,7 @@ qm_gpkg_verify_impl(const char *gpkg_path, int cfd)
 
 	/* pass 1: buffer the small members (Manifest + every detached .sig),
 	 * skipping the large compressed payloads without reading them.
-	 * cfd was opened by the (possibly root) parent: the store may not
+	 * cfd was opened by the (possibly root) parent: the PKGDIR may not
 	 * be readable once privileges are dropped, so never reopen by path */
 	{
 		int pfd = dup(cfd);
@@ -16227,7 +16227,7 @@ pkg_verify_checksums(
 	return ret;
 }
 
-/* strip a binpkg store prefix from a tree-provided (portroot-relative)
+/* strip a PKGDIR prefix from a tree-provided (portroot-relative)
  * binpkg path, returning the index-relative part */
 static const char *
 binpkg_relpath_loc(const char *path, const char *loc)
@@ -16551,7 +16551,7 @@ struct qm_idx_state {
 	/* struct qm_rr pairs seen in package metadata */
 	array  *rrs;
 	/* "relpath\tmtime\tsize" of every file the refresh rejected, so the
-	 * next store scan does not take them for new packages */
+	 * next PKGDIR scan does not take them for new packages */
 	array  *rejected;
 };
 
@@ -16702,7 +16702,7 @@ binpkg_index_load_old(const char *file, array **blocks)
 }
 
 /* one binpkg file checked against its index entry. recurses one level
- * for the cat/pn/file store layout */
+ * for the cat/pn/file PKGDIR layout */
 static bool
 qm_populate_scan(const char *base, const char *rel, int depth,
 		set *old, size_t *nseen, size_t *nmatched, set *rejected)
@@ -20812,7 +20812,7 @@ qm_search_binpkgs(int npat, char **pats)
 	st.npat  = npat;
 	st.cpns  = NULL;
 
-	/* collect names across every repo's catalog (trees sharing a store
+	/* collect names across every repo's catalog (trees sharing a PKGDIR
 	 * were deduped to the same pointer; skip repeats) */
 	for (ri = 0; ri < rcnt; ri++) {
 		tree_ctx *bt = qm_bintree(ri);
@@ -20822,7 +20822,7 @@ qm_search_binpkgs(int npat, char **pats)
 		if (bt == NULL)
 			continue;
 		if (qm_binrepos[ri].priority == 0)
-			/* emergency store: explicit @reponame only.
+			/* emergency repo: explicit @reponame only.
 			 * we have to make it clear that @reponame is the standaard,
 			 * if we want to install from other sources
 			 * even from emergency */
@@ -28009,9 +28009,9 @@ int qmerge_main(int argc, char **argv)
 	/* -s with no local Packages index: bootstrap by fetching it, so a
 	 * fresh binhost eater can search right away; -fs forces a
 	 * refresh even when a cached index exists.
-	 * Check every repo's OWN store (location= aware), checking 
-	 * PKGDIR alone forced a refetch on every search when the 
-	 * sole repo stores elsewhere. */
+	 * Check every repo's OWN PKGDIR (location= aware), checking
+	 * the default PKGDIR alone forced a refetch on every search when
+	 * the sole repo keeps its packages elsewhere. */
 	if (search_pkgs && force_download == 0) {
 		size_t ri;
 		size_t rcnt  = qm_bintree_cnt();
