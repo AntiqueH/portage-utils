@@ -2631,16 +2631,22 @@ static int tree_cat_foreach_pkg
         if ((de = readdir(catdir)) == NULL)
           break;
 
-        if (de->d_name[0] == '.' &&
-            (de->d_name[1] == '\0' ||
-             (de->d_name[1] == '.' &&
-              de->d_name[2] == '\0')))
+        if (de->d_name[0] == '.' ||
+            strncmp(de->d_name, "-MERGING-", 9) == 0 ||
+            strcmp(de->d_name, "CVS") == 0 ||
+            strcmp(de->d_name, "lost+found") == 0)
           continue;
 
         snprintf(buf + len, sizeof(buf) - len, "/%s", de->d_name);
         if (fstatat(tree->portroot_fd, buf, &sb, 0) < 0 ||
             !S_ISDIR(sb.st_mode))
           continue;
+
+        if (tree_filter_pkg(de) == 0)
+        {
+          fprintf(warnout, "!!! Invalid db entry: /%s\n", buf);
+          continue;
+        }
 
         pkg       = xzalloc(sizeof(*pkg));
         pkg->atom = atom_explode_cat(de->d_name, cat->name);

@@ -2235,10 +2235,11 @@ out=$(timeout 60 bash -c "yes | qmerge -FU qmerge-test" 2>&1); rc=$?
 [[ ${rc} -lt 124 ]]
 tend $? "qmerge-test: stupid preconditions: unmerge without CONTENTS finishes" \
 	|| die "rc=${rc}; ${out}"
-[[ -d ${spvd} && -e ${ROOT}/usr/bin/qmerge-test && \
-   -e ${ROOT}/etc/some.conf ]]
-tend $? "qmerge-test: stupid preconditions: CONTENTS-less unmerge refuses, keeps vdb and files" \
-	|| die "vdb=$(ls -d "${spvd}" 2>&1); $(treedir "${ROOT}")"
+[[ ! -d ${spvd} && -e ${ROOT}/usr/bin/qmerge-test && \
+   -e ${ROOT}/etc/some.conf && \
+   ${out} == *"no CONTENTS for sys-devel/qmerge-test-1.3"* ]]
+tend $? "qmerge-test: stupid preconditions: CONTENTS-less unmerge drops the record, keeps the files" \
+	|| die "vdb=$(ls -d "${spvd}" 2>&1); ${out}; $(treedir "${ROOT}")"
 rm -rf "${spvd}"
 rm -f "${ROOT}/usr/bin/qmerge-test" "${ROOT}/etc/some.conf" \
 	"${ROOT}/etc/another.conf"
@@ -3240,6 +3241,43 @@ outa=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=n \
 [[ ${outa} == *"would be merged"* && \
    ${outa} != *"ignored due to non matching USE"* ]]
 tend $? "qmerge-test: [S] check off accepts USE mismatch" || die "${outa}"
+
+# an old mismatched build of a dependency must not show up in the USE
+# block of a `qmerge <pkg>` run when the dependency is not in the qmerge run
+mkdir -p check-dep
+(
+	cd check-dep
+	cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+	qtbz2 -s b.tbz2 >/dev/null
+	mkdir xp
+	( cd xp && qxpak -x ../b.xpak >/dev/null )
+	echo qmerge-dep-1.0 > xp/PF
+	echo sys-devel/qmerge-test > xp/RDEPEND
+	( cd xp && rm -f ./*.ebuild; touch qmerge-dep-1.0.ebuild
+	  qxpak -c ../dep.xpak $(ls) )
+	qtbz2 -j b.tar.bz2 dep.xpak "${ROOT}/packages/sys-devel/qmerge-dep-1.0.tbz2"
+	echo qmerge-test-2.0-r50 > xp/PF
+	: > xp/RDEPEND
+	echo check_flag > xp/IUSE
+	echo "$(cat xp/USE) check_flag" > xp/USE
+	( cd xp && rm -f ./*.ebuild; touch qmerge-test-2.0-r50.ebuild
+	  qxpak -c ../old.xpak $(ls) )
+	qtbz2 -j b.tar.bz2 old.xpak "${ROOT}/packages/sys-devel/qmerge-test-2.0-r50.tbz2"
+)
+rm -rf check-dep
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge "=sys-devel/qmerge-test-1.3" >/dev/null 2>&1
+outd=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+	qmerge -p "=sys-devel/qmerge-dep-1.0" 2>&1)
+[[ -d ${ROOT}/var/db/pkg/sys-devel/qmerge-test-1.3 && \
+   ${outd} == *"[binary N] sys-devel/qmerge-dep-1.0"* && \
+   ${outd} != *"sys-devel/qmerge-test-2.0-r50"* && ${outd} != *"non matching USE"* ]]
+tend $? "qmerge-test: [S] a mismatched build of a dependency outside the merge list is not reported" \
+	|| die "${outd} $(qlist -Iv)"
+yes | qmerge -FU qmerge-test >/dev/null 2>&1
+rm -f "${ROOT}/packages/sys-devel/qmerge-dep-1.0.tbz2" \
+	"${ROOT}/packages/sys-devel/qmerge-test-2.0-r50.tbz2"
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
 # a search SHOULD list a package whose only builds fail the USE
 # check, and should say why
@@ -5709,17 +5747,20 @@ rm -f "${ROOT}/usr/lib/libdcn.so.1" "${ROOT}/var/lib/portage/preserved_libs_regi
 
 # failing unmerge stops the whole list run like emerge does (with its status returned)
 # the packages before it are gone, the ones after it remain
+# _security_check: B's file is setuid with a hardlink outside the package
 dc_reset
 dc_vdb dc-libs/A-1 0 "dc-libs/B"
 dc_vdb dc-libs/B-1 0 "dc-libs/C"
 dc_vdb dc-libs/C-1 0 ""
 dc_vdb dc-libs/D-1 0 ""
 dc_world dc-libs/D
-rm -f "${ROOT}/var/db/pkg/dc-libs/B-1/CONTENTS"
+chmod u+s "${ROOT}/usr/share/dc/B-1"
+ln "${ROOT}/usr/share/dc/B-1" "${ROOT}/usr/share/dc/B-1.hardlink"
 rm -rf "${ROOT}/dclog"; mkdir -p "${ROOT}/dclog"
 outdc=$(yes | env EMERGE_LOG_DIR="${ROOT}/dclog" qmerge -c 2>&1); rcdc=$?
 [[ ${rcdc} -ne 0 && \
    ${outdc} == *">>> Unmerging (1 of 3) dc-libs/A-1..."*">>> Unmerging (2 of 3) dc-libs/B-1..."* && \
+   ${outdc} == *"suid/sgid file(s) with suspicious hardlink(s):"*"/usr/share/dc/B-1"* && \
    ${outdc} != *">>> Unmerging (3 of 3)"* && ${outdc} != *"Number removed"* ]] && \
 	grep -q "unmerge FAILURE: dc-libs/B-1" "${ROOT}/dclog/emerge.log"
 tend $? "qmerge-test: [DC] a failing unmerge stops the batch: rc nonzero, no summary, logged" \
@@ -5733,6 +5774,106 @@ qm_merged dc-libs/D-1 "[DC] failure: the world package intact"
 [[ $(cat "${ROOT}/var/lib/portage/world") == "dc-libs/D" ]]
 tend $? "qmerge-test: [DC] failure: the world file unchanged" \
 	|| die "$(cat "${ROOT}/var/lib/portage/world")"
+
+# test whether a file that cannot be removed is skipped.
+# then the record is kept and reported, the run stops, a rerun completes it
+# (portage raises an OSError here); needs a uid the mode bits stop
+if [[ $(id -u) -ne 0 ]]; then
+	dc_reset
+	dc_vdb dc-libs/A-1 0 ""
+	dc_vdb dc-libs/B-1 0 "dc-libs/A"
+	dc_world non-empty/world-set
+	mkdir -p "${ROOT}/usr/share/dc/locked"
+	echo locked > "${ROOT}/usr/share/dc/locked/A-extra"
+	dcmd=$(md5sum "${ROOT}/usr/share/dc/locked/A-extra" | cut -d' ' -f1)
+	echo "obj /usr/share/dc/locked/A-extra ${dcmd} 1" >> "${ROOT}/var/db/pkg/dc-libs/A-1/CONTENTS"
+	chmod a-w "${ROOT}/usr/share/dc/locked"
+	rm -rf "${ROOT}/dclog"; mkdir -p "${ROOT}/dclog"
+	outdc=$(yes | env EMERGE_LOG_DIR="${ROOT}/dclog" qmerge -c 2>&1); rcdc=$?
+	chmod u+w "${ROOT}/usr/share/dc/locked"
+	[[ ${rcdc} -ne 0 && ${outdc} == *"could not unlink"*"locked/A-extra"* && \
+	   ${outdc} == *"dc-libs/A-1: 1 file(s) could not be removed, the record is kept"* && \
+	   -d ${ROOT}/var/db/pkg/dc-libs/A-1 && ! -e ${ROOT}/usr/share/dc/A-1 && \
+	   -e ${ROOT}/usr/share/dc/locked/A-extra ]] && \
+		grep -q "unmerge FAILURE: dc-libs/A-1" "${ROOT}/dclog/emerge.log"
+	tend $? "qmerge-test: [DC] an unremovable file is skipped, the record stays, the run stops" \
+		|| die "rc=${rcdc} ${outdc} $(ls -la "${ROOT}/usr/share/dc" "${ROOT}/var/db/pkg/dc-libs" 2>&1)"
+	qm_unmerged dc-libs/B "[DC] skip: the revdep unmerged before it is gone"
+	outdc=$(yes | qmerge -c 2>&1); rcdc=$?
+	[[ ${rcdc} -eq 0 && ! -d ${ROOT}/var/db/pkg/dc-libs/A-1 && \
+	   ! -e ${ROOT}/usr/share/dc/locked/A-extra ]]
+	tend $? "qmerge-test: [DC] skip: the rerun finishes the unmerge" || die "rc=${rcdc} ${outdc}"
+fi
+
+# -U goes through the same situation: refused unmerge is reported && logged,
+# the package and its files stay, the printed status will is nonzero
+dc_reset
+dc_vdb dc-libs/S-1 0 ""
+dc_world dc-libs/S
+chmod u+s "${ROOT}/usr/share/dc/S-1"
+ln "${ROOT}/usr/share/dc/S-1" "${ROOT}/usr/share/dc/S-1.hardlink"
+rm -rf "${ROOT}/dclog"; mkdir -p "${ROOT}/dclog"
+outdc=$(yes | env EMERGE_LOG_DIR="${ROOT}/dclog" qmerge -U dc-libs/S 2>&1); rcdc=$?
+[[ ${rcdc} -ne 0 && ${outdc} == *"suid/sgid file(s) with suspicious hardlink(s):"* && \
+   -d ${ROOT}/var/db/pkg/dc-libs/S-1 && -e ${ROOT}/usr/share/dc/S-1 ]] && \
+	grep -q "unmerge FAILURE: dc-libs/S-1" "${ROOT}/dclog/emerge.log"
+tend $? "qmerge-test: [DC] -U: a refused unmerge is reported, logged, the package stays intact" \
+	|| die "rc=${rcdc} ${outdc} $(cat "${ROOT}/dclog/emerge.log" 2>&1)"
+rm -f "${ROOT}/usr/share/dc/S-1.hardlink"
+
+# feature regression test comparing to old code:
+# an upgrade unmerges the old instance after the new files are on disk;
+# a hardlink added by the new version to a setuid file belongs to the
+# incoming package, so the check should not refuse the old unmerge
+# $1 version, remaining args = extra hardlink names of the setuid file
+hl_craft() {
+	local v=$1 d="hl-$1" n
+	shift
+	rm -rf "${d}"
+	mkdir -p "${d}/xp" "${d}/img/usr/share/dc/hl"
+	printf '%s\n' "H-${v}" > "${d}/img/usr/share/dc/hl/H"
+	chmod 4755 "${d}/img/usr/share/dc/hl/H"
+	for n in "$@"; do
+		ln "${d}/img/usr/share/dc/hl/H" "${d}/img/usr/share/dc/hl/${n}"
+	done
+	(
+		cd "${d}"
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+		qtbz2 -s b.tbz2 >/dev/null
+		( cd xp && qxpak -x ../b.xpak >/dev/null )
+		echo dc-libs > xp/CATEGORY
+		echo "H-${v}" > xp/PF
+		echo 0 > xp/SLOT
+		echo '**' > xp/KEYWORDS
+		: > xp/RDEPEND
+		tar cjf img.tar.bz2 -C img .
+		( cd xp && rm -f ./*.ebuild; touch "H-${v}.ebuild"
+		  qxpak -c ../new.xpak $(ls) )
+		mkdir -p "${ROOT}/packages/dc-libs"
+		qtbz2 -j img.tar.bz2 new.xpak "${ROOT}/packages/dc-libs/H-${v}.tbz2"
+	)
+	rm -rf "${d}"
+}
+dc_reset
+hl_craft 1
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge =dc-libs/H-1 >/dev/null 2>&1
+[[ -d ${ROOT}/var/db/pkg/dc-libs/H-1 && -u ${ROOT}/usr/share/dc/hl/H ]]
+tend $? "qmerge-test: [DC] replace: the setuid file of H-1 is installed" \
+	|| die "$(ls -la "${ROOT}/usr/share/dc/hl" 2>&1) $(qlist -Iv)"
+hl_craft 2 H2
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+outdc=$(yes | qmerge -u dc-libs/H 2>&1); rcdc=$?
+[[ ${rcdc} -eq 0 && ${outdc} != *"suspicious hardlink"* && \
+   -d ${ROOT}/var/db/pkg/dc-libs/H-2 && ! -d ${ROOT}/var/db/pkg/dc-libs/H-1 && \
+   -u ${ROOT}/usr/share/dc/hl/H && \
+   $(stat -c %h "${ROOT}/usr/share/dc/hl/H") -eq 2 && \
+   $(cat "${ROOT}/usr/share/dc/hl/H2") == "H-2" ]]
+tend $? "qmerge-test: [DC] replace: a hardlink the new version owns is not suspicious" \
+	|| die "rc=${rcdc} ${outdc} $(ls -lai "${ROOT}/usr/share/dc/hl" 2>&1) $(qlist -Iv)"
+yes | qmerge -U dc-libs/H >/dev/null 2>&1
+rm -f "${ROOT}"/packages/dc-libs/H-*.tbz2
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
 # -U of several packages over one owners table (vardbapi._owners), a file
 # another installed package isowner() of is "--- replaced" and stays, a file
@@ -5952,6 +6093,47 @@ tend $? "qmerge-test: [DC] world entries follow the move of the package they nam
 tend $? "qmerge-test: [DC] every repository keeps its own applied-moves marker" \
 	|| die "$(ls -a "${ROOT}/var/cache/edb" 2>&1)"
 rm -rf "${ROOT}/mra" "${ROOT}/mrb" "${PWD}/cfg-mvr" "${ROOT}"/var/cache/edb/.qmerge-moves-applied.*
+
+# vardbapi._excluded_dirs: an interrupted merge leaves <cat>/-MERGING-<pf>
+# behind, so we need to mimic this out
+dc_reset
+dc_vdb dc-libs/A-1 0 ""
+mkdir -p "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2"
+echo 0 > "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2/SLOT"
+echo dc-libs > "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2/CATEGORY"
+echo A-2 > "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2/PF"
+dc_world dc-libs/A
+out=$(qlist -I 2>&1)
+[[ ${out} == "dc-libs/A" ]]
+tend $? "qmerge-test: [DC] an interrupted merge record is not an installed package" || die "${out}"
+outdc=$(qmerge -pc 2>&1)
+[[ ${outdc} == *"No packages selected for removal by depclean"* && ${outdc} != *MERGING* ]]
+tend $? "qmerge-test: [DC] depclean never selects an interrupted merge record" || die "${outdc}"
+mkdir -p "${ROOT}/var/db/pkg/dc-libs/.stale-1" "${ROOT}/var/db/pkg/dc-libs/CVS" \
+	"${ROOT}/var/db/pkg/dc-libs/lost+found" "${ROOT}/var/db/pkg/dc-libs/bad name-1"
+out=$(qlist -I 2>err)
+[[ ${out} == "dc-libs/A" && $(<err) == "!!! Invalid db entry: "*"/dc-libs/bad name-1" ]]
+tend $? "qmerge-test: [DC] a VDB directory outside PMS naming is reported once and skipped" \
+	|| die "${out} $(<err)"
+rm -rf "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2" "${ROOT}/var/db/pkg/dc-libs/.stale-1" \
+	"${ROOT}/var/db/pkg/dc-libs/CVS" "${ROOT}/var/db/pkg/dc-libs/lost+found" \
+	"${ROOT}/var/db/pkg/dc-libs/bad name-1"
+
+# getcontents(): a record without CONTENTS is unmerged as an empty
+# package and the depclean run should continue past it
+dc_reset
+dc_vdb dc-libs/A-1 0 ""
+dc_vdb dc-libs/B-1 0 ""
+rm "${ROOT}/var/db/pkg/dc-libs/A-1/CONTENTS"
+dc_world non-empty/world-set
+outdc=$(yes | qmerge -c 2>&1); rcdc=$?
+[[ ${rcdc} -eq 0 && ${outdc} == *"no CONTENTS for dc-libs/A-1"* && \
+   ! -d ${ROOT}/var/db/pkg/dc-libs/A-1 && ! -d ${ROOT}/var/db/pkg/dc-libs/B-1 ]]
+tend $? "qmerge-test: [DC] a record without CONTENTS is unmerged and the run continues" \
+	|| die "rc=${rcdc} ${outdc}"
+[[ -f ${ROOT}/usr/share/dc/A-1 && ! -f ${ROOT}/usr/share/dc/B-1 ]]
+tend $? "qmerge-test: [DC] a record without CONTENTS removes no files" \
+	|| die "$(ls "${ROOT}/usr/share/dc" 2>&1)"
 
 dc_reset
 rm -rf "${ROOT}/var/db/pkg"; cp -a "${dc_saved}" "${ROOT}/var/db/pkg"; rm -rf "${dc_saved}"

@@ -6146,16 +6146,39 @@ qm_use_rejects_flush(void)
 }
 
 static void
-qm_print_use_rejects(void)
+qm_print_use_rejects(array *merge)
 {
 	array  *keys;
 	size_t  n;
 	char   *msg;
+	set    *cpns = NULL;
 
 	/* -q drops the advisory ignore lists. this optimizes
 	 * tests quote a lot. */
 	if (qm_user_quiet)
 		return;
+
+	if (merge != NULL) {
+		char *cpv;
+
+		cpns = create_set();
+		array_for_each(merge, n, cpv) {
+			char      ex[560];
+			atom_ctx *a;
+
+			snprintf(ex, sizeof(ex), "=%s", cpv);
+			a = atom_explode(ex);
+			if (a == NULL)
+				continue;
+			if (a->CATEGORY != NULL && a->PN != NULL) {
+				char cpn[512];
+
+				snprintf(cpn, sizeof(cpn), "%s/%s", a->CATEGORY, a->PN);
+				add_set(cpn, cpns);
+			}
+			atom_implode(a);
+		}
+	}
 
 	if (qm_use_rejects != NULL && hash_size(qm_use_rejects) > 0) {
 		bool hdr = false;
@@ -6169,6 +6192,18 @@ qm_print_use_rejects(void)
 			char       *line;
 			const char *acc = qm_use_accepts != NULL ?
 					(const char *)hash_get(qm_use_accepts, msg) : NULL;
+
+			if (cpns != NULL) {
+				char  cpn[512];
+				char *colon;
+
+				snprintf(cpn, sizeof(cpn), "%s", msg);
+				colon = strchr(cpn, ':');
+				if (colon != NULL)
+					*colon = '\0';
+				if (contains_set(cpn, cpns) == NULL)
+					continue;
+			}
 
 			d = hash_get(qm_use_rejects, msg);
 			lines = set_keys(d);
@@ -6197,6 +6232,8 @@ qm_print_use_rejects(void)
 		if (hdr)
 			printf("\n");
 	}
+	if (cpns != NULL)
+		free_set(cpns);
 
 	if (qm_lic_rejects != NULL && cnt_set(qm_lic_rejects) > 0) {
 		printf("\n%s!!!%s The following binary packages were ignored due "
@@ -12674,7 +12711,7 @@ qm_exec_round(struct qm_plan *plan)
 	char   *cpvp;
 	int     rc = EXIT_SUCCESS;
 
-	qm_print_use_rejects();
+	qm_print_use_rejects(plan->merge);
 	qm_print_deadpins(plan->merge);
 	/* QMERGE_BLOCKERS feature: drop the soft-blocked installed packages the resolution
 	 * supersedes before merging (with -U, which ideally is safe).
@@ -13364,7 +13401,7 @@ resolve_again:
 		 * prompt: there are no packages to offer.
 		 * USE-gate rejects explain a respect-use refusal
 		 * that would otherwise read as a bare cannot-satisfy. */
-		qm_print_use_rejects();
+		qm_print_use_rejects(NULL);
 		qm_print_deadpins(plan.merge);
 		if (!qm_kg_summary())
 			warn("nothing to merge (no candidates could be satisfied)");
@@ -13619,7 +13656,7 @@ resolve_again:
 					   dlbuf);
 			}
 		}
-		qm_print_use_rejects();
+		qm_print_use_rejects(plan.merge);
 		qm_print_deadpins(plan.merge);
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
@@ -13914,7 +13951,8 @@ qm_get_counter_tick_core(void)
 			if ((pkg_dir = opendir(path)) == NULL)
 				continue;
 			while ((pkg_de = readdir(pkg_dir)) != NULL) {
-				if (pkg_de->d_name[0] == '.')
+				if (pkg_de->d_name[0] == '.' ||
+						strncmp(pkg_de->d_name, "-MERGING-", 9) == 0)
 					continue;
 				snprintf(path + cat_len, sizeof(path) - cat_len,
 						"/%s/COUNTER", pkg_de->d_name);
@@ -14783,19 +14821,22 @@ qm_backup_wanted(atom_equality replacing, bool standalone)
 	return false;
 }
 
-static void
+static int
 qm_backup_instance(tree_pkg_ctx *pkg)
 {
 	atom_ctx *a = tree_pkg_atom(pkg, true);
 
 	printf(">>> Saving %s to binpkgs before removal\n",
 		   atom_format("%[CATEGORY]%[PF]%[BUILDID]", a));
-	if (qpkg_backup(pkg) != 0)
-		err("%s: failed to back up %s; aborting",
-			contains_set("unmerge-backup", features) != NULL ?
+	if (qpkg_backup(pkg) != 0) {
+		warn("%s: failed to back up %s",
+			 contains_set("unmerge-backup", features) != NULL ?
 				"unmerge-backup" : "downgrade-backup",
-			atom_format("%[CATEGORY]%[PF]", a));
+			 atom_format("%[CATEGORY]%[PF]", a));
+		return 1;
+	}
 	binpkg_index_regen();
+	return 0;
 }
 
 /* returns only when the merge may proceed, aborts via err() otherwise */
@@ -15020,7 +15061,9 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		tree_pkg_ctx *bm;
 
 		array_for_each(slotmembers, bn, bm)
-			qm_backup_instance(bm);
+			if (qm_backup_instance(bm) != 0)
+				err("aborting without a snapshot of %s",
+					atom_format("%[CATEGORY]%[PF]", tree_pkg_atom(bm, true)));
 	}
 
 	if (pretend == 100) {
@@ -15861,6 +15904,100 @@ qm_unmerge_path(const char *name)
 	return p;
 }
 
+/* dblink._security_check clone (vartree.py). before prerm, refuse the
+ * unmerge when a regular file of the package is setuid or setgid, has
+ * more than one hardlink and not every link is a path the package owns
+ * or a path in keep (owned by the replacing package or another installed
+ * one, so it stays). removing the package's path would leave a
+ * privileged inode alive through the other link, owned by no package.
+ * Prints portage's eerror lines and returns 1 so the removal loop logs
+ * the unmerge FAILURE and stops. */
+static int
+qm_unmerge_security_check(tree_pkg_ctx *pkg_ctx, set *keep, int portroot_fd)
+{
+	char        *cts   = tree_pkg_meta(pkg_ctx, Q_CONTENTS);
+	array       *paths = array_new();
+	array       *stats = array_new();
+	set         *own   = create_set();
+	char        *buf;
+	char        *line;
+	char        *savep;
+	struct stat *st;
+	size_t       i;
+	bool         bad = false;
+
+	if (cts != NULL) {
+		buf = xstrdup(cts);
+		for (line = strtok_r(buf, "\n", &savep);
+			 line != NULL;
+			 line = strtok_r(NULL, "\n", &savep))
+		{
+			contents_entry *e = contents_parse_line(line);
+			struct stat     sb;
+
+			if (e == NULL || e->type != CONTENTS_OBJ)
+				continue;
+			if (fstatat(portroot_fd, e->name + 1, &sb,
+						AT_SYMLINK_NOFOLLOW) != 0)
+				continue;
+			if (!S_ISREG(sb.st_mode) || sb.st_nlink < 2 ||
+					(sb.st_mode & (S_ISUID | S_ISGID)) == 0)
+				continue;
+			st  = xmalloc(sizeof(*st));
+			*st = sb;
+			array_append(paths, xstrdup(e->name));
+			array_append(stats, st);
+			add_set(e->name, own);
+		}
+		free(buf);
+	}
+	if (keep != NULL && array_cnt(stats) > 0) {
+		array *kp = set_keys(keep);
+		char  *k;
+
+		array_for_each(kp, i, k) {
+			struct stat sb;
+
+			if (k[0] != '/' || contains_set(k, own) != NULL)
+				continue;
+			if (fstatat(portroot_fd, k + 1, &sb, AT_SYMLINK_NOFOLLOW) != 0)
+				continue;
+			if (!S_ISREG(sb.st_mode) || sb.st_nlink < 2 ||
+					(sb.st_mode & (S_ISUID | S_ISGID)) == 0)
+				continue;
+			st  = xmalloc(sizeof(*st));
+			*st = sb;
+			array_append(paths, xstrdup(k));
+			array_append(stats, st);
+		}
+		array_free(kp);
+	}
+	array_for_each(stats, i, st) {
+		struct stat *o;
+		size_t       j;
+		size_t       n = 0;
+
+		array_for_each(stats, j, o)
+			if (o->st_dev == st->st_dev && o->st_ino == st->st_ino)
+				n++;
+		if (n == (size_t)st->st_nlink)
+			continue;
+		if (!bad)
+			fprintf(warnout, "%s * %ssuid/sgid file(s) with suspicious "
+					"hardlink(s):\n%s * %s\n", RED, NORM, RED, NORM);
+		bad = true;
+		fprintf(warnout, "%s * %s\t%s\n", RED, NORM,
+				(char *)array_get(paths, i));
+	}
+	if (bad)
+		fprintf(warnout, "%s * %s\n%s * %sSee the Gentoo Security Handbook "
+				"guide for advice on how to proceed.\n", RED, NORM, RED, NORM);
+	array_deepfree(paths, free);
+	array_deepfree(stats, free);
+	free_set(own);
+	return bad ? 1 : 0;
+}
+
 static int
 pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		int cp_argc, char **cp_argv, int cpm_argc, char **cpm_argv)
@@ -15876,6 +16013,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 	int portroot_fd;
 	llist_char *dirs = NULL;
 	bool unmerge_config_protected;
+	size_t nskipped = 0;
 
 	buf = phases = NULL;
 	/* portage distinguishes explicit unmerges (one space, qlop -u)
@@ -15893,6 +16031,10 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 			atom_format("%[CATEGORY]%[PF]", atom));
 
 	portroot_fd = tree_pkg_get_portroot_fd(pkg_ctx);
+
+	if (!pretend &&
+			qm_unmerge_security_check(pkg_ctx, keep, portroot_fd) != 0)
+		return 1;
 
 	/* execute the pkg_prerm step if we're just unmerging, not when
 	 * replacing, pkg_merge will have called prerm right before merging
@@ -15921,9 +16063,13 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 
 	/* get a handle on the things to clean up */
 	contentsp = tree_pkg_meta(pkg_ctx, Q_CONTENTS);
-	if (contentsp == NULL)
-		return 1;
-	contentsp = xstrdup(contentsp);
+	if (contentsp == NULL) {
+		warn("no CONTENTS for %s, unmerging the record only",
+			 atom_format("%[CATEGORY]%[PF]", atom));
+		contentsp = xstrdup("");
+	} else {
+		contentsp = xstrdup(contentsp);
+	}
 
 	for (buf = strtok_r(contentsp, "\n", &savep);
 		 buf != NULL;
@@ -16031,8 +16177,10 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 			char *p;
 
 			if (!pretend && unlinkat(portroot_fd, e->name + 1, 0)) {
-				if (errno != ENOENT)
-					errp("could not unlink: %s%s", portroot, e->name + 1);
+				if (errno != ENOENT) {
+					warnp("could not unlink: %s%s", portroot, e->name + 1);
+					nskipped++;
+				}
 			}
 
 			p = strrchr(e->name, '/');
@@ -16083,19 +16231,24 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		rm_rf(T);
 		rmdir(T);
 
-		/* finally delete the vdb entry */
-		rm_rf_at(portroot_fd, tree_pkg_get_path(pkg_ctx));
-		unlinkat(portroot_fd, tree_pkg_get_path(pkg_ctx), AT_REMOVEDIR);
+		if (nskipped > 0) {
+			warn("%s: %zu file(s) could not be removed, the record is kept",
+				 atom_format("%[CATEGORY]%[PF]", atom), nskipped);
+		} else {
+			/* finally delete the vdb entry */
+			rm_rf_at(portroot_fd, tree_pkg_get_path(pkg_ctx));
+			unlinkat(portroot_fd, tree_pkg_get_path(pkg_ctx), AT_REMOVEDIR);
 
-		/* and prune the category if it's empty */
-		snprintf(T, sizeof(T), "%s", tree_pkg_get_path(pkg_ctx));
-		contentsp = strrchr(T, '/');
-		if (contentsp != NULL)
-			*contentsp = '\0';
-		unlinkat(portroot_fd, T, AT_REMOVEDIR);
+			/* and prune the category if it's empty */
+			snprintf(T, sizeof(T), "%s", tree_pkg_get_path(pkg_ctx));
+			contentsp = strrchr(T, '/');
+			if (contentsp != NULL)
+				*contentsp = '\0';
+			unlinkat(portroot_fd, T, AT_REMOVEDIR);
 
-		qm_elog(" >>> unmerge success: %s",
-				atom_format("%[CAT]%[PF]", atom));
+			qm_elog(" >>> unmerge success: %s",
+					atom_format("%[CAT]%[PF]", atom));
+		}
 	}
 
 	/* portage runs env_update after every unmerge too. A replace
@@ -16127,7 +16280,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		}
 	}
 
-	return 0;
+	return nskipped > 0 ? 1 : 0;
 }
 
 static int
@@ -19329,6 +19482,7 @@ struct qm_unmerge_batch {
 	set    *todo;
 	set    *interest;
 	hash_t *counts;
+	bool    failed;
 };
 
 /* one installed package against one unmerge target.
@@ -19422,7 +19576,7 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	todo = set_keys(ub->todo);
 	array_for_each(todo, n, p)
 	{
-		if (qm_unmerge_hit(pkg_ctx, p, true)) {
+		if (!ub->failed && qm_unmerge_hit(pkg_ctx, p, true)) {
 			atom_ctx *a     = tree_pkg_atom(pkg_ctx, true);
 			array    *paths = qm_owned_paths(pkg_ctx);
 			set      *keep  = ub->counts == NULL
@@ -19456,15 +19610,21 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 				pres = qm_preserve_compute(one, NULL, keep);
 				array_free(one);
 			}
-			if (!pretend && qm_backup_wanted(NOT_EQUAL, true))
-				qm_backup_instance(pkg_ctx);
-			pkg_unmerge(pkg_ctx, NULL, keep,
-					cp_argc, cp_argv, cpm_argc, cpm_argv);
+			if (!pretend && qm_backup_wanted(NOT_EQUAL, true) &&
+					qm_backup_instance(pkg_ctx) != 0)
+				ub->failed = true;
+			if (!ub->failed && pkg_unmerge(pkg_ctx, NULL, keep,
+					cp_argc, cp_argv, cpm_argc, cpm_argv) != 0)
+				ub->failed = true;
+			if (ub->failed) {
+				warn("unmerge FAILURE: %s", ucpv);
+				qm_elog(" !!! unmerge FAILURE: %s", ucpv);
+			}
 			free_set(keep);
-			if (ub->counts != NULL)
+			if (!ub->failed && ub->counts != NULL)
 				qm_owner_counts_drop(ub->counts, paths);
 			array_deepfree(paths, free);
-			if (!pretend) {
+			if (!pretend && !ub->failed) {
 				preserved_unregister(qm_preserved_get(), ucpv,
 									 uslot, ucnt);
 				if (pres != NULL)
@@ -19473,7 +19633,8 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			}
 			if (pres != NULL)
 				array_deepfree(pres, free);
-			if (!pretend && a->CATEGORY != NULL && a->PN != NULL) {
+			if (!pretend && !ub->failed &&
+					a->CATEGORY != NULL && a->PN != NULL) {
 				char cp[_Q_PATH_MAX];
 
 				snprintf(cp, sizeof(cp), "%s/%s", a->CATEGORY, a->PN);
@@ -19502,6 +19663,7 @@ unmerge_packages(set *todo)
 	ub.todo     = todo;
 	ub.interest = create_set();
 	ub.counts   = NULL;
+	ub.failed   = false;
 	if (!uninstall_force) {
 		tree_ctx        *scan = tree_new(portroot, portvdb, TREETYPE_VDB, true);
 		preserved_entry *pe;
@@ -19536,7 +19698,7 @@ unmerge_packages(set *todo)
 		qm_world_clean_unmerged();
 	if (!pretend)
 		qm_vdb_unlock();
-	return ret;
+	return ub.failed ? 1 : ret;
 }
 
 /* this is where we'll have @sets files, and their expansion */
@@ -26399,6 +26561,7 @@ qm_dc_unmerge(struct qm_dc *dc, array *cleanlist, bool ordered,
 					char   cpath[_Q_PATH_MAX];
 					char  *cbuf = NULL;
 					size_t clen = 0;
+					bool   failed = false;
 
 					ucnt[0] = '\0';
 					snprintf(cpath, sizeof(cpath), "%s%s/%s/COUNTER",
@@ -26413,25 +26576,31 @@ qm_dc_unmerge(struct qm_dc *dc, array *cleanlist, bool ordered,
 						pres = qm_preserve_compute(one, NULL, keep);
 						array_free(one);
 					}
-					if (qm_backup_wanted(NOT_EQUAL, true))
-						qm_backup_instance(pc);
-					if (pkg_unmerge(pc, NULL, keep, cp_argc, cp_argv,
-									cpm_argc, cpm_argv) != 0) {
+					if (qm_backup_wanted(NOT_EQUAL, true) &&
+							qm_backup_instance(pc) != 0)
+						failed = true;
+					if (!failed && pkg_unmerge(pc, NULL, keep, cp_argc, cp_argv,
+											   cpm_argc, cpm_argv) != 0)
+						failed = true;
+					if (failed) {
+						warn("unmerge FAILURE: %s", p->cpv);
 						qm_elog(" !!! unmerge FAILURE: %s", p->cpv);
 						rc = 1;
 					}
 					free_set(keep);
-					qm_owner_counts_drop(counts, paths);
-					array_deepfree(paths, free);
-					preserved_unregister(qm_preserved_get(), p->cpv, p->slot,
-										 ucnt);
-					if (pres != NULL) {
-						preserved_register(qm_preserved_get(), p->cpv,
-										   p->slot, ucnt, pres);
-						array_deepfree(pres, free);
+					if (!failed) {
+						qm_owner_counts_drop(counts, paths);
+						preserved_unregister(qm_preserved_get(), p->cpv,
+											 p->slot, ucnt);
+						if (pres != NULL)
+							preserved_register(qm_preserved_get(), p->cpv,
+											   p->slot, ucnt, pres);
+						qm_unmerged_cps = add_set_unique(p->cp, qm_unmerged_cps,
+														 NULL);
 					}
-					qm_unmerged_cps = add_set_unique(p->cp, qm_unmerged_cps,
-													 NULL);
+					if (pres != NULL)
+						array_deepfree(pres, free);
+					array_deepfree(paths, free);
 				}
 				array_free(m);
 				if (ea != NULL)
