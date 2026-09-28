@@ -4371,14 +4371,43 @@ wpost=$(cat "${wtfile}" 2>/dev/null; echo END)
 [[ ${outd4} == *"No matching atoms"* && ${wpre} == "${wpost}" ]]
 tend $? "qmerge-test: [DS] deselect reports when nothing matches" \
 	|| die "${outd4}"
-# --noreplace on an installed target: no merge, world recorded
-outn1=$(yes | qmerge -n dev-libs/wtfail 2>&1)
-[[ ${outn1} != *"Installing"* && \
-   ${outn1} == *"OK add these packages to world file"* && \
-   ${outn1} == *"Recording dev-libs/wtfail"* ]] && \
+# --noreplace on an installed target: no merge, the world favorites
+# question and the record
+outn1=$(yes | qmerge -n dev-libs/wtfail 2>&1); rcn=$?
+[[ ${rcn} -eq 0 && ${outn1} != *"Installing"* && \
+   ${outn1} != *"OK add these packages"* && ${outn1} != *"nothing to do"* && \
+   ${outn1} == *" * dev-libs/wtfail"* && \
+   ${outn1} == *"Would you like to add these packages to your world favorites? [Y/n]"* && \
+   ${outn1} == *'>>> Recording dev-libs/wtfail in "world" favorites file...'* ]] && \
 	grep -q "dev-libs/wtfail" "${wtfile}"
-tend $? "qmerge-test: [NR] -n holds installed target, records world" \
-	|| die "${outn1} world=$(cat "${wtfile}" 2>/dev/null)"
+tend $? "qmerge-test: [NR] -n holds installed target, asks, records world" \
+	|| die "rc=${rcn} ${outn1} world=$(cat "${wtfile}" 2>/dev/null)"
+# already in world: nothing to ask, nothing to say
+outn1=$(yes | qmerge -n dev-libs/wtfail 2>&1); rcn=$?
+[[ ${rcn} -eq 0 && ${outn1} != *"Would you like"* && ${outn1} != *"Recording"* && \
+   ${outn1} != *"nothing to"* ]]
+tend $? "qmerge-test: [NR] -n on a target already in world is silent" \
+	|| die "rc=${rcn} ${outn1}"
+# declined: nothing recorded, rc 0 like emerge
+qmerge --deselect dev-libs/wtfail >/dev/null 2>&1
+outn1=$(echo n | qmerge -n dev-libs/wtfail 2>&1); rcn=$?
+[[ ${rcn} -eq 0 && ${outn1} == *"Would you like to add"* && ${outn1} != *"Recording"* ]] && \
+	! grep -q "dev-libs/wtfail" "${wtfile}"
+tend $? "qmerge-test: [NR] -n declined records nothing" || die "rc=${rcn} ${outn1}"
+# pretend: the empty merge list, no record
+outn1=$(qmerge -pn dev-libs/wtfail 2>&1); rcn=$?
+[[ ${rcn} -eq 0 && ${outn1} == *"These are the packages that would be merged, in order:"* && \
+   ${outn1} != *"Total:"* && ${outn1} != *"Recording"* ]] && \
+	! grep -q "dev-libs/wtfail" "${wtfile}"
+tend $? "qmerge-test: [NR] -pn shows the empty merge list, records nothing" \
+	|| die "rc=${rcn} ${outn1}"
+# --oneshot: emerge quits with its line, records nothing
+outn1=$(yes | qmerge -1n dev-libs/wtfail 2>&1); rcn=$?
+[[ ${rcn} -eq 0 && ${outn1} == *"Nothing to merge; quitting."* && ${outn1} != *"Recording"* ]] && \
+	! grep -q "dev-libs/wtfail" "${wtfile}"
+tend $? "qmerge-test: [NR] -1n: nothing to merge, quitting, nothing recorded" \
+	|| die "rc=${rcn} ${outn1}"
+yes | qmerge -n dev-libs/wtfail >/dev/null 2>&1
 # --noreplace on an absent target still installs
 yes | qmerge -FU dev-libs/wtfail >/dev/null 2>&1
 outn2=$(yes | qmerge -n dev-libs/wtfail 2>&1)
@@ -6134,6 +6163,52 @@ tend $? "qmerge-test: [DC] a record without CONTENTS is unmerged and the run con
 [[ -f ${ROOT}/usr/share/dc/A-1 && ! -f ${ROOT}/usr/share/dc/B-1 ]]
 tend $? "qmerge-test: [DC] a record without CONTENTS removes no files" \
 	|| die "$(ls "${ROOT}/usr/share/dc" 2>&1)"
+
+# --noreplace keeps an installed target and it should resolve its
+# dependencies (emerge's selective mode). a dependency that is not
+# installed is merged from its binpkg, the target itself is not touched
+# and lands in world; --nodeps skips the dependencies
+nr_craft() {
+	local d="nr-$1"
+	rm -rf "${d}"
+	mkdir -p "${d}/xp" "${d}/img/usr/share/dc"
+	echo "$1" > "${d}/img/usr/share/dc/$1"
+	(
+		cd "${d}"
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+		qtbz2 -s b.tbz2 >/dev/null
+		( cd xp && qxpak -x ../b.xpak >/dev/null )
+		echo dc-libs > xp/CATEGORY
+		echo "$1" > xp/PF
+		echo 0 > xp/SLOT
+		echo '**' > xp/KEYWORDS
+		: > xp/RDEPEND
+		tar cjf img.tar.bz2 -C img .
+		( cd xp && rm -f ./*.ebuild; touch "$1.ebuild"
+		  qxpak -c ../new.xpak $(ls) )
+		mkdir -p "${ROOT}/packages/dc-libs"
+		qtbz2 -j img.tar.bz2 new.xpak "${ROOT}/packages/dc-libs/$1.tbz2"
+	)
+	rm -rf "${d}"
+}
+dc_reset
+dc_vdb dc-libs/A-1 0 "dc-libs/B"
+nr_craft B-1
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+outdc=$(yes | qmerge -nO dc-libs/A 2>&1); rcdc=$?
+[[ ${rcdc} -eq 0 && ${outdc} != *"dc-libs/B-1"* && ! -d ${ROOT}/var/db/pkg/dc-libs/B-1 && \
+   ${outdc} == *'>>> Recording dc-libs/A in "world" favorites file...'* ]] && \
+	grep -qx "dc-libs/A" "${ROOT}/var/lib/portage/world"
+tend $? "qmerge-test: [NR] -n --nodeps: the held target is recorded, its missing dependency untouched" \
+	|| die "rc=${rcdc} ${outdc} world=$(cat "${ROOT}/var/lib/portage/world")"
+outdc=$(yes | qmerge -n dc-libs/A 2>&1); rcdc=$?
+[[ ${rcdc} -eq 0 && ${outdc} == *"[binary N] dc-libs/B-1"* && ${outdc} != *"dc-libs/A-1"* && \
+   ${outdc} == *"OK to merge these packages"* && ${outdc} != *"Would you like to add"* && \
+   -d ${ROOT}/var/db/pkg/dc-libs/B-1 && -d ${ROOT}/var/db/pkg/dc-libs/A-1 ]]
+tend $? "qmerge-test: [NR] -n: the held target's missing dependency is merged, the target stays" \
+	|| die "rc=${rcdc} ${outdc}"
+rm -f "${ROOT}/packages/dc-libs/B-1.tbz2"
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
 dc_reset
 rm -rf "${ROOT}/var/db/pkg"; cp -a "${dc_saved}" "${ROOT}/var/db/pkg"; rm -rf "${dc_saved}"

@@ -283,6 +283,9 @@ char install = 0;
 char uninstall = 0;
 char uninstall_force = 0;
 char noreplace = 0;
+static size_t qm_l0_targets = 0;
+static size_t qm_l0_held    = 0;
+static bool   qm_plan_empty = false;
 static int qm_deselect = -1;
 char oneshot = 0;
 char force_download = 0;
@@ -8612,11 +8615,14 @@ merge_symlink_escapes_root(int dfd, const char *name, const char *cpath)
 	return false;
 }
 
-/* Copy one tree (the single package) to another tree (ROOT).
+/* Copy the package image into ROOT.
  * ToDO: document fully.
- * Summarized: merge_tree_at walks one directory level and recurses
- * into subdirs, mirroring the tree onto the destination.
- * It doens't use absolute paths (so we don't get path races). */
+ * summarized: merge_tree_at goes through the entries of one directory
+ * and calls itself for each subdirectory, so the whole image is copied
+ * into ROOT one level at a time. every path is relative to an open
+ * directory descriptor, never absolute, so a directory swapped for a
+ * symlink halfway cannot redirect the copy. */
+
 static int
 merge_tree_at(int fd_src, const char *src, int fd_dst, const char *dst,
               FILE *contents, size_t eprefix_len, set **objs, char **cpathp,
@@ -9391,11 +9397,18 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	qm_bv_parent_use = NULL;
 
 	if (level == 0) {
+		if (!qm_internal_pull)
+			qm_l0_targets++;
 		/* an explicitly requested atom is always (re)installed from the
 		 * best available binpkg, like `emerge -K <pkg>`, it shows as
 		 * [R] when the same version is installed, [U] when newer.
-		 * Only dependencies (level > 0) are skipped when already satisfied. */
-		if (bin != NULL && atom_satisfied_by(atom, bin, parent_use)) {
+		 * Only dependencies (level > 0) are skipped when already satisfied.*/
+		if (noreplace && !qm_internal_pull && !qm_forcing_target &&
+				inst != NULL && atom_satisfied_by(atom, inst, parent_use)) {
+			provider = inst;
+			pull     = false;
+			qm_l0_held++;
+		} else if (bin != NULL && atom_satisfied_by(atom, bin, parent_use)) {
 			provider = bin;
 			pull     = true;
 			/* -u: emerge --update semantics, a target whose installed
@@ -13228,6 +13241,9 @@ resolve_again:
 	qm_demands    = hash_new();
 	qm_unsat_cnt  = 0;
 	qm_cur_revdep[0] = '\0';
+	qm_l0_targets = 0;
+	qm_l0_held    = 0;
+	qm_plan_empty = false;
 
 	/* fresh soft-block auto-unmerge collection for this round */
 	if (qm_soft_unmerge != NULL) {
@@ -13393,6 +13409,19 @@ resolve_again:
 		(void)qm_kg_drop_dependents(&plan);
 
 	qm_keypkg_promote(&plan);
+
+	if (array_cnt(plan.merge) == 0 && qm_l0_targets > 0 &&
+			qm_l0_held == qm_l0_targets && qm_unsat_cnt == 0) {
+		if (pretend)
+			printf("These are the packages that would be merged, "
+				   "in order:\n\n");
+		qm_plan_empty = true;
+		array_deepfree(plan.merge, free);
+		free_set(plan.in_merge);
+		free_set(plan.examined);
+		qm_plan_inst_free();
+		return EXIT_SUCCESS;
+	}
 
 	if (array_cnt(plan.merge) == 0) {
 		/* nothing resolved, the request couldn't be satisfied (no candidate
@@ -15858,9 +15887,10 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 				qm_mg_total > 0 ? qm_mg_total : 1,
 				atom_format("%[CAT]%[PF]", matom), portroot);
 
-	/* portage runs env_update after every merge (vartree treewalk);
-	 * the freshly written CONTENTS feeds the ldconfig gate,
-	 * so we will do the exact same. */
+	/* portage runs env_update after every merge (dblink.treewalk in
+	 * vartree.py) and hands it the CONTENTS previsouly written: ldconfig
+	 * runs only when that list holds a file under a directory named
+	 * in ld.so.conf. same here. */
 	if (!pretend) {
 		char    cpath[_Q_PATH_MAX];
 		char   *cbuf    = NULL;
@@ -27017,28 +27047,13 @@ qm_world_atom(const char *arg)
 	return ret;
 }
 
-/* note that world_update refers to world file update here
-  to be documented by @francoisb */
+/* the non-empty, non-comment lines of a world or world_sets file */
 static void
-qm_world_update(void)
+qm_world_file_read(const char *wpath, set *entries)
 {
-	char   *wdir;
-	char   *wpath;
-	char   *buf   = NULL;
-	size_t  len   = 0;
-	set    *entries;
-	array  *keys;
-	size_t  n;
-	char   *k;
-	int     added = 0;
+	char   *buf = NULL;
+	size_t  len = 0;
 
-	if (qm_world_select == NULL || cnt_set(qm_world_select) == 0)
-		return;
-
-	xasprintf(&wdir, "%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
-	xasprintf(&wpath, "%s/world", wdir);
-
-	entries = create_set();
 	if (eat_file(wpath, &buf, &len) && buf != NULL) {
 		char *line;
 		char *sp;
@@ -27054,48 +27069,150 @@ qm_world_update(void)
 		}
 	}
 	free(buf);
+}
+
+/* the world atoms this run adds: named targets that are installed (a
+ * fresh vdb tree, the resolver's cached one predates the merges of
+ * this very run) and not yet among entries, sorted, owned strings */
+static array *
+qm_world_additions(set *entries)
+{
+	array    *adds = array_new();
+	array    *keys;
+	size_t    n;
+	char     *k;
+	tree_ctx *vdb;
+
+	if (qm_world_select == NULL || cnt_set(qm_world_select) == 0)
+		return adds;
+
+	vdb  = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+	keys = set_keys(qm_world_select);
+	array_for_each(keys, n, k) {
+		char  *wa = qm_world_atom(k);
+		size_t m;
+		char  *e;
+		bool   dup = false;
+
+		if (wa == NULL)
+			continue;
+		if (vdb != NULL) {
+			atom_ctx *va   = atom_explode(wa);
+			bool      inst = false;
+
+			if (va != NULL) {
+				array *t = tree_match_atom(vdb, va,
+						TREE_MATCH_LATEST  | TREE_MATCH_FIRST |
+						TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
+
+				inst = array_cnt(t) > 0;
+				array_free(t);
+				atom_implode(va);
+			}
+			if (!inst) {
+				free(wa);
+				continue;
+			}
+		}
+		if (contains_set(wa, entries) != NULL) {
+			free(wa);
+			continue;
+		}
+		array_for_each(adds, m, e)
+			if (strcmp(e, wa) == 0)
+				dup = true;
+		if (dup)
+			free(wa);
+		else
+			array_append(adds, wa);
+	}
+	array_free(keys);
+	if (vdb != NULL)
+		tree_close(vdb);
+	array_sort(adds, qm_strcmp_cb);
+	return adds;
+}
+
+/* emerge's --ask flow when there is nothing to merge: list what would
+ * be recorded in world and world_sets and ask; false = declined, the
+ * caller records nothing. Nothing to add asks nothing. */
+static bool
+qm_world_favorites_ask(void)
+{
+	char   *wpath;
+	set    *entries = create_set();
+	array  *adds;
+	size_t  n;
+	char   *a;
+	bool    ok = true;
+
+	xasprintf(&wpath, "%s%s/var/lib/portage/world", portroot, CONFIG_EPREFIX);
+	qm_world_file_read(wpath, entries);
+	free(wpath);
+	adds = qm_world_additions(entries);
+	if (qm_worldset_select != NULL) {
+		set   *sentries = create_set();
+		array *keys     = set_keys(qm_worldset_select);
+		char  *k;
+
+		xasprintf(&wpath, "%s%s/var/lib/portage/world_sets",
+				  portroot, CONFIG_EPREFIX);
+		qm_world_file_read(wpath, sentries);
+		free(wpath);
+		array_for_each(keys, n, k)
+			if (contains_set(k, sentries) == NULL)
+				array_append(adds, xstrdup(k));
+		array_free(keys);
+		free_set(sentries);
+		array_sort(adds, qm_strcmp_cb);
+	}
+	if (array_cnt(adds) > 0) {
+		printf("\n");
+		array_for_each(adds, n, a)
+			printf(" %s*%s %s\n", GREEN, NORM, a);
+		printf("\n");
+		ok = qmerge_prompt("Would you like to add these packages to your "
+						   "world favorites");
+	}
+	array_deepfree(adds, free);
+	free_set(entries);
+	return ok;
+}
+
+/* note that world_update refers to world file update here
+  to be documented by @francoisb */
+static void
+qm_world_update(void)
+{
+	char   *wdir;
+	char   *wpath;
+	set    *entries;
+	size_t  n;
+	int     added = 0;
+
+	if (qm_world_select == NULL || cnt_set(qm_world_select) == 0)
+		return;
+
+	xasprintf(&wdir, "%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
+	xasprintf(&wpath, "%s/world", wdir);
+
+	entries = create_set();
+	qm_world_file_read(wpath, entries);
 
 	/* establish the world installed as selections only. 
 	 * a fresh vdb tree, the resolver's cached one predates 
-	  * the merges of this very run. */
+	  * the merges of this run. */
 	{
-		tree_ctx *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+		array *adds = qm_world_additions(entries);
+		char  *wa;
 
-		keys = set_keys(qm_world_select);
-		array_for_each(keys, n, k) {
-			char *wa = qm_world_atom(k);
-
-			if (wa == NULL)
-				continue;
-			if (vdb != NULL) {
-				atom_ctx *va   = atom_explode(wa);
-				bool      inst = false;
-
-				if (va != NULL) {
-					array *t = tree_match_atom(vdb, va,
-							TREE_MATCH_LATEST  | TREE_MATCH_FIRST |
-							TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
-
-					inst = array_cnt(t) > 0;
-					array_free(t);
-					atom_implode(va);
-				}
-				if (!inst) {
-					free(wa);
-					continue;
-				}
-			}
-			if (contains_set(wa, entries) == NULL) {
-				add_set_unique(wa, entries, NULL);
-				qprintf("%s>>>%s Recording %s in \"world\" favorites "
-						"file\n", GREEN, NORM, wa);
-				added++;
-			}
-			free(wa);
+		array_for_each(adds, n, wa) {
+			add_set_unique(wa, entries, NULL);
+			printf(">>> Recording %s%s%s in \"world\" favorites file...\n",
+				   DKGREEN, wa, NORM);
+			added++;
 		}
-		array_free(keys);
-		if (vdb != NULL)
-			tree_close(vdb);
+		array_deepfree(adds, free);
 	}
 
 	if (added > 0) {
@@ -27178,8 +27295,8 @@ qm_worldsets_update(void)
 	array_for_each(keys, n, k) {
 		if (contains_set(k, entries) == NULL) {
 			add_set_unique(k, entries, NULL);
-			qprintf("%s>>>%s Recording %s in \"world_sets\" file\n",
-					GREEN, NORM, k);
+			printf(">>> Recording %s%s%s in \"world_sets\" favorites "
+				   "file...\n", DKGREEN, k, NORM);
 			added++;
 		}
 	}
@@ -27353,8 +27470,8 @@ qm_deselect_run(void)
 			array_for_each(args, m, k) {
 				if (!qm_deselect_match(k, w))
 					continue;
-				printf("%s>>>%s %s %s from \"world\" favorites file...\n",
-					   GREEN, NORM, verb, w);
+				printf(">>> %s %s%s%s from \"world\" favorites file...\n",
+					   verb, DKGREEN, w, NORM);
 				removed++;
 				if (!pretend)
 					del_set(w, world, &ok);
@@ -27448,8 +27565,8 @@ qm_world_clean_unmerged(void)
 		atom_implode(wa);
 		if (!gone)
 			continue;
-		printf("%s>>>%s Removing %s from \"world\" favorites file...\n",
-			   GREEN, NORM, w);
+		printf(">>> Removing %s%s%s from \"world\" favorites file...\n",
+			   DKGREEN, w, NORM);
 		del_set(w, world, &ok);
 		removed++;
 	}
@@ -28109,72 +28226,6 @@ int qmerge_main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	/* --noreplace: drop named targets an installed package already
-	 * satisfies*/
-	if (noreplace && !uninstall && todo != NULL) {
-		array *keys = set_keys(todo);
-		size_t n;
-		char  *k;
-		bool   ok;
-
-		array_for_each(keys, n, k) {
-			atom_ctx *a = atom_explode(k);
-			char     *picked = NULL;
-
-			if (a == NULL)
-				continue;
-			if (a->CATEGORY == NULL && a->PN != NULL) {
-				bool ambiguous = false;
-				set *cands = NULL;
-
-				picked = qm_pick_category(a->PN, &ambiguous, &cands);
-				if (ambiguous) {
-					array  *cl = cands != NULL ? set_keys(cands) : NULL;
-					size_t  ci;
-					char   *cc;
-
-					warn("the short package name '%s' is ambiguous, "
-						 "specify one of the following fully-qualified "
-						 "names instead:", a->PN);
-					if (cl != NULL) {
-						array_sort(cl, qm_strcmp_cb);
-						array_for_each(cl, ci, cc)
-							warn("    %s/%s", cc, a->PN);
-						array_free(cl);
-					}
-					if (cands != NULL)
-						free_set(cands);
-					atom_implode(a);
-					array_free(keys);
-					ret = EXIT_FAILURE;
-					goto cleanup;
-				}
-				if (cands != NULL)
-					free_set(cands);
-				if (picked != NULL)
-					a->CATEGORY = picked;
-			}
-			if (best_version(a, BV_INSTALLED) != NULL) {
-				atom_implode(a);
-				free(picked);
-				del_set(k, todo, &ok);
-				continue;
-			}
-			atom_implode(a);
-			free(picked);
-		}
-		array_free(keys);
-		if (cnt_set(todo) == 0) {
-			free_set(todo);
-			todo = NULL;
-			if (!pretend && interactive &&
-					!qmerge_prompt("OK add these packages to world file")) {
-				ret = EXIT_FAILURE;
-				goto cleanup;
-			}
-		}
-	}
-
 	/* -s with no local Packages index: bootstrap by fetching it, so a
 	 * fresh binhost eater can search right away; -fs forces a
 	 * refresh even when a cached index exists.
@@ -28292,6 +28343,18 @@ int qmerge_main(int argc, char **argv)
 				ret = EXIT_FAILURE;
 				goto cleanup;
 			}
+		} else if (qm_plan_empty) {
+			pretend = save_pretend;
+			verbose = save_verbose;
+			quiet = save_quiet;
+			if (oneshot || fetch_only) {
+				printf("\nNothing to merge; quitting.\n\n");
+			} else if (qm_world_favorites_ask()) {
+				qm_world_update();
+				qm_worldsets_update();
+			}
+			ret = EXIT_SUCCESS;
+			goto cleanup;
 		} else {
 			if (!qmerge_prompt("OK to merge these packages")) {
 				ret = EXIT_FAILURE;
