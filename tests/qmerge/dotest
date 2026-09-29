@@ -1014,6 +1014,26 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	[[ ${rc} -eq 0 && $(stat -c %a "${ROOT}/freshpd") == "750" ]]
 	tend $? "qmerge-test: [qpkg] created PKGDIR gets 0750" \
 		|| die "rc=${rc} mode=$(stat -c %a "${ROOT}/freshpd" 2>/dev/null) ${out}"
+
+	rm -rf "${ROOT}/altpd" "${ROOT}/mainpd" "${ROOT}/newpd"
+	mkdir -p "${ROOT}/altpd" "${ROOT}/mainpd"
+	out=$(PKGDIR=/mainpd qpkg -P /altpd -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -n $(find "${ROOT}/altpd" -type f -name "${gvpv}*") && \
+	   -z $(ls -A "${ROOT}/mainpd") ]]
+	tend $? "qmerge-test: [qpkg] -P xpak lands in the given dir, PKGDIR untouched" \
+		|| die "rc=${rc} alt=$(find "${ROOT}/altpd" -type f) main=$(find "${ROOT}/mainpd") ${out}"
+	rm -rf "${ROOT}/altpd"; mkdir -p "${ROOT}/altpd"
+	out=$(PKGDIR=/mainpd BINPKG_COMPRESS=xz qpkg -P /altpd -g ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -n $(find "${ROOT}/altpd" -type f -name "${gvpv}*.gpkg.tar") && \
+	   -z $(ls -A "${ROOT}/mainpd") ]]
+	tend $? "qmerge-test: [qpkg] -P gpkg lands in the given dir, PKGDIR untouched" \
+		|| die "rc=${rc} alt=$(find "${ROOT}/altpd" -type f) main=$(find "${ROOT}/mainpd") ${out}"
+	out=$(PKGDIR=/mainpd qpkg -P /newpd -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -n $(find "${ROOT}/newpd" -type f -name "${gvpv}*") && \
+	   -z $(ls -A "${ROOT}/mainpd") ]]
+	tend $? "qmerge-test: [qpkg] missing -P dir is created under ROOT" \
+		|| die "rc=${rc} new=$(find "${ROOT}/newpd" 2>/dev/null) main=$(find "${ROOT}/mainpd") ${out}"
+	rm -rf "${ROOT}/altpd" "${ROOT}/mainpd" "${ROOT}/newpd"
 	rm -rf "${ROOT}/rox" "${ROOT}/keepmode" "${ROOT}/freshpd"
 
 	# clean up tests' artifacts and leave no gpkg behind for later blocks

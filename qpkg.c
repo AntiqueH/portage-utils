@@ -646,6 +646,7 @@ qgpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 	int tdlen;
 	bool gerr = false;
 	bool sign = contains_set("binpkg-signing", features) != NULL;
+	const char *dst = args != NULL ? args->bindir : pkgdir;
 
 	if (pretend) {
 		printf(" %s-%s %s:\n",
@@ -663,7 +664,7 @@ qgpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 	if (line == NULL)
 		return -1;
 
-	snprintf(tmpdir, sizeof(tmpdir), "%s%s/qpkg.XXXXXX", portroot, pkgdir);
+	snprintf(tmpdir, sizeof(tmpdir), "%s%s/qpkg.XXXXXX", portroot, dst);
 	mask = umask(S_IRWXG | S_IRWXO);
 	i = mkstemp(tmpdir);
 	umask(mask);
@@ -978,10 +979,10 @@ qgpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 	/* create dirs, if necessary */
 	if (atom->BUILDID > 0)
 		i = snprintf(buf, sizeof(buf), "%s%s/%s/%s",
-					 portroot, pkgdir, atom->CATEGORY, atom->PN);
+					 portroot, dst, atom->CATEGORY, atom->PN);
 	else
 		i = snprintf(buf, sizeof(buf), "%s%s/%s",
-					 portroot, pkgdir, atom->CATEGORY);
+					 portroot, dst, atom->CATEGORY);
 	mkdir_p(buf, 0755);
 
 	if (atom->BUILDID > 0)
@@ -1070,6 +1071,7 @@ qpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 	int tdlen;
 	bool gerr = false;
 	depend_atom *atom = tree_pkg_atom(pkg, false);
+	const char *dst = args != NULL ? args->bindir : pkgdir;
 
 	if (pretend) {
 		printf(" %s-%s %s:\n",
@@ -1085,7 +1087,7 @@ qpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 	if (line == NULL)
 		return -1;
 
-	snprintf(tmpdir, sizeof(tmpdir), "%s%s/qpkg.XXXXXX", portroot, pkgdir);
+	snprintf(tmpdir, sizeof(tmpdir), "%s%s/qpkg.XXXXXX", portroot, dst);
 	mask = umask(0077);
 	i = mkstemp(tmpdir);
 	umask(mask);
@@ -1222,10 +1224,10 @@ qpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 	/* create dirs, if necessary */
 	if (atom->BUILDID > 0)
 		i = snprintf(buf, sizeof(buf), "%s%s/%s/%s",
-					 portroot, pkgdir, atom->CATEGORY, atom->PN);
+					 portroot, dst, atom->CATEGORY, atom->PN);
 	else
 		i = snprintf(buf, sizeof(buf), "%s%s/%s",
-					 portroot, pkgdir, atom->CATEGORY);
+					 portroot, dst, atom->CATEGORY);
 	mkdir_p(buf, 0755);
 
 	if (atom->BUILDID > 0)
@@ -1331,8 +1333,6 @@ int qpkg_main(int argc, char **argv)
 		case 'P':
 			restrict_chmod = 1;
 			cb_args.bindir = optarg;
-			if (access(cb_args.bindir, W_OK) != 0)
-				errp("%s", cb_args.bindir);
 			break;
 		COMMON_GETOPTS_CASES(qpkg)
 		}
