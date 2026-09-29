@@ -8342,6 +8342,7 @@ qm_confmem_load(void)
 		char             *key = NULL;
 		char              val[_Q_PATH_MAX];
 		size_t            vlen = 0;
+		size_t            tlen;
 		struct qm_cm_ent *e;
 
 		val[0] = '\0';
@@ -8355,10 +8356,13 @@ qm_confmem_load(void)
 				key = tok;
 				continue;
 			}
-			vlen += snprintf(val + vlen, sizeof(val) - vlen, "%s%s",
-							 val[0] != '\0' ? " " : "", tok);
-			if (vlen >= sizeof(val))
+			tlen = strlen(tok);
+			if (vlen + (vlen > 0) + tlen >= sizeof(val))
 				break;
+			if (vlen > 0)
+				val[vlen++] = ' ';
+			memcpy(val + vlen, tok, tlen + 1);
+			vlen += tlen;
 		}
 		if (key == NULL || key[0] == '#' || val[0] == '\0')
 			continue;

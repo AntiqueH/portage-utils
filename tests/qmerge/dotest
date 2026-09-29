@@ -4385,7 +4385,7 @@ tend $? "qmerge-test: [NR] -n holds installed target, asks, records world" \
 # already in world: nothing to ask, nothing to say
 outn1=$(yes | qmerge -n dev-libs/wtfail 2>&1); rcn=$?
 [[ ${rcn} -eq 0 && ${outn1} != *"Would you like"* && ${outn1} != *"Recording"* && \
-   ${outn1} != *"nothing to"* ]]
+   ${outn1} != *"nothing to"* ]] && grep -q "dev-libs/wtfail" "${wtfile}"
 tend $? "qmerge-test: [NR] -n on a target already in world is silent" \
 	|| die "rc=${rcn} ${outn1}"
 # declined: nothing recorded, rc 0 like emerge
