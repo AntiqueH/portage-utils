@@ -1318,7 +1318,7 @@ int qpkg_main(int argc, char **argv)
 	char bindir[_Q_PATH_MAX];
 	qpkg_cb_args cb_args;
 
-	memset(&cb_args, 0, sizeof(cb_args));
+	VAL_CLEAR(cb_args);
 
 	cb_args.bindir     = pkgdir;
 	cb_args.build_gpkg = strcmp(binpkg_format, "gpkg") == 0;

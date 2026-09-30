@@ -88,7 +88,8 @@ rm_rf_at(int dfd, const char *path)
 	}
 
 	while ((de = readdir(dir)) != NULL) {
-		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+		if (strcmp(de->d_name, ".") == 0 ||
+				strcmp(de->d_name, "..") == 0)
 			continue;
 		if (unlinkat(subdfd, de->d_name, 0) == -1) {
 			if (unlikely(errno != EISDIR)) {

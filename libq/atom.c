@@ -107,7 +107,7 @@ atom_ctx *atom_explode_cat
   slen = strlen(input) + 1;
   len = cat != NULL ? strlen(cat) + 1 : 0;
   ret = xmalloc(sizeof(*ret) + (slen * 3) + len);
-  memset(ret, '\0', sizeof(*ret));
+  VALP_CLEAR(ret);
 
   /* assign pointers to the three storage containers */
   ret->CATEGORY = (char *)ret + sizeof(*ret) + len;     /* CAT PF PVR */
@@ -539,7 +539,7 @@ atom_ctx *atom_clone
 
   alen = sizeof(*ret) + clen + flen + plen + nlen + rlen + slen + sslen;
   ret  = xmalloc(alen);
-  memset(ret, '\0', sizeof(*ret));
+  VALP_CLEAR(ret);
 
   /* build up main storage pointers, see explode */
   p = (char *)ret + sizeof(*ret);

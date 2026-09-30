@@ -305,11 +305,11 @@ int qglsa_main(int argc, char **argv)
 		err("specified action requires a list, either 'all', 'new', or GLSA numbers");
 
 	for (i = optind; i < argc; ++i) {
-		if (!strcmp(argv[i], "all")) {
+		if (strcmp(argv[i], "all") == 0) {
 			all_glsas = true;
 			if (optind+1 != argc)
 				err("You may only use class names by themselves");
-		} else if (!strcmp(argv[i], "new")) {
+		} else if (strcmp(argv[i], "new") == 0) {
 			all_glsas = false;
 			if (optind+1 != argc)
 				err("You may only use class names by themselves");

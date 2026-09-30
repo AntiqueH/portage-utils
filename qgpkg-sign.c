@@ -130,7 +130,7 @@ qgs_scan(const char *gpkg_file, struct qgs_scan *sc, bool *format_bad)
 	bool                  ok   = true;
 	bool                  first = true;
 
-	memset(sc, 0, sizeof(*sc));
+	VALP_CLEAR(sc);
 	sc->ents = array_new();
 	sc->members = array_new();
 	*format_bad = false;

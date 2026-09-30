@@ -148,7 +148,7 @@ gpgsign_start(bool detached, struct gpgsign *g)
 	int         errp[2];
 	const char *tty;
 
-	memset(g, 0, sizeof(*g));
+	VALP_CLEAR(g);
 	g->in = g->out = g->err = -1;
 
 	if (!gpgsign_vars_ok())

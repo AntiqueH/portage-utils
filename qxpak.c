@@ -66,7 +66,8 @@ _xpak_callback(
 	if (xctx->argc > 0) {
 		int i;
 		for (i = 0; i < xctx->argc; i++) {
-			if (xctx->argv[i] && !strcmp(pathname, xctx->argv[i])) {
+			if (xctx->argv[i] &&
+					strcmp(pathname, xctx->argv[i]) == 0) {
 				xctx->argv[i] = NULL;
 				break;
 			}

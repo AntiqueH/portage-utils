@@ -447,7 +447,7 @@ get_portage_env_var(env_vars *vars, const char *name)
 	size_t i;
 
 	for (i = 0; vars[i].name; ++i)
-		if (!strcmp(vars[i].name, name))
+		if (strcmp(vars[i].name, name) == 0)
 			return &vars[i];
 
 	return NULL;

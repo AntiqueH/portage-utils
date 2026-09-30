@@ -130,7 +130,7 @@ static xpak_archive *xpak_open(const int fd_in)
 	int fd = fd_in;
 
 	/* init the file */
-	memset(&ret, 0x00, sizeof(ret));
+	VAL_CLEAR(ret);
 	if (fd == 0) {
 		fd = dup(fd);
 		if (fd < 0)

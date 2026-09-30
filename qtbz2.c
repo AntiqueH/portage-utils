@@ -328,7 +328,7 @@ int qtbz2_main(int argc, char **argv)
 			size_t len = strlen(s);
 
 			/* autostrip the tarball extension */
-			if (len >= 8 && !strcmp(s + len - 8, ".tar.bz2"))
+			if (len >= 8 && strcmp(s + len - 8, ".tar.bz2") == 0)
 				len -= 8;
 
 			if (!xpak) {
@@ -362,7 +362,7 @@ int qtbz2_main(int argc, char **argv)
 			size_t len = strlen(s);
 
 			/* autostrip the package extension */
-			if (len >= 5 && !strcmp(s + len - 5, ".tbz2"))
+			if (len >= 5 && strcmp(s + len - 5, ".tbz2") == 0)
 				len -= 5;
 
 			if (!tarbz2 && split_tarbz2) {

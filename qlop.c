@@ -192,9 +192,9 @@ parse_date(const char *sdate, time_t *t)
 				dur[len - 1] = '\0';
 
 			/* Step down the current time. */
-			if (!strcmp(dur, "year")) {
+			if (strcmp(dur, "year") == 0) {
 				tm.tm_year -= (int)num;
-			} else if (!strcmp(dur, "month")) {
+			} else if (strcmp(dur, "month") == 0) {
 				if (num >= 12) {
 					tm.tm_year -= (int)(num / 12);
 					num %= 12;
@@ -204,10 +204,10 @@ parse_date(const char *sdate, time_t *t)
 					tm.tm_mon += 12;
 					tm.tm_year -= 1;
 				}
-			} else if (!strcmp(dur, "week")) {
+			} else if (strcmp(dur, "week") == 0) {
 				num *= 7;
 				goto days;
-			} else if (!strcmp(dur, "day")) {
+			} else if (strcmp(dur, "day") == 0) {
  days:
 				/* This is in seconds, so scale w/that.  */
 				*t -= (num * 24 * 60 * 60);

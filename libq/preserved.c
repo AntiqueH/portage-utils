@@ -464,7 +464,7 @@ pres_open(const char *file, bool writable)
 	if (reg->fd >= 0 && writable) {
 		int fdfl = fcntl(reg->fd, F_GETFL);
 
-		memset(&fl, 0, sizeof(fl));
+		VAL_CLEAR(fl);
 		fl.l_type   = (fdfl != -1 && (fdfl & O_ACCMODE) == O_RDONLY)
 				? F_RDLCK : F_WRLCK;
 		fl.l_whence = SEEK_SET;

@@ -51,7 +51,7 @@ static const char * const qfile_opts_help[] = {
 	(!prefix_length \
 		|| (strlen(path) >= (size_t)prefix_length \
 			&& (path[prefix_length] == '/' || path[prefix_length] == '\0') \
-			&& !strncmp(path, prefix, prefix_length)))
+			&& strncmp(path, prefix, prefix_length) == 0))
 
 typedef struct {
 	char   *str;
@@ -357,7 +357,7 @@ static void destroy_qfile_args(qfile_args_t *qfile_args)
 	free(qfile_args->non_orphans);
 	free(qfile_args->results);
 
-	memset(qfile_args, 0, sizeof(qfile_args_t));
+	VALP_CLEAR(qfile_args);
 }
 
 static int
@@ -588,7 +588,7 @@ int qfile_main(int argc, char **argv)
 		p = NULL;
 	if (p == NULL)
 		errp("Could not read real path of ROOT (\"%s\") + $PWD", portroot);
-	if (!strcmp(p, "/"))
+	if (strcmp(p, "/") == 0)
 		*p = '\0';
 	state.real_root = p;
 	state.real_root_len = strlen(p);

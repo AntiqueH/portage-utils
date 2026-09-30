@@ -13867,7 +13867,7 @@ qm_vdb_lock(void)
 					".%s.portage_lockfile", vdbroot);
 		}
 
-		memset(&fl, 0, sizeof(fl));
+		VAL_CLEAR(fl);
 		fl.l_type   = F_WRLCK;
 		fl.l_whence = SEEK_SET;
 		for (;;) {
@@ -13920,7 +13920,7 @@ qm_vdb_unlock(void)
 		qm_vdb_lockdepth--;
 		return;
 	}
-	memset(&fl, 0, sizeof(fl));
+	VAL_CLEAR(fl);
 	fl.l_type   = F_UNLCK;
 	fl.l_whence = SEEK_SET;
 	fcntl(qm_vdb_lockfd, F_SETLK, &fl);
@@ -14419,7 +14419,7 @@ qm_gpkg_verify_impl(const char *gpkg_path, int cfd)
 			ok = false;
 			break;
 		}
-		memset(&cbs, 0, sizeof(cbs));
+		VAL_CLEAR(cbs);
 		cbs.read = qm_gpgme_read_cb;
 		if (gpgme_data_new_from_cbs(&dd, &cbs, a) != GPG_ERR_NO_ERROR) {
 			gpgme_data_release(sd);
@@ -17313,7 +17313,7 @@ qm_pkgindex_lock(const char *pdir)
 			warnp("cannot open %s", qm_pkgindex_lockp);
 			return -1;
 		}
-		memset(&fl, 0, sizeof(fl));
+		VAL_CLEAR(fl);
 		fl.l_type   = F_WRLCK;
 		fl.l_whence = SEEK_SET;
 		if (fcntl(fd, F_SETLK, &fl) != 0) {
@@ -23604,7 +23604,7 @@ qm_dc_add_virtuals(struct qm_dc *dc, struct qm_dc_pkg *pkg,
 		if (top) {
 			vprio = *prio;
 		} else {
-			memset(&vprio, 0, sizeof(vprio));
+			VAL_CLEAR(vprio);
 			vprio.runtime = true;
 		}
 		vprio.satisfied = qm_dc_satisfied(dc, x->atom, x->puse, NULL) != NULL;
@@ -23624,7 +23624,7 @@ qm_dc_add_virtuals(struct qm_dc *dc, struct qm_dc_pkg *pkg,
 			struct qm_dc_prio mp;
 			struct qm_dc_dep *dep;
 
-			memset(&mp, 0, sizeof(mp));
+			VAL_CLEAR(mp);
 			mp.runtime = true;
 			if (atom->blocker == ATOM_BL_NONE)
 				mp.satisfied = qm_dc_satisfied(dc, atom, pr->atom->puse,
@@ -23688,7 +23688,7 @@ qm_dc_add_pkg_deps(struct qm_dc *dc, struct qm_dc_pkg *pkg)
 		array            *nondisj;
 		array            *disj;
 
-		memset(&prio, 0, sizeof(prio));
+		VAL_CLEAR(prio);
 		switch (di) {
 		case QM_DC_RDEPEND: prio.runtime = true; break;
 		case QM_DC_IDEPEND: prio.installtime = true; prio.runtime = true; break;
@@ -24897,7 +24897,7 @@ qm_dc_libcheck_run(struct qm_dc *dc, array *cleanlist, set *clean_set)
 
 				if (cpkg == NULL)
 					continue;
-				memset(&pr, 0, sizeof(pr));
+				VAL_CLEAR(pr);
 				pr.runtime         = true;
 				pr.runtime_slot_op = true;
 				dep = xzalloc(sizeof(*dep));
@@ -25041,7 +25041,7 @@ qm_dc_removal_order(struct qm_dc *dc, array *cleanlist, set *clean_set,
 			size_t k;
 			struct qm_dcx *x;
 
-			memset(&prio, 0, sizeof(prio));
+			VAL_CLEAR(prio);
 			switch (di) {
 			case QM_DC_IDEPEND: prio.installtime = true; prio.runtime = true; break;
 			case QM_DC_RDEPEND: prio.runtime = true; break;
@@ -25274,7 +25274,7 @@ qm_dc_load(struct qm_dc *dc)
 	size_t    i;
 	struct qm_dc_pkg *p;
 
-	memset(dc, 0, sizeof(*dc));
+	VALP_CLEAR(dc);
 	if (vdb == NULL)
 		return false;
 	dc->pkgs       = array_new();

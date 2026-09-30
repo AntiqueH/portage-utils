@@ -37,14 +37,14 @@ contents_parse_line_len(char *line, size_t len)
 	if (len <= 4)  /* minimal: "dir /" */
 		return NULL;
 
-	memset(&e, 0x00, sizeof(e));
+	VAL_CLEAR(e);
 	e._data = line;
 
-	if (!strncmp(e._data, "obj ", 4))
+	if (strncmp(e._data, "obj ", 4) == 0)
 		e.type = CONTENTS_OBJ;
-	else if (!strncmp(e._data, "dir ", 4))
+	else if (strncmp(e._data, "dir ", 4) == 0)
 		e.type = CONTENTS_DIR;
-	else if (!strncmp(e._data, "sym ", 4))
+	else if (strncmp(e._data, "sym ", 4) == 0)
 		e.type = CONTENTS_SYM;
 	else
 		return NULL;
