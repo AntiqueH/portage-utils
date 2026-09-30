@@ -32,7 +32,6 @@ QFILES = \
 	preserved.c preserved.h \
 	linkage.c linkage.h \
 	useflags.c useflags.h \
-	xasprintf.h \
 	xchdir.c xchdir.h \
 	xmkdir.c xmkdir.h \
 	xpak.c xpak.h \
