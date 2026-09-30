@@ -68,9 +68,12 @@ static char tbz2_stdout = 0;
 static int
 tbz2_compose(int dir_fd, const char *tarbz2, const char *xpak, const char *tbz2)
 {
-	FILE *out, *in_tarbz2, *in_xpak;
+	FILE *out;
+	FILE *in_tarbz2;
+	FILE *in_xpak;
 	struct stat st;
-	int ret = 1, fd;
+	int ret = 1;
+	int fd;
 	char buf[8];
 
 	if (verbose)
@@ -198,7 +201,8 @@ tbz2_decompose(int dir_fd, const char *tbz2, const char *tarbz2, const char *xpa
 {
 	FILE *in;
 	unsigned char tbz2_tail[TBZ2_END_LEN];
-	long xpak_size, tarbz2_size;
+	long xpak_size;
+	long tarbz2_size;
 	struct stat st;
 	int ret = 1;
 
@@ -264,10 +268,17 @@ tbz2_decompose(int dir_fd, const char *tbz2, const char *tarbz2, const char *xpa
 int qtbz2_main(int argc, char **argv)
 {
 	enum { TBZ2_ACT_NONE, TBZ2_ACT_JOIN, TBZ2_ACT_SPLIT };
-	int i, dir_fd;
-	char action, split_xpak = 1, split_tarbz2 = 1;
-	char *heap_tbz2, *heap_xpak, *heap_tarbz2;
-	char *tbz2, *xpak, *tarbz2;
+	int i;
+	int dir_fd;
+	char action;
+	char split_xpak = 1;
+	char split_tarbz2 = 1;
+	char *heap_tbz2;
+	char *heap_xpak;
+	char *heap_tarbz2;
+	char *tbz2;
+	char *xpak;
+	char *tarbz2;
 
 	action = TBZ2_ACT_NONE;
 	dir_fd = AT_FDCWD;

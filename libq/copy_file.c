@@ -84,7 +84,8 @@ int copy_file_fd(int fd_src, int fd_dst)
 	/* fallback, keep in its own scope, so we avoid 64K stack alloc if
 	 * sendfile works properly */
 	{
-		ssize_t rcnt, wcnt;
+		ssize_t rcnt;
+		ssize_t wcnt;
 		char buf[64 * 1024];
 
 		while (1) {
@@ -103,7 +104,8 @@ int copy_file_fd(int fd_src, int fd_dst)
 
 int copy_file(FILE *src, FILE *dst)
 {
-	ssize_t rcnt, wcnt;
+	ssize_t rcnt;
+	ssize_t wcnt;
 	char buf[64 * 1024];
 
 	while (1) {

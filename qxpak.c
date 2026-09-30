@@ -118,7 +118,8 @@ _xpak_callback(
 int qxpak_main(int argc, char **argv)
 {
 	enum { XPAK_ACT_NONE, XPAK_ACT_LIST, XPAK_ACT_EXTRACT, XPAK_ACT_CREATE };
-	int i, ret;
+	int i;
+	int ret;
 	char *xpak;
 	char action = XPAK_ACT_NONE;
 	struct qxpak_cb cbctx;

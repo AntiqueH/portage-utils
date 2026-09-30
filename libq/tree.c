@@ -2140,24 +2140,31 @@ static int tree_filter_pkg
  * They must not get out of the openat(pkg->path) of PKGDIR.
  * So we need a mechanism to reject the escaping of slahes.
  * (We copied this idea from Arch ALPM file validation)*/
-static bool
-tree_binpkg_path_ok(const char *path)
+static bool tree_binpkg_path_ok
+(
+  const char *path
+)
 {
-	const char *p;
+  const char *p;
 
-	if (path == NULL || path[0] == '\0' || path[0] == '/')
-		return false;
-	if (strchr(path, '\\') != NULL)
-		return false;
-	for (p = path; p != NULL; ) {
-		const char *slash = strchr(p, '/');
-		size_t      seg   = slash != NULL ? (size_t)(slash - p) : strlen(p);
+  if (path == NULL ||
+      path[0] == '\0' ||
+      path[0] == '/')
+    return false;
+  if (strchr(path, '\\') != NULL)
+    return false;
+  for (p = path; p != NULL; )
+  {
+    const char *slash = strchr(p, '/');
+    size_t      seg   = slash != NULL ? (size_t)(slash - p) : strlen(p);
 
-		if (seg == 2 && p[0] == '.' && p[1] == '.')
-			return false;
-		p = slash != NULL ? slash + 1 : NULL;
-	}
-	return true;
+    if (seg == 2 &&
+        p[0] == '.' &&
+        p[1] == '.')
+      return false;
+    p = slash != NULL ? slash + 1 : NULL;
+  }
+  return true;
 }
 
 /* iterates over the given category in its tree, invoking the callback

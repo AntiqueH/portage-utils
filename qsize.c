@@ -108,7 +108,9 @@ qsize_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 	depend_atom *atom;
 	char *line;
 	char *savep;
-	size_t num_files, num_nonfiles, num_ignored;
+	size_t num_files;
+	size_t num_nonfiles;
+	size_t num_ignored;
 	uint64_t num_bytes;
 	struct stat st;
 	bool ok = false;

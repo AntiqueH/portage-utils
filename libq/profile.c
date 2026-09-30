@@ -24,7 +24,8 @@ q_profile_follow_at(int dir_fd, const char *dir, const char *file,
                   q_profile_callback_t callback, void *data)
 {
 	FILE *fp;
-	int subdir_fd, fd;
+	int subdir_fd;
+	int fd;
 	int linelen;
 	size_t buflen;
 	char *buf;

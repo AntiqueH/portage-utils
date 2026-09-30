@@ -1636,7 +1636,8 @@ binrepos_load(void)
 		qm_nbinrepos++;
 
 		{
-			size_t wi, wj;
+			size_t wi;
+			size_t wj;
 
 			qm_walk_order = xrealloc(qm_walk_order,
 					sizeof(*qm_walk_order) * qm_nbinrepos);
@@ -3936,7 +3937,8 @@ qm_collect_updates_dir(const char *repopath)
 	if (d == NULL)
 		return NULL;
 	while ((de = readdir(d)) != NULL) {
-		int q, y;
+		int q;
+		int y;
 
 		if (sscanf(de->d_name, "%dQ-%d", &q, &y) != 2)
 			continue;
@@ -4470,9 +4472,12 @@ qm_news_relevant(const char *hdrs)
 	char *tmp = xstrdup(hdrs);
 	char *line;
 	char *lsp;
-	bool  have_inst = false, ok_inst = false;
-	bool  have_kw   = false, ok_kw   = false;
-	bool  have_prof = false, ok_prof = false;
+	bool  have_inst = false;
+	bool  ok_inst   = false;
+	bool  have_kw   = false;
+	bool  ok_kw     = false;
+	bool  have_prof = false;
+	bool  ok_prof   = false;
 	static char prof[_Q_PATH_MAX];
 	static bool prof_init = false;
 
@@ -4662,7 +4667,8 @@ qm_apply_news_one(const char *loc, const char *rname)
 		const char *nm = archive_entry_pathname(e);
 		char        key[512];
 		char        want[300];
-		const char *p1, *p2;
+		const char *p1;
+		const char *p2;
 		la_int64_t  sz;
 		char       *body;
 
@@ -4711,7 +4717,8 @@ qm_apply_news_one(const char *loc, const char *rname)
 			char        repoid[128];
 			char        nid[256];
 			char        opath[_Q_PATH_MAX + 512];
-			const char *p1, *p2;
+			const char *p1;
+			const char *p2;
 			la_int64_t  sz;
 			char       *body;
 			FILE       *f;
@@ -8632,12 +8639,17 @@ merge_tree_at(int fd_src, const char *src, int fd_dst, const char *dst,
               FILE *contents, size_t eprefix_len, set **objs, char **cpathp,
               int cp_argc, char **cp_argv, int cpm_argc, char **cpm_argv)
 {
-	int i, ret, subfd_src, subfd_dst;
+	int i;
+	int ret;
+	int subfd_src;
+	int subfd_dst;
 	DIR *dir;
 	struct dirent *de;
 	struct stat st;
 	char *cpath;
-	size_t clen, nlen, mnlen;
+	size_t clen;
+	size_t nlen;
+	size_t mnlen;
 	bool failed = false;
 
 	ret = -1;
@@ -9965,10 +9977,12 @@ qm_news_notice(void)
 /* progress counter for the "(N of M)" in pkg_download's fetch line; set by
  * qm_prefetch before each fork (inherited by the worker), 0 otherwise so
  * the serial path prints an uncounted "Fetching <pkg>". */
-static size_t qm_dl_n, qm_dl_total;
+static size_t qm_dl_n;
+static size_t qm_dl_total;
 
 /* (N of M) counters for the merge history records below */
-static size_t qm_mg_n, qm_mg_total;
+static size_t qm_mg_n;
+static size_t qm_mg_total;
 
 /* We're implemenitng a NSSfree lookup in which we parse ROOT's etc/group
  * and etc/passwd. The model method is from Alpine's APK. A static qmerge
@@ -13446,8 +13460,11 @@ resolve_again:
 	} else if (pretend) {
 		/* pretend: show the resolved merge list (deps first), install status
 		 * relative to what is installed, without fetching or merging */
-		size_t             n_new = 0, n_up = 0, n_re = 0, n_down = 0;
-		unsigned long long dlbytes = 0;
+		size_t             n_new      = 0;
+		size_t             n_up       = 0;
+		size_t             n_re       = 0;
+		size_t             n_down     = 0;
+		unsigned long long dlbytes    = 0;
 		bool               had_blocks = false;
 
 		qm_blk_reset();
@@ -15137,7 +15154,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 
 	/* xpak cannot carry a GLEP 78 signature at all */
 	{
-		bool        breq, bver;
+		bool        breq;
+		bool        bver;
 		const char *bwhy;
 
 		qm_sig_effective(qm_repoidx_of_pkg(mpkg), &breq, &bver, &bwhy);
@@ -15162,7 +15180,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		 * Portage never extracts a package whose signature is required but
 		 * missing/invalid (gpkg.py verifies ahead of extractall). */
 		{
-			bool        sig_request, sig_verify;
+			bool        sig_request;
+			bool        sig_verify;
 			bool        sig_present;
 			const char *sig_why;
 
@@ -19773,7 +19792,8 @@ qmerge_add_set_file(const char *root, const char *pfx, const char *dir,
 	FILE *fp;
 	int linelen;
 	size_t buflen;
-	char *buf, *fname;
+	char *buf;
+	char *fname;
 
 	xasprintf(&fname, "%s%s%s/%s", root, pfx, dir, file);
 
@@ -27815,7 +27835,8 @@ extern int __nss_configure_lookup(const char *dbname, const char *config);
 
 int qmerge_main(int argc, char **argv)
 {
-	int i, ret;
+	int i;
+	int ret;
 	int deselect_action = 0;
 	set *todo;
 	bool regen_index = false;

@@ -276,7 +276,9 @@ void
 makeargv(const char *string, int *argc, char ***argv)
 {
 	int curc = 2;
-	char *q, *p, *str;
+	char *q;
+	char *p;
+	char *str;
 	(*argv) = xmalloc(sizeof(char *) * curc);
 
 	*argc = 1;
@@ -1723,7 +1725,10 @@ initialize_portage_env(void)
 			env_vars *evar;
 			bool brace;
 			const char *sval;
-			size_t slen, pre_len, var_len, post_len;
+			size_t slen;
+			size_t pre_len;
+			size_t var_len;
+			size_t post_len;
 			char byte;
 
 			pre_len = svar - *var->value.s;

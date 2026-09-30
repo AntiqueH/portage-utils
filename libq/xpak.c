@@ -366,14 +366,19 @@ xpak_create(
 		bool append,
 		int verbose)
 {
-	FILE *findex, *fdata, *fout;
+	FILE *findex;
+	FILE *fdata;
+	FILE *fout;
 	struct dirent **dir = NULL;
-	int i, fidx, numfiles;
+	int i;
+	int fidx;
+	int numfiles;
 	struct stat st;
 	char path[_Q_PATH_MAX];
 	unsigned char intbuf[4];
 	unsigned char *p;
-	int index_len, data_len;
+	int index_len;
+	int data_len;
 
 	if (argc == 0)
 		err("Create usage: <xpak output> <files/dirs to pack>");

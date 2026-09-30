@@ -317,7 +317,9 @@ qet_wkd_locate(void)
 	{
 		char  *fields[16];
 		int    nf;
-		char  *lt, *gt, *at;
+		char  *lt;
+		char  *gt;
+		char  *at;
 
 		if (strncmp(line, "uid:", 4) != 0)
 			continue;

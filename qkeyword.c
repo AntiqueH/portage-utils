@@ -428,7 +428,10 @@ qkeyword_dropped(tree_pkg_ctx *pkg_ctx, void *priv)
 static void
 print_seconds_for_earthlings(const unsigned long t)
 {
-	unsigned dd, hh, mm, ss;
+	unsigned dd;
+	unsigned hh;
+	unsigned mm;
+	unsigned ss;
 	unsigned long tt = t;
 	ss = tt % 60; tt /= 60;
 	mm = tt % 60; tt /= 60;
@@ -750,7 +753,8 @@ static void
 qkeyword_load_arches(const char *overlay)
 {
 	FILE *fp;
-	char *filename, *s;
+	char *filename;
+	char *s;
 	int linelen;
 	size_t buflen;
 	char *buf;

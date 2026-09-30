@@ -185,7 +185,9 @@ qpkg_clean(qpkg_cb_args *args)
 static int
 check_pkg_install_mask(char *name)
 {
-	int i, iargc, ret;
+	int i;
+	int iargc;
+	int ret;
 	char **iargv;
 
 	i = iargc = ret = 0;

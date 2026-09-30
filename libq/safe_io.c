@@ -19,7 +19,8 @@
 size_t
 safe_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 {
-	size_t ret = 0, this_ret;
+	size_t ret = 0;
+	size_t this_ret;
 
 	do {
 		this_ret = fwrite(ptr, size, nmemb, stream);

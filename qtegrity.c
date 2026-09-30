@@ -267,7 +267,9 @@ int qtegrity_main(int argc, char **argv)
 		int fd_ima;
 		FILE *fp_ima;
 		struct stat st;
-		char *buffered_line, *line, *recorded_fname;
+		char *buffered_line;
+		char *line;
+		char *recorded_fname;
 		int recorded_digest_size = 0;
 		size_t linelen;
 
@@ -403,7 +405,8 @@ int qtegrity_main(int argc, char **argv)
 		int flush_status;
 		char *hash_algo = q_deconst("sha256");
 		char *file_digest;
-		char *line, *fname;
+		char *line;
+		char *fname;
 		size_t linelen;
 		int recorded_digest_size = 0;
 		int skip = 0;

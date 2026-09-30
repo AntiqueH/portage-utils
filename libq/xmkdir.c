@@ -22,7 +22,9 @@
 int
 mkdir_p_at(int dfd, const char *path, mode_t mode)
 {
-	char *_p, *p, *s;
+	char *_p;
+	char *p;
+	char *s;
 	int ret;
 
 	/* Assume that most of the time, only the last element
@@ -122,7 +124,8 @@ int
 rmdir_r_at(int dfd, const char *path)
 {
 	size_t len;
-	char *p, *e;
+	char *p;
+	char *e;
 
 	p = xstrdup(path);
 	len = strlen(p);

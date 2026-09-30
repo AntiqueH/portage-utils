@@ -46,8 +46,10 @@ char *rmspace(char *s)
 char *
 remove_extra_space(char *str)
 {
-	char *p, c = ' ';
-	size_t len, pos = 0;
+	char *p;
+	char c = ' ';
+	size_t len;
+	size_t pos = 0;
 	char *buf;
 
 	if (str == NULL)

@@ -28,7 +28,8 @@ scandirat(int dir_fd, const char *dir, struct dirent ***dirlist,
 {
 	int fd;
 	DIR *dirp;
-	struct dirent *de, **ret;
+	struct dirent *de;
+	struct dirent **ret;
 	size_t retlen = 0;
 	size_t retsize = 0;
 #define INCRSZ 64

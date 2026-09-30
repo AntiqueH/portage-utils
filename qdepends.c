@@ -92,19 +92,19 @@ const char *depend_files[] = {  /* keep *DEPEND aligned with above defines */
 
 /* ACCEPT_KEYWORDS as a set for dep_resolve_tree; NULL when unset so
  * resolving stays keyword-unfiltered like before */
-static set_t *
-qdepends_accept_kw(void)
+static set_t *qdepends_accept_kw(void)
 {
-	static set_t *kw      = NULL;
-	static bool   kw_init = false;
+  static set_t *kw      = NULL;
+  static bool   kw_init = false;
 
-	if (!kw_init)
-	{
-		kw_init = true;
-		if (accept_keywords != NULL && accept_keywords[0] != '\0')
-			kw = set_add_from_string(set_new(), accept_keywords);
-	}
-	return kw;
+  if (!kw_init)
+  {
+    kw_init = true;
+    if (accept_keywords != NULL &&
+        accept_keywords[0] != '\0')
+      kw = set_add_from_string(set_new(), accept_keywords);
+  }
+  return kw;
 }
 
 static bool qdepends_print_depend

@@ -79,7 +79,8 @@ static qgrep_buf_t *
 qgrep_buf_list_alloc(const char length)
 {
 	char i;
-	qgrep_buf_t *head, *current;
+	qgrep_buf_t *head;
+	qgrep_buf_t *current;
 	current = head = xmalloc(sizeof(qgrep_buf_t));
 	for (i = 1; i < length; i++) {
 		current->next = xmalloc(sizeof(qgrep_buf_t));
@@ -93,7 +94,8 @@ qgrep_buf_list_alloc(const char length)
 static void
 qgrep_buf_list_free(qgrep_buf_t *head)
 {
-	qgrep_buf_t *current, *next;
+	qgrep_buf_t *current;
+	qgrep_buf_t *next;
 	next = head;
 	do {
 		current = next;

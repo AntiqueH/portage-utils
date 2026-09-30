@@ -36,7 +36,8 @@ typedef enum {
 static char *
 qglsa_load_list(void)
 {
-	char *file, *ret = NULL;
+	char *file;
+	char *ret = NULL;
 	size_t size = 0;
 	xasprintf(&file, "%s/glsa", portedb);
 	eat_file(file, &ret, &size);
@@ -63,7 +64,8 @@ qglsa_decode_entities(char *xml_buf, size_t len)
 	const char const *encoded[] = { "&lt;", "&gt;", "&quot;", "&amp;"};
 	const char const *decoded[] = {  "<",    ">",    "\"",     "&"};
 	int i;
-	char *p, *q;
+	char *p;
+	char *q;
 
 	/* most things dont have entities so let's just bail real quick */
 	if (strchr(xml_buf, '&') == NULL)
@@ -84,7 +86,10 @@ static char *
 qglsa_get_xml_tag_attribute(const char *xml_buf, const char *tag, const char *attribute)
 {
 	static char tmp_buf[BUFSIZE];
-	char *start, *end, *start_attr, *end_attr;
+	char *start;
+	char *end;
+	char *start_attr;
+	char *end_attr;
 
 	/* find the start of this tag */
 	sprintf(tmp_buf, "<%s ", tag);
@@ -119,7 +124,8 @@ static char *
 qglsa_get_xml_tag(const char *xml_buf, const char *tag)
 {
 	static char tmp_buf[BUFSIZE];
-	char *start, *end;
+	char *start;
+	char *end;
 
 	sprintf(tmp_buf, "<%s>", tag);
 	if ((start = strstr(xml_buf, tmp_buf)) == NULL) {
@@ -162,8 +168,10 @@ qglsa_run_action(const char *overlay, qglsa_action action, const char *fixed_lis
 	struct dirent *dentry;
 	char *buf;
 	size_t buflen = 0;
-	char *s, *p;
-	int overlay_fd, glsa_fd;
+	char *s;
+	char *p;
+	int overlay_fd;
+	int glsa_fd;
 
 	overlay_fd = open(overlay, O_RDONLY|O_CLOEXEC|O_PATH);
 	glsa_fd = openat(overlay_fd, "metadata/glsa", O_RDONLY|O_CLOEXEC);

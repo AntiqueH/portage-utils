@@ -50,7 +50,11 @@ moves_parse(const char *bufc)
 		 line != NULL;
 		 line = strtok_r(NULL, "\r\n", &lsp))
 	{
-		char *t1, *t2, *t3, *t4, *sp;
+		char *t1;
+		char *t2;
+		char *t3;
+		char *t4;
+		char *sp;
 
 		if (line[0] == '#')
 			continue;
