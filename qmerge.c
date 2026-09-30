@@ -15322,6 +15322,14 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 					atom_format("%[CAT]%[PF]", matom), fname);
 			add_set(fname, mseen);
 
+			if (strchr(fname, '/') != NULL)
+				err("%s: nested metadata member '%s', refusing to merge",
+					atom_format("%[CAT]%[PF]", matom), fname);
+			if (archive_entry_filetype(entry) != AE_IFREG)
+				err("%s: metadata member '%s' is not a regular file, "
+					"refusing to merge",
+					atom_format("%[CAT]%[PF]", matom), fname);
+
 			archive_entry_set_pathname(entry, fname);
 			fname = archive_entry_pathname(entry);
 

@@ -899,6 +899,34 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 		gv_index
 		gv_reject "duplicate metadata member refused" \
 			"duplicate metadata member 'PF'"
+
+		# only regular files directly under metadata/ may become part of
+		# the VDB record
+		# approving a set of tests for this
+		gv_md_repack() {
+			( cd "${gvex}/md" && tar --format=ustar -cf md.tar metadata && \
+			  zstd -q -f md.tar -o "../${gvpfx}/metadata.tar.zst" )
+			sed -i "s#^DATA metadata.tar.zst .*#DATA metadata.tar.zst $(stat -c %s \
+				"${gvex}/${gvpfx}/metadata.tar.zst") SHA512 $(sha512sum \
+				"${gvex}/${gvpfx}/metadata.tar.zst" | cut -d" " -f1)#" \
+				"${gvex}/${gvpfx}/Manifest"
+			( cd "${gvex}" && tar --format=ustar -cf "${gvtgt}" ${gvmem} )
+			gv_index
+		}
+		gv_restore
+		rm -rf "${gvex}/md"; mkdir "${gvex}/md"
+		zstd -dc "${gvex}/${gvpfx}/metadata.tar.zst" | tar x -C "${gvex}/md"
+		ln -s /etc/hostname "${gvex}/md/metadata/EVIL"
+		gv_md_repack
+		gv_reject "symlink metadata member refused" \
+			"metadata member 'EVIL' is not a regular file"
+
+		gv_restore
+		rm -rf "${gvex}/md"; mkdir "${gvex}/md"
+		zstd -dc "${gvex}/${gvpfx}/metadata.tar.zst" | tar x -C "${gvex}/md"
+		mkdir "${gvex}/md/metadata/sub"; echo x > "${gvex}/md/metadata/sub/EVIL"
+		gv_md_repack
+		gv_reject "nested metadata member refused" "nested metadata member"
 	else
 		echo "${WARN}SKIPPED:${NORMAL} [gpkg verify] duplicate metadata member (need zstd)"
 	fi
