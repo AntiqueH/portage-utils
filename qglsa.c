@@ -39,7 +39,7 @@ qglsa_load_list(void)
 	char *file;
 	char *ret = NULL;
 	size_t size = 0;
-	xasprintf(&file, "%s/glsa", portedb);
+	file = xasprintf("%s/glsa", portedb);
 	eat_file(file, &ret, &size);
 	free(file);
 	return ret;
@@ -49,7 +49,7 @@ qglsa_append_to_list(const char *glsa)
 {
 	char *file;
 	FILE *f;
-	xasprintf(&file, "%s/glsa", portedb);
+	file = xasprintf("%s/glsa", portedb);
 	if ((f = fopen(file, "a")) != NULL) {
 		fputs(glsa, f);
 		fputc('\n', f);
@@ -182,7 +182,7 @@ qglsa_run_action(const char *overlay, qglsa_action action, const char *fixed_lis
 		buf = NULL;
 		for (i = ind; i < argc; ++i) {
 			free(buf);
-			xasprintf(&buf, "glsa-%s.xml", argv[i]);
+			buf = xasprintf("glsa-%s.xml", argv[i]);
 			if (faccessat(glsa_fd, buf, R_OK, 0)) {
 				warnp("Skipping invalid GLSA '%s'", argv[i]);
 				continue;

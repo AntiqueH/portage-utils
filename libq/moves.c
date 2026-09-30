@@ -18,7 +18,7 @@
 
 #include "atom.h"
 #include "xalloc.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "moves.h"
 
 void
@@ -77,8 +77,8 @@ moves_parse(const char *bufc)
 			} else {
 				struct move *m = xzalloc(sizeof(*m));
 
-				xasprintf(&m->a1, "%s/%s", f->CATEGORY, f->PN);
-				xasprintf(&m->a2, "%s/%s", g->CATEGORY, g->PN);
+				m->a1 = xasprintf("%s/%s", f->CATEGORY, f->PN);
+				m->a2 = xasprintf("%s/%s", g->CATEGORY, g->PN);
 				array_append(mv, m);
 			}
 			if (f != NULL)

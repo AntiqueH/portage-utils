@@ -64,7 +64,7 @@
 #include "elfneeded.h"
 #include "linkage.h"
 #include "preserved.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "xchdir.h"
 #include "xmkdir.h"
 #include "xpak.h"
@@ -367,7 +367,7 @@ qm_kg_record(const char *cpv, const char *reason)
 
 	if (qm_kg_failed == NULL)
 		qm_kg_failed = array_new();
-	xasprintf(&e, "%s\t%s", cpv, reason);
+	e = xasprintf("%s\t%s", cpv, reason);
 	array_append(qm_kg_failed, e);
 }
 static void pkg_merge(int, const depend_atom *, tree_pkg_ctx *);
@@ -870,7 +870,7 @@ binpkg_license_ok_calc(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 			for (o = 0; ltext == NULL && o < array_cnt(overlays); o++) {
 				char *opath;
 
-				xasprintf(&opath, "%s/licenses/%s",
+				opath = xasprintf("%s/licenses/%s",
 						  (char *)array_get(overlays, o), toks[i]);
 				if (access(opath, R_OK) == 0)
 					ltext = opath;
@@ -1782,7 +1782,7 @@ qm_moves_shrink_warn(const char *fetched, const char *sdir, const char *rname)
 	set    *fset;
 	size_t  shrunk = 0;
 
-	xasprintf(&dst, "%s/Moves", sdir);
+	dst = xasprintf("%s/Moves", sdir);
 	if (!eat_file(dst, &cbuf, &clen) || cbuf == NULL || cbuf[0] == '\0') {
 		free(cbuf);
 		free(dst);
@@ -2007,8 +2007,8 @@ fetch_curl(const char *repo_uri, const char *destdir, const char *src)
 
 	base = strrchr(src, '/');
 	base = base != NULL ? base + 1 : src;
-	xasprintf(&uri, "%s/%s", repo_uri, src);
-	xasprintf(&dest, "%s/%s", destdir, base);
+	uri = xasprintf("%s/%s", repo_uri, src);
+	dest = xasprintf("%s/%s", destdir, base);
 
 	if (stat(dest, &st) == 0 && S_ISREG(st.st_mode))
 		resume_from = (curl_off_t)st.st_size;
@@ -2131,7 +2131,7 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 
 	base = strrchr(src, '/');
 	base = base != NULL ? base + 1 : src;
-	xasprintf(&dest, "%s/%s", destdir, base);
+	dest = xasprintf("%s/%s", destdir, base);
 
 	if (qfetchcommand[0] != '\0') {
 		/* qmerge-specific fetcher: when QFETCHCOMMAND is set in
@@ -2169,7 +2169,7 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 			FILE  *jm;
 			size_t jlen = 0;
 
-			xasprintf(&uri2, "%s/%s", uri, src);
+			uri2 = xasprintf("%s/%s", uri, src);
 			wexp = qm_fetch_varexpand(w, destdir, uri2, base);
 			cexp = qm_fetch_varexpand(cmd, destdir, uri2, base);
 			args = qm_shlex_split(cexp);
@@ -2182,7 +2182,7 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 			}
 			fclose(jm);
 			e_join = shell_squote(join);
-			xasprintf(&script, "(%s%s '%s') || :",
+			script = xasprintf("(%s%s '%s') || :",
 					  pretend ? "echo " : "", wexp, e_join);
 			xsystem(script, AT_FDCWD);
 			array_deepfree(args, free);
@@ -2200,7 +2200,7 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 			char *e_src  = shell_squote(src);
 			char *e_base = shell_squote(base);
 
-			xasprintf(&script,
+			script = xasprintf(
 					"(export DISTDIR='%s' URI='%s/%s' FILE='%s'; %s%s) || :",
 					e_dd, e_uri, e_src, e_base,
 					pretend ? "echo " : "", cmd);
@@ -2530,13 +2530,13 @@ qmerge_initialize(void)
 	if (!search_pkgs && !pretend) {
 		char *pdir;
 
-		xasprintf(&pdir, "%s%s", portroot, pkgdir);
+		pdir = xasprintf("%s%s", portroot, pkgdir);
 		if (mkdir_p(pdir, 0755))
 			errp("could not setup PKGDIR: %s", pdir);
 		free(pdir);
 	}
 
-	xasprintf(&buf, "%s%s/portage/", portroot, port_tmpdir);
+	buf = xasprintf("%s%s/portage/", portroot, port_tmpdir);
 	mkdir_p(buf, 0755);
 	xchdir(buf);
 
@@ -2705,7 +2705,7 @@ qmerge_initialize(void)
 				if (!keep) {
 					char *pdir;
 
-					xasprintf(&pdir, "%s%s", portroot, loc);
+					pdir = xasprintf("%s%s", portroot, loc);
 					if (mkdir_p(pdir, 0755) != 0) {
 						warnp("cannot open %s, keeping previous "
 							  "Packages index", pdir);
@@ -2728,7 +2728,7 @@ qmerge_initialize(void)
 				int   ndfd;
 				int   nsfd;
 
-				xasprintf(&ndir2, "%s%s", portroot, loc);
+				ndir2 = xasprintf("%s%s", portroot, loc);
 				if (mkdir_p(ndir2, 0755) == 0 &&
 						(ndfd = open(ndir2, O_RDONLY | O_CLOEXEC)) >= 0) {
 					nsfd = open(buf, O_RDONLY | O_CLOEXEC);
@@ -2758,7 +2758,7 @@ qmerge_initialize(void)
 					int   mdfd;
 					int   msfd;
 
-					xasprintf(&mdir, "%s%s", portroot, loc);
+					mdir = xasprintf("%s%s", portroot, loc);
 					if (mkdir_p(mdir, 0755) == 0 &&
 							(mdfd = open(mdir, O_RDONLY | O_CLOEXEC)) >= 0) {
 						qm_moves_shrink_warn("Moves", mdir,
@@ -2778,7 +2778,8 @@ qmerge_initialize(void)
 					char       *mp;
 					struct stat cst;
 
-					xasprintf(&mp, "%s%s/Moves", portroot, loc);
+					mp = xasprintf("%s%s/Moves",
+								   portroot, loc);
 					if (stat(mp, &cst) == 0 && cst.st_size > 0)
 						warn("binhost %s no longer serves a Moves file; "
 							 "keeping the cached copy (Moves history must "
@@ -3494,7 +3495,7 @@ qm_mv_installed_dir(const char *cp, char *out, size_t olen)
 	snprintf(cat, sizeof(cat), "%.*s",
 			 (int)MIN((size_t)(s - cp), sizeof(cat) - 1), cp);
 	snprintf(pn, sizeof(pn), "%s", s + 1);
-	xasprintf(&cdir, "%s%s/%s", portroot, portvdb, cat);
+	cdir = xasprintf("%s%s/%s", portroot, portvdb, cat);
 	d = opendir(cdir);
 	if (d != NULL) {
 		while ((de = readdir(d)) != NULL) {
@@ -3504,7 +3505,7 @@ qm_mv_installed_dir(const char *cp, char *out, size_t olen)
 
 			if (de->d_name[0] == '.' || de->d_name[0] == '-')
 				continue;
-			xasprintf(&cpvbuf, "%s/%s", cat, de->d_name);
+			cpvbuf = xasprintf("%s/%s", cat, de->d_name);
 			a   = atom_explode(cpvbuf);
 			hit = a != NULL && a->PN != NULL && strcmp(a->PN, pn) == 0;
 			if (a != NULL)
@@ -3545,7 +3546,7 @@ qm_apply_move_ent(const char *oldcp, const char *newcp)
 			 (int)MIN((size_t)(s - newcp), sizeof(newcat) - 1), newcp);
 	snprintf(newpn, sizeof(newpn), "%s", s + 1);
 
-	xasprintf(&cdir, "%s%s/%s", portroot, portvdb, oldcat);
+	cdir = xasprintf("%s%s/%s", portroot, portvdb, oldcat);
 	d = opendir(cdir);
 	if (d == NULL) {
 		free(cdir);
@@ -3564,7 +3565,7 @@ qm_apply_move_ent(const char *oldcp, const char *newcp)
 
 		if (de->d_name[0] == '.' || de->d_name[0] == '-')
 			continue;
-		xasprintf(&cpvbuf, "%s/%s", oldcat, de->d_name);
+		cpvbuf = xasprintf("%s/%s", oldcat, de->d_name);
 		a = atom_explode(cpvbuf);
 		pnmatch = a != NULL && a->PN != NULL && strcmp(a->PN, oldpn) == 0;
 		if (a != NULL)
@@ -3573,13 +3574,13 @@ qm_apply_move_ent(const char *oldcp, const char *newcp)
 		if (!pnmatch)
 			continue;
 
-		xasprintf(&oldpath, "%s/%s", cdir, de->d_name);
+		oldpath = xasprintf("%s/%s", cdir, de->d_name);
 		if (!qm_mv_pkg_ok(oldpath)) {
 			free(oldpath);
 			continue;
 		}
-		xasprintf(&newcdir, "%s%s/%s", portroot, portvdb, newcat);
-		xasprintf(&newpath, "%s/%s%s", newcdir, newpn,
+		newcdir = xasprintf("%s%s/%s", portroot, portvdb, newcat);
+		newpath = xasprintf("%s/%s%s", newcdir, newpn,
 				  de->d_name + strlen(oldpn));
 		if (stat(newpath, &st) == 0) {
 			warn("Moves: %s exists, not moving %s/%s (collision)",
@@ -3588,14 +3589,14 @@ qm_apply_move_ent(const char *oldcp, const char *newcp)
 				   rename(oldpath, newpath) != 0) {
 			warnp("Moves: cannot move %s to %s", oldpath, newpath);
 		} else {
-			xasprintf(&fpath, "%s/CATEGORY", newpath);
+			fpath = xasprintf("%s/CATEGORY", newpath);
 			f = fopen(fpath, "w");
 			if (f != NULL) {
 				fprintf(f, "%s\n", newcat);
 				fclose(f);
 			}
 			free(fpath);
-			xasprintf(&fpath, "%s/PF", newpath);
+			fpath = xasprintf("%s/PF", newpath);
 			f = fopen(fpath, "w");
 			if (f != NULL) {
 				fprintf(f, "%s%s\n", newpn, de->d_name + strlen(oldpn));
@@ -3644,14 +3645,14 @@ qm_apply_slotmove(tree_ctx *vdb, const char *atomstr, const char *olds,
 
 		if (slot == NULL || strcmp(slot, olds) != 0)
 			continue;
-		xasprintf(&spath, "%s%s/%s/%s",
+		spath = xasprintf("%s%s/%s/%s",
 				  portroot, portvdb, pa->CATEGORY, pa->PF);
 		if (!qm_mv_pkg_ok(spath)) {
 			free(spath);
 			continue;
 		}
 		free(spath);
-		xasprintf(&spath, "%s%s/%s/%s/SLOT",
+		spath = xasprintf("%s%s/%s/%s/SLOT",
 				  portroot, portvdb, pa->CATEGORY, pa->PF);
 		f = fopen(spath, "w");
 		if (f != NULL) {
@@ -3698,7 +3699,7 @@ qm_move_vdb_deps(array *mv)
 	}
 	if (map == NULL)
 		return;
-	xasprintf(&vdir, "%s%s", portroot, portvdb);
+	vdir = xasprintf("%s%s", portroot, portvdb);
 	cd = opendir(vdir);
 	if (cd == NULL) {
 		free(vdir);
@@ -3711,7 +3712,7 @@ qm_move_vdb_deps(array *mv)
 
 		if (ce->d_name[0] == '.' || ce->d_name[0] == '-')
 			continue;
-		xasprintf(&pdir, "%s/%s", vdir, ce->d_name);
+		pdir = xasprintf("%s/%s", vdir, ce->d_name);
 		pd = opendir(pdir);
 		if (pd == NULL) {
 			free(pdir);
@@ -3724,7 +3725,7 @@ qm_move_vdb_deps(array *mv)
 
 			if (pe->d_name[0] == '.' || pe->d_name[0] == '-')
 				continue;
-			xasprintf(&pkgd, "%s/%s", pdir, pe->d_name);
+			pkgd = xasprintf("%s/%s", pdir, pe->d_name);
 			if (!qm_mv_pkg_ok(pkgd)) {
 				free(pkgd);
 				continue;
@@ -3736,7 +3737,8 @@ qm_move_vdb_deps(array *mv)
 				char   *cur;
 				bool    changed = false;
 
-				xasprintf(&fp, "%s/%s", pkgd, qm_move_depfiles[di]);
+				fp = xasprintf("%s/%s",
+							   pkgd, qm_move_depfiles[di]);
 				if (!eat_file(fp, &buf, &len) || buf == NULL) {
 					free(buf);
 					free(fp);
@@ -3760,7 +3762,7 @@ qm_move_vdb_deps(array *mv)
 					} else {
 						warnp("Moves: cannot rewrite %s", fp);
 					}
-					xasprintf(&mp, "%s/metadata", pkgd);
+					mp = xasprintf("%s/metadata", pkgd);
 					if (access(mp, F_OK) == 0)
 						(void)tree_vdbmeta_consolidate(pkgd, false, true);
 					free(mp);
@@ -3891,7 +3893,7 @@ qm_move_world(const char *oldcp, const char *newcp)
 		if (idir[0] == '\0' || !qm_mv_pkg_ok(idir))
 			return;
 	}
-	xasprintf(&wpath, "%svar/lib/portage/world", portroot);
+	wpath = xasprintf("%svar/lib/portage/world", portroot);
 	if (qm_move_rewrite_file(wpath, oldcp, newcp))
 		qprintf("%s>>>%s world: %s -> %s\n", GREEN, NORM, oldcp, newcp);
 	free(wpath);
@@ -3962,7 +3964,7 @@ qm_collect_updates_dir(const char *repopath)
 		char  *fbuf = NULL;
 		size_t flen = 0;
 
-		xasprintf(&fp, "%s/%s", updir, list[i].name);
+		fp = xasprintf("%s/%s", updir, list[i].name);
 		/* eat_file's len is buffer capacity, use the string length */
 		if (eat_file(fp, &fbuf, &flen) && fbuf != NULL && fbuf[0] != '\0') {
 			size_t clen = strlen(fbuf);
@@ -4112,8 +4114,8 @@ qm_apply_moves_binhost(void)
 		char       *mbuf  = NULL;
 		size_t      mlen  = 0;
 
-		xasprintf(&mpath, "%s%s/Moves", portroot, loc);
-		xasprintf(&apath, "%s%s/.moves-applied", portroot, loc);
+		mpath = xasprintf("%s%s/Moves", portroot, loc);
+		apath = xasprintf("%s%s/.moves-applied", portroot, loc);
 		if (eat_file(mpath, &mbuf, &mlen) &&
 				mbuf != NULL && mbuf[0] != '\0') {
 			any = true;
@@ -4167,12 +4169,12 @@ qm_apply_moves_repos(bool notice)
 			char       *mp;
 			struct stat st;
 
-			xasprintf(&mp, "%s%s/Moves", portroot, loc);
+			mp = xasprintf("%s%s/Moves", portroot, loc);
 			have_moves = stat(mp, &st) == 0 && st.st_size > 0;
 			free(mp);
 		}
 	}
-	xasprintf(&edir, "%s%s", portroot, portedb);
+	edir = xasprintf("%s%s", portroot, portedb);
 	mkdir_p(edir, 0755);
 	array_for_each(overlays, i, path) {
 		char       *buf  = array_get(bufs, i);
@@ -4190,8 +4192,8 @@ qm_apply_moves_repos(bool notice)
 		for (k = 0; safe[k] != '\0'; k++)
 			if (safe[k] == '/' || safe[k] == '<' || safe[k] == '>')
 				safe[k] = '_';
-		xasprintf(&apath, "%s/.qmerge-moves-applied.%s", edir, safe);
-		xasprintf(&rname, "repo %s profiles/updates", name);
+		apath = xasprintf("%s/.qmerge-moves-applied.%s", edir, safe);
+		rname = xasprintf("repo %s profiles/updates", name);
 		if (qm_apply_moves_buf(buf, rname, apath, true, name, is_main) >= 0)
 			applied = true;
 		free(rname);
@@ -4246,7 +4248,7 @@ qm_collect_repo_moves(void)
 		char       *mbuf = NULL;
 		size_t      mlen = 0;
 
-		xasprintf(&mp, "%s%s/Moves", portroot, loc);
+		mp = xasprintf("%s%s/Moves", portroot, loc);
 		/* eat_file's len is buffer capacity, use the string length */
 		if (eat_file(mp, &mbuf, &mlen) && mbuf != NULL &&
 				mbuf[0] != '\0') {
@@ -4371,7 +4373,7 @@ qm_emit_news(int dfd, const char *pdir)
 
 		if (de->d_name[0] == '.')
 			continue;
-		xasprintf(&idir, "%s/%s", ndir, de->d_name);
+		idir = xasprintf("%s/%s", ndir, de->d_name);
 		id = opendir(idir);
 		if (id == NULL) {
 			free(idir);
@@ -4387,7 +4389,7 @@ qm_emit_news(int dfd, const char *pdir)
 
 			if (fe->d_name[0] == '.')
 				continue;
-			xasprintf(&fpath, "%s/%s", idir, fe->d_name);
+			fpath = xasprintf("%s/%s", idir, fe->d_name);
 			if (!eat_file(fpath, &fbuf, &flen) || fbuf == NULL) {
 				free(fbuf);
 				free(fpath);
@@ -5234,8 +5236,8 @@ qm_preserved_get(void)
 	if (qm_preserved_reg == NULL) {
 		char *f;
 
-		xasprintf(&f, "%svar/lib/portage/preserved_libs_registry",
-				  portroot);
+		f = xasprintf("%svar/lib/portage/preserved_libs_registry",
+					  portroot);
 		qm_preserved_reg = pretend ? preserved_open_ro(f) : preserved_open(f);
 		qm_preserved_ro  = pretend != 0;
 		free(f);
@@ -5403,7 +5405,7 @@ qm_preserve_plib_cons(array *members, set *keep)
 
 			if (keep != NULL && contains_set(pt, keep) != NULL)
 				continue;
-			xasprintf(&abs, "%s%s", portroot,
+			abs = xasprintf("%s%s", portroot,
 					  pt[0] == '/' ? pt + 1 : pt);
 			en = elf_needed_read(abs);
 			free(abs);
@@ -5674,7 +5676,7 @@ qm_preserved_gc(void)
 			size_t        j;
 
 			add_set(pt, plibpaths);
-			xasprintf(&abs, "%s%s", portroot,
+			abs = xasprintf("%s%s", portroot,
 					  pt[0] == '/' ? pt + 1 : pt);
 			rp  = realpath(abs, NULL);
 			key = rp != NULL ? rp : abs;
@@ -5796,8 +5798,8 @@ qm_preserved_gc(void)
 	array_for_each(remove, i, pt) {
 		char *abs;
 
-		xasprintf(&abs, "%s%s", portroot,
-				  pt[0] == '/' ? pt + 1 : pt);
+		abs = xasprintf("%s%s", portroot,
+						pt[0] == '/' ? pt + 1 : pt);
 		if (unlink(abs) == 0)
 			qprintf("%s<<<%s %s (preserved, no longer NEEDed)\n",
 					GREEN, NORM, pt);
@@ -8000,7 +8002,7 @@ pkg_run_func_at(
 	else
 		unsetenv("QMERGE_PHASE_QUIET");
 
-	xasprintf(&script,
+	script = xasprintf(
 		/* Provide the funcs the PMS defines as package-manager supplied
 		 * (PMS chapter 12): these are exactly the ones portage's
 		 * save-ebuild-env.sh strips from environment.bz2 before saving.
@@ -8296,8 +8298,11 @@ pkg_run_func_at(
 			if (strcmp(func, "pkg_pretend") == 0 ||
 					strcmp(func, "pkg_setup") == 0 ||
 					strcmp(func, "pkg_preinst") == 0)
+			{
+				free(script);
 				err("!!! %s died with status %d, aborting merge",
 					func, prc);
+			}
 			warn("!!! %s died with status %d (continuing)", func, prc);
 			if (qm_kg_child && phaseidx == PKG_POSTINST &&
 					qm_phase_pkg != NULL)
@@ -9175,7 +9180,7 @@ qm_unsat_warn(const char *atomstr, const char *hint, const char *mhint)
 {
 	char *line;
 
-	xasprintf(&line, "%s%s%s", atomstr, hint, mhint);
+	line = xasprintf("%s%s%s", atomstr, hint, mhint);
 	if (qm_unsat_warns == NULL)
 		qm_unsat_warns = array_new();
 	array_append(qm_unsat_warns, line);
@@ -9240,10 +9245,10 @@ qm_demand_record(const char *cpslot, const char *atomstr)
 		d = array_new();
 		qm_demands = hash_add(qm_demands, cpslot, d, NULL);
 	}
-	xasprintf(&rec, "%s\1%s",
-			  qm_cur_revdep[0] != '\0' ?
+	rec = xasprintf("%s\1%s",
+					qm_cur_revdep[0] != '\0' ?
 					qm_cur_revdep : "(your majesty)",
-			  atomstr);
+					atomstr);
 	array_append(d, rec);
 }
 
@@ -10335,7 +10340,7 @@ qm_blk_record(const char *atomstr, const char *who, int hard)
 	add_set(key, qm_blk_seen);
 	if (qm_blk_lines == NULL)
 		qm_blk_lines = array_new();
-	xasprintf(&rec, "%s\1%c", key, hard ? 'H' : 'S');
+	rec = xasprintf("%s\1%c", key, hard ? 'H' : 'S');
 	array_append(qm_blk_lines, rec);
 }
 
@@ -10569,7 +10574,7 @@ qm_sweep_req_cb(const char *cat, const char *soname, void *priv)
 	snprintf(key, sizeof(key), "\1%s", soname);
 	if (contains_set(key, sr->prov) != NULL)
 		return;
-	xasprintf(&msg, "=%s requires %s (%s): no installed, planned, "
+	msg = xasprintf("=%s requires %s (%s): no installed, planned, "
 			  "or preserved provider", sr->cpvp, soname, cat);
 	array_append(sr->missing, msg);
 }
@@ -11218,7 +11223,7 @@ qm_check_slot_conflicts(array *merge, set *fixable, hash_t *fix_edges)
 						conflict = true;
 				}
 			} else {
-			xasprintf(&mk, "%s\1%s", e->atomstr, e->cusestr);
+			mk = xasprintf("%s\1%s", e->atomstr, e->cusestr);
 			mv = qm_verdict_memo != NULL ?
 					hash_get(qm_verdict_memo, mk) : NULL;
 			if (mv != NULL) {
@@ -11389,7 +11394,7 @@ qm_check_slot_conflicts(array *merge, set *fixable, hash_t *fix_edges)
 						char *mk;
 						void *mv;
 
-						xasprintf(&mk, "%c%s\1%s",
+						mk = xasprintf("%c%s\1%s",
 								  kind, atom_to_string(A), puse);
 						mv = qm_verdict_memo != NULL ?
 								hash_get(qm_verdict_memo, mk) : NULL;
@@ -12240,7 +12245,7 @@ qm_collect_slot_dups(array *merge, set **planned_out)
 				contains_set(cpslot, done) == NULL) {
 			char *rec;
 
-			xasprintf(&rec, "%s\1%s\1%s", cpslot, prev, cpvp);
+			rec = xasprintf("%s\1%s\1%s", cpslot, prev, cpvp);
 			array_append(dups, rec);
 			add_set(cpslot, done);
 		} else if (prev == NULL) {
@@ -12290,7 +12295,8 @@ qm_unify_demands_for(const char *cpslot, set *planned)
 				if (vd->has_slot && vd->cpslot != NULL &&
 						strcmp(vd->cpslot, cpslot) != 0)
 					continue;
-				xasprintf(&rec, "%s\1%s", vp->revdep, vd->atomstr);
+				rec = xasprintf("%s\1%s",
+								vp->revdep, vd->atomstr);
 				array_append(out, rec);
 			}
 		}
@@ -15135,8 +15141,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	if (mkdir_p(buf, 0755) != 0)
 		errp("cannot create work directory %s", buf);
 	xchdir(buf);
-	xasprintf(&D, "%s/image", buf);
-	xasprintf(&T, "%s/temp", buf);
+	D = xasprintf("%s/image", buf);
+	T = xasprintf("%s/temp", buf);
 
 	/* Doesn't actually remove $PWD, just everything under it.
 	 * but this is slightly dangerous, we'll have to do some verifications
@@ -15961,7 +15967,7 @@ qm_unmerge_path(const char *name)
 
 	if (portroot[1] == '\0')
 		return xstrdup(name);
-	xasprintf(&p, "%s%s", portroot, name + 1);
+	p = xasprintf("%s%s", portroot, name + 1);
 	return p;
 }
 
@@ -16777,7 +16783,7 @@ qm_idx_reject(struct qm_idx_state *st, const char *relpath,
 
 	if (st->rejected == NULL)
 		st->rejected = array_new();
-	xasprintf(&line, "%s\t%lld\t%lld", relpath,
+	line = xasprintf("%s\t%lld\t%lld", relpath,
 			  (long long)stt->st_mtime, (long long)stt->st_size);
 	array_append(st->rejected, line);
 }
@@ -17206,7 +17212,7 @@ binpkg_index_cb(tree_pkg_ctx *pkg, void *priv)
 	nkv = 0;
 #define QM_KVF(K, SK, ...) \
 	do { \
-		xasprintf(&kv[nkv].v, __VA_ARGS__); \
+		kv[nkv].v = xasprintf(__VA_ARGS__); \
 		kv[nkv].k = K; \
 		kv[nkv].sortk = SK; \
 		nkv++; \
@@ -17536,7 +17542,7 @@ binpkg_index_regen(void)
 		{
 			char *uni = NULL;
 
-			xasprintf(&uni, "%s %s",
+			uni = xasprintf("%s %s",
 					  use_expand != NULL ? use_expand : "",
 					  use_expand_implicit != NULL ?
 							use_expand_implicit : "");
@@ -19041,7 +19047,7 @@ qmerge_binhost_maint(bool fix)
 		if (ok)
 			e->claimed = true;
 		if (!ok || !e->has_md5) {
-			xasprintf(&msg, "'%s' is not in Packages", f->cpv);
+			msg = xasprintf("'%s' is not in Packages", f->cpv);
 			array_append(errs, msg);
 		}
 	}
@@ -19049,7 +19055,8 @@ qmerge_binhost_maint(bool fix)
 		array_for_each(ents, i, ie) {
 			if (ie->claimed)
 				continue;
-			xasprintf(&msg, "'%s' is not in the repository", ie->cpv);
+			msg = xasprintf("'%s' is not in the repository",
+							ie->cpv);
 			array_append(errs, msg);
 		}
 	}
@@ -19057,22 +19064,23 @@ qmerge_binhost_maint(bool fix)
 	have_i  = stat(finp, &ist) == 0;
 	have_gz = stat(gzp, &gst) == 0;
 	if (!have_i) {
-		xasprintf(&msg, "Missing index file: %s", finp);
+		msg = xasprintf("Missing index file: %s", finp);
 		array_append(errs, msg);
 	}
 	if (contains_set("compress-index", features)) {
 		if (!have_gz) {
-			xasprintf(&msg, "Missing index file: %s", gzp);
+			msg = xasprintf("Missing index file: %s", gzp);
 			array_append(errs, msg);
 		} else if (have_i && ist.st_mtime != gst.st_mtime) {
-			xasprintf(&msg, "Uncompressed index timestamp '%lld' is not "
+			msg = xasprintf(
+					  "Uncompressed index timestamp '%lld' is not "
 					  "equal to compressed index timestamp '%lld'",
 					  (long long)ist.st_mtime, (long long)gst.st_mtime);
 			array_append(errs, msg);
 		}
 	} else if (have_gz) {
-		xasprintf(&msg, "Compressed index exists but 'compress-index' "
-				  "feature is disabled: %s", gzp);
+		msg = xasprintf("Compressed index exists but 'compress-index' "
+						"feature is disabled: %s", gzp);
 		array_append(errs, msg);
 	}
 
@@ -19803,7 +19811,7 @@ qmerge_add_set_file(const char *root, const char *pfx, const char *dir,
 	char *buf;
 	char *fname;
 
-	xasprintf(&fname, "%s%s%s/%s", root, pfx, dir, file);
+	fname = xasprintf("%s%s%s/%s", root, pfx, dir, file);
 
 	if ((fp = fopen(fname, "r")) == NULL) {
 		if (!optional || errno != ENOENT)
@@ -21006,7 +21014,7 @@ qm_search_binpkgs(int npat, char **pats)
 			if (qm_search_exact) {
 				char *ap;
 
-				xasprintf(&ap, "^(%s)$", pats[i]);
+				ap = xasprintf("^(%s)$", pats[i]);
 				r = regcomp(&res[i], ap,
 							REG_EXTENDED | REG_ICASE | REG_NOSUB);
 				free(ap);
@@ -25230,8 +25238,8 @@ qm_dc_load_cb(tree_pkg_ctx *pkg, void *priv)
 	if (a == NULL || a->CATEGORY == NULL || a->PN == NULL || a->PF == NULL)
 		return 0;
 	p = xzalloc(sizeof(*p));
-	xasprintf(&p->cpv, "%s/%s", a->CATEGORY, a->PF);
-	xasprintf(&p->cp, "%s/%s", a->CATEGORY, a->PN);
+	p->cpv = xasprintf("%s/%s", a->CATEGORY, a->PF);
+	p->cp = xasprintf("%s/%s", a->CATEGORY, a->PN);
 	p->cat     = xstrdup(a->CATEGORY);
 	p->pn      = xstrdup(a->PN);
 	p->slot    = xstrdup(a->SLOT != NULL && a->SLOT[0] != '\0' ? a->SLOT : "0");
@@ -25417,7 +25425,7 @@ qm_dc_setarg_add(struct qm_dc *dc, struct qm_dc_setarg *sa, const char *atomstr)
 		hash_add(dc->setidx, cp, idx, NULL);
 	}
 	pa = xmalloc(sizeof(*pa));
-	xasprintf(&pa->name, "@%s", sa->name);
+	pa->name = xasprintf("@%s", sa->name);
 	pa->atom = xstrdup(atom_to_string(a));
 	array_append(idx, pa);
 }
@@ -27070,9 +27078,9 @@ qm_world_atom(const char *arg)
 	}
 	if (cat != NULL && a->PN != NULL) {
 		if (a->SLOT != NULL)
-			xasprintf(&ret, "%s/%s:%s", cat, a->PN, a->SLOT);
+			ret = xasprintf("%s/%s:%s", cat, a->PN, a->SLOT);
 		else
-			xasprintf(&ret, "%s/%s", cat, a->PN);
+			ret = xasprintf("%s/%s", cat, a->PN);
 	}
 	atom_implode(a);
 	free(picked);
@@ -27178,7 +27186,8 @@ qm_world_favorites_ask(void)
 	char   *a;
 	bool    ok = true;
 
-	xasprintf(&wpath, "%s%s/var/lib/portage/world", portroot, CONFIG_EPREFIX);
+	wpath = xasprintf("%s%s/var/lib/portage/world",
+					  portroot, CONFIG_EPREFIX);
 	qm_world_file_read(wpath, entries);
 	free(wpath);
 	adds = qm_world_additions(entries);
@@ -27187,8 +27196,8 @@ qm_world_favorites_ask(void)
 		array *keys     = set_keys(qm_worldset_select);
 		char  *k;
 
-		xasprintf(&wpath, "%s%s/var/lib/portage/world_sets",
-				  portroot, CONFIG_EPREFIX);
+		wpath = xasprintf("%s%s/var/lib/portage/world_sets",
+						  portroot, CONFIG_EPREFIX);
 		qm_world_file_read(wpath, sentries);
 		free(wpath);
 		array_for_each(keys, n, k)
@@ -27225,8 +27234,8 @@ qm_world_update(void)
 	if (qm_world_select == NULL || cnt_set(qm_world_select) == 0)
 		return;
 
-	xasprintf(&wdir, "%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
-	xasprintf(&wpath, "%s/world", wdir);
+	wdir = xasprintf("%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
+	wpath = xasprintf("%s/world", wdir);
 
 	entries = create_set();
 	qm_world_file_read(wpath, entries);
@@ -27254,7 +27263,7 @@ qm_world_update(void)
 
 		array_sort(ek, qm_strcmp_cb);
 		mkdir_p(wdir, 0755);
-		xasprintf(&tmp, "%s.qmerge.%d", wpath, (int)getpid());
+		tmp = xasprintf("%s.qmerge.%d", wpath, (int)getpid());
 		f = fopen(tmp, "w");
 		if (f != NULL) {
 			size_t m;
@@ -27303,8 +27312,8 @@ qm_worldsets_update(void)
 	if (qm_worldset_select == NULL || cnt_set(qm_worldset_select) == 0)
 		return;
 
-	xasprintf(&wdir, "%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
-	xasprintf(&wpath, "%s/world_sets", wdir);
+	wdir = xasprintf("%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
+	wpath = xasprintf("%s/world_sets", wdir);
 
 	entries = create_set();
 	if (eat_file(wpath, &buf, &len) && buf != NULL) {
@@ -27341,7 +27350,7 @@ qm_worldsets_update(void)
 
 		array_sort(ek, qm_strcmp_cb);
 		mkdir_p(wdir, 0755);
-		xasprintf(&tmp, "%s.qmerge.%d", wpath, (int)getpid());
+		tmp = xasprintf("%s.qmerge.%d", wpath, (int)getpid());
 		f = fopen(tmp, "w");
 		if (f != NULL) {
 			size_t m;
@@ -27383,9 +27392,9 @@ qm_world_rewrite(const char *fname, set *keepset)
 	FILE  *f;
 	array *ek;
 
-	xasprintf(&wdir, "%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
-	xasprintf(&wpath, "%s/%s", wdir, fname);
-	xasprintf(&tmp, "%s.qmerge.%d", wpath, (int)getpid());
+	wdir = xasprintf("%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
+	wpath = xasprintf("%s/%s", wdir, fname);
+	tmp = xasprintf("%s.qmerge.%d", wpath, (int)getpid());
 	ek = set_keys(keepset);
 	array_sort(ek, qm_strcmp_cb);
 	f = fopen(tmp, "w");
@@ -27455,8 +27464,8 @@ qm_world_load(const char *fname)
 	size_t  len = 0;
 	set    *entries = create_set();
 
-	xasprintf(&wpath, "%s%s/var/lib/portage/%s",
-			  portroot, CONFIG_EPREFIX, fname);
+	wpath = xasprintf("%s%s/var/lib/portage/%s",
+					  portroot, CONFIG_EPREFIX, fname);
 	if (eat_file(wpath, &buf, &len) && buf != NULL) {
 		char *line;
 		char *sp;

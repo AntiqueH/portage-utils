@@ -28,7 +28,7 @@
 #include "scandirat.h"
 #include "set.h"
 #include "tree.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 static int
 tree_open_regfile(int rootfd, const char *path)
@@ -1463,7 +1463,7 @@ static bool tree_pkg_ebuild_read
       }
       else if (append)
       {
-        xasprintf(&n, "%s%s", *key, q);
+        n = xasprintf("%s%s", *key, q);
         free(*key);
         *key = n;
       }

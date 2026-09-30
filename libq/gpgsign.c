@@ -24,7 +24,7 @@
 #include <xalloc.h>
 
 #include "gpgsign.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 
 /* we need docs on this implementation */
@@ -60,7 +60,7 @@ gpgsign_command(bool detached)
 	size_t      n;
 	size_t      len;
 
-	xasprintf(&cfg, "--homedir %s --digest-algo %s --local-user %s "
+	cfg = xasprintf("--homedir %s --digest-algo %s --local-user %s "
 			"%s --batch --no-tty",
 			binpkg_gpg_signing_gpg_home,
 			binpkg_gpg_signing_digest,

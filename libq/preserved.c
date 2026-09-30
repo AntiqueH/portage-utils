@@ -23,7 +23,7 @@
 
 #include <xalloc.h>
 
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 #include "atom.h"
 #include "array.h"
@@ -531,11 +531,11 @@ pres_cps(const char *cpv, const char *slot)
 	if (a == NULL || a->CATEGORY == NULL || a->PN == NULL) {
 		if (a != NULL)
 			atom_implode(a);
-		xasprintf(&ret, "%s:%s", cpv, slot != NULL ? slot : "0");
+		ret = xasprintf("%s:%s", cpv, slot != NULL ? slot : "0");
 		return ret;
 	}
-	xasprintf(&ret, "%s/%s:%s", a->CATEGORY, a->PN,
-			  slot != NULL ? slot : "0");
+	ret = xasprintf("%s/%s:%s", a->CATEGORY, a->PN,
+					slot != NULL ? slot : "0");
 	atom_implode(a);
 	return ret;
 }
@@ -612,7 +612,7 @@ pres_norm(const char *dir, const char *target)
 	if (target[0] == '/')
 		joined = xstrdup(target);
 	else
-		xasprintf(&joined, "%s/%s", dir, target);
+		joined = xasprintf("%s/%s", dir, target);
 
 	for (seg = strtok_r(joined, "/", &sp);
 		 seg != NULL;
@@ -660,7 +660,7 @@ preserved_prune(preserved_reg *reg, const char *root)
 		array_for_each(pe->paths, n, pt) {
 			char *abs;
 
-			xasprintf(&abs, "%s/%s",
+			abs = xasprintf("%s/%s",
 					  root != NULL ? root : "",
 					  pt[0] == '/' ? pt + 1 : pt);
 			if (lstat(abs, &st) != 0) {
@@ -826,7 +826,7 @@ preserved_store(preserved_reg *reg)
 		free(ser);
 		return true;
 	}
-	xasprintf(&tmp, "%s.XXXXXX", reg->file);
+	tmp = xasprintf("%s.XXXXXX", reg->file);
 	tfd = mkstemp(tmp);
 	if (tfd >= 0) {
 		ssize_t wr = write(tfd, ser, slen);

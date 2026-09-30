@@ -36,7 +36,7 @@
 #include "scandirat.h"
 #include "set.h"
 #include "tree.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "xchdir.h"
 #include "xmkdir.h"
 #include "xpak.h"
@@ -1170,7 +1170,7 @@ qpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 				for (mi = 0; mi < mcnt; mi++) {
 					if (strcmp(mfiles[mi]->d_name, "BUILD_ID") == 0)
 						continue;
-					xasprintf(&margv[margc], "%s/%s",
+					margv[margc] = xasprintf("%s/%s",
 							  xpak_argv[0], mfiles[mi]->d_name);
 					margc++;
 				}

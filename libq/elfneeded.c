@@ -21,7 +21,7 @@
 
 #include "eat_file.h"
 #include "elfneeded.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 static const struct {
 	unsigned int  em;
@@ -246,7 +246,7 @@ elf_needed_read(const char *path)
 					elf_needed_machines[i].prefix, is64, flags);
 
 			if (sfx != NULL)
-				xasprintf(&en->arch, "%s_%s",
+				en->arch = xasprintf("%s_%s",
 						  elf_needed_machines[i].prefix, sfx);
 			break;
 		}

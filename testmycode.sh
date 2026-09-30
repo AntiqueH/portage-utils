@@ -649,6 +649,10 @@ fanalyzer_gate() {
         note FAIL "fanalyzer (configure)"
         return 0
     fi
+    if ! make -C autotools/gnulib -j"$CPU_JOBS" >>"$QOUT" 2>&1; then
+        note FAIL "fanalyzer (gnulib headers)"
+        return 0
+    fi
     local gpgme_cflags
     gpgme_cflags=$(pkg-config --cflags gpgme 2>/dev/null || gpgme-config --cflags 2>/dev/null || :)
     if our_sources | tr '\n' '\0' | xargs -0 -n1 -P"$CPU_JOBS" \
@@ -683,6 +687,10 @@ warnings_gate() {
     make clean >>"$QOUT" 2>&1
     if ! ./configure "${FEATURES[@]}" >>"$QOUT" 2>&1; then
         note FAIL "warnings (configure)"
+        return 0
+    fi
+    if ! make -C autotools/gnulib -j"$CPU_JOBS" >>"$QOUT" 2>&1; then
+        note FAIL "warnings (gnulib headers)"
         return 0
     fi
     local gpgme_cflags inc adv

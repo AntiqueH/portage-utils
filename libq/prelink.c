@@ -15,7 +15,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "prelink.h"
 
 static const char prelink_bin[] = "prelink";
@@ -64,7 +64,8 @@ bool prelink_available(void)
 		/* extend path to include sbin and search again */
 		static const char sbin_path[] = "/sbin:/usr/sbin:/usr/local/sbin";
 		char *path;
-		xasprintf(&path, "PATH=%s:%s", getenv("PATH") ? : "", sbin_path);
+		path = xasprintf("PATH=%s:%s",
+						 getenv("PATH") ? : "", sbin_path);
 		putenv(path);
 		status = prelink_in_current_path(0);
 	}

@@ -32,7 +32,7 @@
 #include "gpkg.h"
 #include "hash.h"
 #include "set.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 #define QGPKG_SIGN_FLAGS "kus" COMMON_FLAGS
 static struct option const qgpkg_sign_long_opts[] = {
@@ -252,14 +252,14 @@ qgs_data_line(const char *base, const char *data, size_t len)
 	snprintf(blake2b, sizeof(blake2b), "%s", h != NULL ? h : "");
 	h = hash_string(data, (ssize_t)len, HASH_SHA512);
 	snprintf(sha512, sizeof(sha512), "%s", h != NULL ? h : "");
-	xasprintf(&line, "DATA %s %zu BLAKE2B %s SHA512 %s",
+	line = xasprintf("DATA %s %zu BLAKE2B %s SHA512 %s",
 			base, len, blake2b, sha512);
 #else
 	char *h;
 
 	h = hash_string(data, (ssize_t)len, HASH_SHA512);
 	snprintf(sha512, sizeof(sha512), "%s", h != NULL ? h : "");
-	xasprintf(&line, "DATA %s %zu SHA512 %s", base, len, sha512);
+	line = xasprintf("DATA %s %zu SHA512 %s", base, len, sha512);
 #endif
 	return line;
 }
@@ -318,7 +318,7 @@ qgs_update_signature(const char *gpkg_file, struct qgs_scan *sc,
 	char                  buf[BUFSIZ * 8];
 	la_ssize_t            n;
 
-	xasprintf(&tmp, "%s.XXXXXX", gpkg_file);
+	tmp = xasprintf("%s.XXXXXX", gpkg_file);
 	fd = mkstemp(tmp);
 	if (fd == -1) {
 		free(tmp);
@@ -342,7 +342,7 @@ qgs_update_signature(const char *gpkg_file, struct qgs_scan *sc,
 	if (archive_write_open_fd(aw, fd) != ARCHIVE_OK)
 		goto out;
 
-	xasprintf(&line, "%s/gpkg-1", sc->prefix);
+	line = xasprintf("%s/gpkg-1", sc->prefix);
 	if (qgs_write_member(aw, line, NULL, 0) != 0) {
 		free(line);
 		goto out;
@@ -409,7 +409,7 @@ qgs_update_signature(const char *gpkg_file, struct qgs_scan *sc,
 		}
 		array_append(lines, line);
 
-		xasprintf(&sigbase, "%s.sig", base);
+		sigbase = xasprintf("%s.sig", base);
 		fresh = !(keep_current && qgs_ent_by_base(sc, sigbase));
 
 		{
@@ -448,7 +448,7 @@ qgs_update_signature(const char *gpkg_file, struct qgs_scan *sc,
 					archive_read_free(ar);
 					goto out;
 				}
-				xasprintf(&sigpath, "%s.sig", nm);
+				sigpath = xasprintf("%s.sig", nm);
 				if (qgs_write_member(aw, sigpath, sig, siglen) != 0) {
 					free(sigpath);
 					free(sig);
@@ -476,7 +476,7 @@ qgs_update_signature(const char *gpkg_file, struct qgs_scan *sc,
 				&sig, &siglen) != 0)
 		goto out;
 
-	xasprintf(&line, "%s/Manifest", sc->prefix);
+	line = xasprintf("%s/Manifest", sc->prefix);
 	if (qgs_write_member(aw, line, sig, siglen) != 0) {
 		free(line);
 		goto out;

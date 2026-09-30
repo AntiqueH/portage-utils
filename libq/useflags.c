@@ -24,7 +24,7 @@
 #include "set.h"
 #include "tree.h"
 #include "xalloc.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "useflags.h"
 
 static bool uc_probe_warned = false;
@@ -71,7 +71,7 @@ uc_expand_pfxs_add(array *into, const char *grps)
 		size_t                 i;
 
 		ep->var = xstrdup(tok);
-		xasprintf(&ep->pfx, "%s_", tok);
+		ep->pfx = xasprintf("%s_", tok);
 		for (i = 0; ep->pfx[i] != '\0'; i++)
 			ep->pfx[i] = (char)tolower((unsigned char)ep->pfx[i]);
 		array_append(into, ep);

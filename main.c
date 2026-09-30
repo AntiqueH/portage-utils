@@ -24,7 +24,7 @@
 #include "scandirat.h"
 #include "atom.h"
 #include "set.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 /* variables to control runtime behavior */
 char *main_overlay;
@@ -488,7 +488,7 @@ set_portage_env_var(env_vars *var, const char *value, const char *src)
 		if (strcmp(var->src, STR_DEFAULT) != 0) {
 			char *p;
 
-			xasprintf(&p, "%s, %s", var->src, src);
+			p = xasprintf("%s, %s", var->src, src);
 			free(var->src);
 			var->src = p;
 		} else {
@@ -656,7 +656,7 @@ read_license_groups(void)
 				char       *val;
 
 				if (old != NULL && old[0] != '\0')
-					xasprintf(&val, "%s %s", old, members);
+					val = xasprintf("%s %s", old, members);
 				else
 					val = xstrdup(members);
 				add_set_value(grp, val, &prev, license_groups);

@@ -27,7 +27,7 @@
 #include "rmspace.h"
 #include "safe_io.h"
 #include "set.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "xmkdir.h"
 
 #define QETUTO_FLAGS "" COMMON_FLAGS
@@ -539,7 +539,7 @@ qet_bootstrap(const char *lastrun)
 			goto fail;
 		}
 		fchmod(fd, 0600);
-		xasprintf(&cfgbuf,
+		cfgbuf = xasprintf(
 			"%%echo Generating Portage local OpenPGP trust key\n"
 			"Key-Type: RSA\nKey-Length: 3072\n"
 			"Subkey-Type: RSA\nSubkey-Length: 3072\n"

@@ -24,7 +24,7 @@
 #include "scandirat.h"
 #include "set.h"
 #include "tree.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 /********************************************************************/
 /* Required portage-utils stuff                                     */
@@ -759,7 +759,7 @@ qkeyword_load_arches(const char *overlay)
 	size_t buflen;
 	char *buf;
 
-	xasprintf(&filename, "%s/%s/profiles/arch.list", portroot, overlay);
+	filename = xasprintf("%s/%s/profiles/arch.list", portroot, overlay);
 	fp = fopen(filename, "re");
 	if (!fp)
 		goto done;

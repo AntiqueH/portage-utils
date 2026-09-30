@@ -37,7 +37,7 @@
 #include "eat_file.h"
 #include "hash.h"
 #include "mfline.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 
 #define QMANIFEST_FLAGS "gs:pdo" COMMON_FLAGS
 static struct option const qmanifest_long_opts[] = {
@@ -1535,7 +1535,7 @@ verify_manifest(
 			elemslen++;\
 		} else if (strncmp(STR, "AUX ", 4) == 0) {\
 			/* translate directly into what it is: DATA in files/ */\
-			xasprintf(&elems[elemslen], "D files/%s", STR + 4);\
+			elems[elemslen] = xasprintf("D files/%s", STR + 4);\
 			elemslen++;\
 		}\
 	}

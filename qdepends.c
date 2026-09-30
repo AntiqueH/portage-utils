@@ -20,7 +20,7 @@
 #include "dep.h"
 #include "set.h"
 #include "tree.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "xregex.h"
 
 #define QDEPENDS_FLAGS "drpbIQitUF:SR" COMMON_FLAGS

@@ -17,7 +17,7 @@
 #include <string.h>
 
 #include "atom.h"
-#include "xasprintf.h"
+#include "xvasprintf.h"
 #include "binpath.h"
 
 const char *
@@ -132,7 +132,7 @@ binpath_rel_cpv(const char *rel)
 				return NULL;
 	}
 
-	xasprintf(&cpv, "%.*s/%s", (int)(slash - rel), rel, name);
+	cpv = xasprintf("%.*s/%s", (int)(slash - rel), rel, name);
 	a = atom_explode(cpv);
 	if (a != NULL) {
 		ok = a->PN != NULL && a->PV != NULL && a->PV[0] != '\0';
