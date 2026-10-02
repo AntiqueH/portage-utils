@@ -11,6 +11,8 @@
 
 int mkdir_p_at(int dfd, const char *path, mode_t mode);
 int mkdir_p(const char *path, mode_t mode);
+int secure_dir_at(int dfd, const char *name, mode_t mode, uid_t uid,
+		gid_t gid, int *outfd);
 int rm_rf_at(int dfd, const char *path);
 int rm_rf(const char *path);
 int rmdir_r_at(int dfd, const char *path);

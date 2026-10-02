@@ -1348,7 +1348,7 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  PORTDIR,             main_overlay,        true,  CONFIG_EPREFIX "var/db/repos/gentoo")
 	_Q_EVS(STR,  PORTAGE_BINHOST,     binhost,             true,   DEFAULT_PORTAGE_BINHOST)
 	_Q_EVS(STR,  PORTAGE_CONFIGROOT,  configroot,          false, CONFIG_EPREFIX)
-	_Q_EVS(STR,  PORTAGE_TMPDIR,      port_tmpdir,         true,  CONFIG_EPREFIX "var/tmp/portage/")
+	_Q_EVS(STR,  PORTAGE_TMPDIR,      port_tmpdir,         true,  CONFIG_EPREFIX "var/tmp/")
 	_Q_EVS(STR,  PKGDIR,              pkgdir,              true,  CONFIG_EPREFIX "var/cache/binpkgs/")
 	_Q_EVS(STR,  BINPKG_FORMAT,       binpkg_format,       true,  "gpkg")
 	_Q_EVS(STR,  BINPKG_COMPRESS,     binpkg_compress,     true,  "")

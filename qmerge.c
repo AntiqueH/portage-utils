@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/statvfs.h>
 #include <pwd.h>
 #include <grp.h>
 #include <assert.h>
@@ -1988,41 +1989,62 @@ static bool   qm_fetch_notmod = false;
 #ifdef HAVE_LIBCURL
 /* in-process download via libcurl; resumes partial files */
 static int
-fetch_curl(const char *repo_uri, const char *destdir, const char *src)
+fetch_curl
+(
+	const char *repo_uri,
+	const char *destdir,
+	const char *src,
+	const char *dstname
+)
 {
 	static bool curl_ready = false;
 	const char *base;
 	char       *uri;
 	char       *dest;
+	int         fd;
 	FILE       *out;
 	CURL       *curl;
 	CURLcode    res;
 	curl_off_t  resume_from = 0;
 	struct stat st;
 
-	if (!curl_ready) {
+	if (!curl_ready)
+	{
 		curl_global_init(CURL_GLOBAL_DEFAULT);
 		curl_ready = true;
 	}
 
 	base = strrchr(src, '/');
 	base = base != NULL ? base + 1 : src;
+	if (dstname != NULL)
+		base = dstname;
 	uri = xasprintf("%s/%s", repo_uri, src);
 	dest = xasprintf("%s/%s", destdir, base);
 
-	if (stat(dest, &st) == 0 && S_ISREG(st.st_mode))
+	if (stat(dest, &st) == 0 &&
+			S_ISREG(st.st_mode))
 		resume_from = (curl_off_t)st.st_size;
 
-	if (pretend && !qm_fetch_meta) {
+	if (pretend &&
+			!qm_fetch_meta)
+	{
 		printf("fetch %s -> %s\n", uri, dest);
 		free(uri);
 		free(dest);
 		return 0;
 	}
 
-	out = fopen(dest, resume_from > 0 ? "ab" : "wb");
-	if (out == NULL) {
+	if (resume_from == 0)
+		unlink(dest);
+	fd = open(dest, resume_from > 0
+			  ? O_WRONLY | O_APPEND | O_NOFOLLOW | O_CLOEXEC
+			  : O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+	out = fd >= 0 ? fdopen(fd, resume_from > 0 ? "a" : "w") : NULL;
+	if (out == NULL)
+	{
 		warnp("cannot open %s for writing", dest);
+		if (fd >= 0)
+			close(fd);
 		free(uri);
 		free(dest);
 		return -1;
@@ -2116,7 +2138,13 @@ shell_squote(const char *s)
 /* fetch src from the single repo i into destdir; 0 = a non-empty file
  * landed */
 static int
-fetch_repo(size_t i, const char *destdir, const char *src)
+fetch_repo
+(
+	size_t      i,
+	const char *destdir,
+	const char *src,
+	const char *dstname
+)
 {
 	const char *uri = qm_binrepos[i].uri;
 	const char *base;
@@ -2124,13 +2152,16 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 	struct stat st;
 	int         ret = -1;
 
-	if (uri == NULL || *uri == '\0')
+	if (uri == NULL ||
+			*uri == '\0')
 		return -1;
 
 	fflush(NULL);
 
 	base = strrchr(src, '/');
 	base = base != NULL ? base + 1 : src;
+	if (dstname != NULL)
+		base = dstname;
 	dest = xasprintf("%s/%s", destdir, base);
 
 	if (qfetchcommand[0] != '\0') {
@@ -2215,7 +2246,7 @@ fetch_repo(size_t i, const char *destdir, const char *src)
 	} else {
 #ifdef HAVE_LIBCURL
 		/* no external fetch tool configured: built-in libcurl */
-		(void)fetch_curl(uri, destdir, src);
+		(void)fetch_curl(uri, destdir, src, dstname);
 #else
 		static bool told = false;
 
@@ -2271,7 +2302,7 @@ fetch(const char *destdir, const char *src)
 	for (i = 0; i < qm_nbinrepos; i++) {
 		if (qm_binrepos[i].uri == NULL || qm_binrepos[i].uri[0] == '\0')
 			continue;
-		if (fetch_repo(i, destdir, src) == 0)
+		if (fetch_repo(i, destdir, src, NULL) == 0)
 			break;
 
 		/* show every candidate in fallback order */
@@ -2485,13 +2516,30 @@ qm_index_fresh(const char *loc)
 }
 
 static bool
-qm_gunzip_file(const char *src, const char *dst)
+qm_gunzip_file
+(
+	const char *src,
+	const char *dst
+)
 {
 	gzFile in  = gzopen(src, "rb");
-	FILE  *out = in != NULL ? fopen(dst, "w") : NULL;
+	int    fd  = -1;
+	FILE  *out = NULL;
 	char   gbuf[BUFSIZ];
 	int    n   = 0;
-	bool   ok  = out != NULL;
+	bool   ok;
+
+	if (in != NULL)
+	{
+		unlink(dst);
+		fd = open(dst, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+				  0644);
+		out = fd >= 0 ? fdopen(fd, "w") : NULL;
+		if (out == NULL &&
+				fd >= 0)
+			close(fd);
+	}
+	ok = out != NULL;
 
 	while (ok && (n = gzread(in, gbuf, sizeof(gbuf))) > 0)
 		if (fwrite(gbuf, 1, (size_t)n, out) != (size_t)n)
@@ -2510,8 +2558,6 @@ qm_gunzip_file(const char *src, const char *dst)
 static void
 qmerge_initialize(void)
 {
-	char *buf;
-
 	if (strlen(BUSYBOX) > 0)
 		if (access(BUSYBOX, X_OK) != 0)
 			err(BUSYBOX " must be installed");
@@ -2536,10 +2582,6 @@ qmerge_initialize(void)
 		free(pdir);
 	}
 
-	buf = xasprintf("%s%s/portage/", portroot, port_tmpdir);
-	mkdir_p(buf, 0755);
-	xchdir(buf);
-
 	/* -f: fetch */
 	if (force_download == 1) {
 		struct stat st;
@@ -2551,15 +2593,17 @@ qmerge_initialize(void)
 			warn("no binhosts configured "
 				 "(binrepos.conf missing and PORTAGE_BINHOST unset)");
 
-		/* every repo gets its own index, fetched into the tempdir
-		 * first so the existing one in the PKGDIR survives a failed
-		 * fetch; per-repo failure is not fatal */
+		/* every repo gets its own index, fetched as portage's
+		 * <name>.__download__ next to the final file so the existing
+		 * one survives a failed fetch; per-repo failure is not fatal */
 		qm_fetch_meta = true;
 		for (i = 0; i < qm_nbinrepos; i++) {
 			const char *loc;
 			char        spath[_Q_PATH_MAX + 16];
 			struct stat sst;
 			bool        fetched = false;
+			char       *sdir;
+			int         sfd;
 
 			if (qm_binrepos[i].uri == NULL || qm_binrepos[i].uri[0] == '\0')
 				continue;
@@ -2589,8 +2633,26 @@ qmerge_initialize(void)
 				continue;
 			}
 
-			unlink(Packages);
-			unlink("Packages.gz");
+			sdir = xasprintf("%s%s", portroot, loc);
+			if (mkdir_p(sdir, 0755) != 0 ||
+					(sfd = open(sdir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0)
+			{
+				warnp("cannot open %s, keeping previous Packages index",
+					  sdir);
+				free(sdir);
+				continue;
+			}
+			if (fchdir(sfd) != 0)
+			{
+				warnp("cannot enter %s, keeping previous Packages index",
+					  sdir);
+				close(sfd);
+				free(sdir);
+				continue;
+			}
+			close(sfd);
+			unlink("Packages.__download__");
+			unlink("Packages.gz.__download__");
 			if (!quiet)
 				printf(">>> Fetching Packages index from %s\n",
 					   qm_binrepos[i].name);
@@ -2610,40 +2672,46 @@ qmerge_initialize(void)
 			}
 
 			/* compressed index preferred (portage tries .gz first) */
-			if (fetch_repo(i, buf, "Packages.gz") == 0) {
-				char gzp[_Q_PATH_MAX + 16];
-				char plp[_Q_PATH_MAX + 16];
-
-				snprintf(gzp, sizeof(gzp), "%s/Packages.gz", buf);
-				snprintf(plp, sizeof(plp), "%s/%s", buf, Packages);
-				if (qm_gunzip_file(gzp, plp))
+			if (fetch_repo(i, sdir, "Packages.gz",
+						   "Packages.gz.__download__") == 0)
+			{
+				if (qm_gunzip_file("Packages.gz.__download__",
+								   "Packages.__download__"))
 					fetched = true;
 				else
 					warn("corrupt Packages.gz from %s, trying plain",
 						 qm_binrepos[i].name);
-				unlink(gzp);
+				unlink("Packages.gz.__download__");
 			}
-			if (!fetched && !qm_fetch_notmod &&
-					fetch_repo(i, buf, Packages) == 0)
+			if (!fetched &&
+					!qm_fetch_notmod &&
+					fetch_repo(i, sdir, Packages, "Packages.__download__") == 0)
 				fetched = true;
 			qm_fetch_ims = 0;
-			if (!fetched) {
-				if (qm_fetch_notmod) {
+			if (!fetched)
+			{
+				if (qm_fetch_notmod)
+				{
 					if (!quiet)
 						printf(">>> Packages index from %s is up "
 							   "to date\n", qm_binrepos[i].name);
-				} else {
+				}
+				else
+				{
 					warn("no Packages index from binhost %s, "
 						 "keeping previous", qm_binrepos[i].name);
 				}
+				free(sdir);
 				continue;
 			}
 
 			/* the local copy is a metadata cache, portage refreshes its
 			 * binhost cache under --pretend too: without this a fresh
-			 * box resolves against an empty (or stale) index.
+			 * box resolves against an empty (or outdated) index.
 			 * dropping !pretend */
-			if (stat(Packages, &st) == 0 && st.st_size > 0) {
+			if (stat("Packages.__download__", &st) == 0 &&
+					st.st_size > 0)
+			{
 				char      rts[64];
 				char      rver[64];
 				char      lts[64];
@@ -2652,16 +2720,20 @@ qmerge_initialize(void)
 				long long rtsv;
 				long long ltsv   = 0;
 
-				if (!qm_index_hdr_val(Packages, "TIMESTAMP",
-									  rts, sizeof(rts))) {
+				if (!qm_index_hdr_val("Packages.__download__", "TIMESTAMP",
+									  rts, sizeof(rts)))
+				{
 					fprintf(stderr, "\n\n!!! [%s] Binhost package index "
 							" has no TIMESTAMP field.\n",
 							qm_binrepos[i].name);
 					qm_binrepos[i].index_dead = true;
+					unlink("Packages.__download__");
+					free(sdir);
 					continue;
 				}
-				if (qm_index_hdr_val(Packages, "VERSION",
-									 rver, sizeof(rver))) {
+				if (qm_index_hdr_val("Packages.__download__", "VERSION",
+									 rver, sizeof(rver)))
+				{
 					char *end;
 					long  vv = strtol(rver, &end, 10);
 
@@ -2669,11 +2741,14 @@ qmerge_initialize(void)
 						ver_ok = true;
 				} else
 					snprintf(rver, sizeof(rver), "None");
-				if (!ver_ok) {
+				if (!ver_ok)
+				{
 					fprintf(stderr, "\n\n!!! [%s] Binhost package index"
 							" version is not supported: '%s'\n",
 							qm_binrepos[i].name, rver);
 					qm_binrepos[i].index_dead = true;
+					unlink("Packages.__download__");
+					free(sdir);
 					continue;
 				}
 				rtsv = atoll(rts);
@@ -2702,79 +2777,49 @@ qmerge_initialize(void)
 							lb, verbose ? ", remote: " : "", rb,
 							verbose ? ")" : "", NORM);
 				}
-				if (!keep) {
-					char *pdir;
-
-					pdir = xasprintf("%s%s", portroot, loc);
-					if (mkdir_p(pdir, 0755) != 0) {
-						warnp("cannot open %s, keeping previous "
-							  "Packages index", pdir);
-					} else if (!qm_store_index(Packages, pdir)) {
-						warnp("failed to move fresh Packages index "
-							  "into %s", pdir);
-					}
-					free(pdir);
-				}
+				if (!keep &&
+						!qm_store_index("Packages.__download__", sdir))
+					warnp("failed to move fresh Packages index into %s",
+						  sdir);
 			}
+			unlink("Packages.__download__");
 
 			/* optional news transport: News.tar next to Packages;
 			 * opt-in via QNEWS_ENABLE in make.conf/env */
-			unlink("News.tar");
+			unlink("News.tar.__download__");
 			if (qnews_enable &&
-					fetch_repo(i, buf, "News.tar") == 0 &&
-					!pretend && stat("News.tar", &st) == 0 &&
-					st.st_size > 0) {
-				char *ndir2;
-				int   ndfd;
-				int   nsfd;
-
-				ndir2 = xasprintf("%s%s", portroot, loc);
-				if (mkdir_p(ndir2, 0755) == 0 &&
-						(ndfd = open(ndir2, O_RDONLY | O_CLOEXEC)) >= 0) {
-					nsfd = open(buf, O_RDONLY | O_CLOEXEC);
-					if (nsfd >= 0) {
-						if (move_file(nsfd, "News.tar", ndfd,
-									  "News.tar", NULL) != 0)
-							warnp("failed to move fresh News.tar into %s",
-								  ndir2);
-						close(nsfd);
-					}
-					close(ndfd);
-				}
-				free(ndir2);
+					fetch_repo(i, sdir, "News.tar", "News.tar.__download__") == 0 &&
+					!pretend &&
+					stat("News.tar.__download__", &st) == 0 &&
+					st.st_size > 0)
+			{
+				if (rename("News.tar.__download__", "News.tar") != 0)
+					warnp("failed to move fresh News.tar into %s", sdir);
 			}
+			unlink("News.tar.__download__");
 
 			/* optional package-moves transport: a Moves file next to
 			 * Packages on the binhost (missing = no moves, no error);
 			 * skipped when the policy never consumes the fetched form */
-			unlink("Moves");
+			unlink("Moves.__download__");
 			if (qm_moves_policy() != QM_MV_NONE &&
-					qm_moves_policy() != QM_MV_REPO_ONLY && !pretend) {
-				bool got = fetch_repo(i, buf, "Moves") == 0 &&
-						stat("Moves", &st) == 0 && st.st_size > 0;
+					qm_moves_policy() != QM_MV_REPO_ONLY &&
+					!pretend)
+			{
+				bool got = fetch_repo(i, sdir, "Moves",
+									  "Moves.__download__") == 0 &&
+						stat("Moves.__download__", &st) == 0 &&
+						st.st_size > 0;
 
-				if (got) {
-					char *mdir;
-					int   mdfd;
-					int   msfd;
-
-					mdir = xasprintf("%s%s", portroot, loc);
-					if (mkdir_p(mdir, 0755) == 0 &&
-							(mdfd = open(mdir, O_RDONLY | O_CLOEXEC)) >= 0) {
-						qm_moves_shrink_warn("Moves", mdir,
-											 qm_binrepos[i].name);
-						msfd = open(buf, O_RDONLY | O_CLOEXEC);
-						if (msfd >= 0) {
-							if (move_file(msfd, "Moves", mdfd, "Moves",
-										  NULL) != 0)
-								warnp("failed to move fresh Moves into %s",
-									  mdir);
-							close(msfd);
-						}
-						close(mdfd);
-					}
-					free(mdir);
-				} else {
+				if (got)
+				{
+					qm_moves_shrink_warn("Moves.__download__", sdir,
+										 qm_binrepos[i].name);
+					if (rename("Moves.__download__", "Moves") != 0)
+						warnp("failed to move fresh Moves into %s", sdir);
+				}
+				else
+				{
 					char       *mp;
 					struct stat cst;
 
@@ -2788,6 +2833,7 @@ qmerge_initialize(void)
 					free(mp);
 				}
 			}
+			free(sdir);
 		}
 
 		qm_fetch_meta = false;
@@ -2799,8 +2845,6 @@ qmerge_initialize(void)
 			qm_apply_news_all();
 		}
 	}
-
-	free(buf);
 }
 
 static tree_ctx *qmerge_vdb_tree    = NULL;
@@ -4848,7 +4892,7 @@ qm_emit_moves(int dfd, const char *pdir)
  * (cat/pn:slot -> reject lines), printed as aa portage-style "ignored
  * due to non matching USE" block with the merge list. Only packages where
  * NO instance survived the checks are shown, a accepted duplicate makes
- * the stale-instance rejects irrelevant (emerge NOTE behavior). */
+ * the rejects of the other instances irrelevant (emerge NOTE behavior). */
 static hash_t *qm_use_rejects = NULL;
 static const char *qm_bid_shown(const char *s, char *out, size_t olen);
 static hash_t *qm_use_accepts = NULL;
@@ -6303,7 +6347,7 @@ static ssize_t qm_repo_affinity = -1;
 
 /* scoped: force newest-across-repos candidate selection (the conflict
  * repairer needs the real newest rebuild, not the priority-first pick,
- * which on a stale higher-priority repo is the already-installed
+ * which on an outdated higher-priority repo is the already-installed
  * version) */
 static bool qm_bv_newest = false;
 
@@ -7844,6 +7888,8 @@ pkg_unpack_environment(int dirfd, const char *vdb_path, const char *T)
 	char                  buf[BUFSIZ];
 	ssize_t               n;
 	int                   fd;
+	int                   tfd;
+	int                   efd;
 	FILE                 *out;
 	int                   ret = -1;
 
@@ -7852,13 +7898,21 @@ pkg_unpack_environment(int dirfd, const char *vdb_path, const char *T)
 	if (fd < 0)
 		return -1;
 
-	if (mkdir_p(T, 0755) != 0) {
+	tfd = open(T, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (tfd < 0)
+	{
 		close(fd);
 		return -1;
 	}
-	snprintf(path, sizeof(path), "%s/environment", T);
-	out = fopen(path, "w");
-	if (out == NULL) {
+	unlinkat(tfd, "environment", 0);
+	efd = openat(tfd, "environment",
+				 O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+	close(tfd);
+	out = efd >= 0 ? fdopen(efd, "w") : NULL;
+	if (out == NULL)
+	{
+		if (efd >= 0)
+			close(efd);
 		close(fd);
 		return -1;
 	}
@@ -7971,7 +8025,7 @@ pkg_run_func_at(
 	}
 
 	if (no_phases) {
-		const char *id = strcmp(vdb_path, "vdb") == 0 &&
+		const char *id = strcmp(vdb_path, "build-info") == 0 &&
 				qm_phase_pkg != NULL ? qm_phase_pkg : vdb_path;
 		char  rp[_Q_PATH_MAX];
 		FILE *rf;
@@ -8231,7 +8285,7 @@ pkg_run_func_at(
 		". \"%6$s/environment\"\n"
 		/* Reload env vars that matter to us; EBUILD_PHASE must be
 		 * re-exported after sourcing, since the environment carries
-		 * the stale build-time phase */
+		 * the build-time phase it was saved with */
 		"export EBUILD_PHASE='%3$s'\n"
 		"export EBUILD_PHASE_FUNC='%2$s'\n"
 		"unset PORTAGE_NONFATAL\n"
@@ -9514,9 +9568,9 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 
 	/* anti-downgrade order: a dependency must never pull a provider OLDER than what's
 	 * already installed in that slot.
-	 * A stale := revdep (built against foo:0/OLD) otherwise drags 
+	 * An outdated := revdep (built against foo:0/OLD) otherwise drags
 	 * foo *down* to OLD to satisfy its subslot bind.
-	 * Keep the installed provider instead and let the sweep flag the stale
+	 * Keep the installed provider instead and let the sweep flag the outdated
 	 * revdep for rebuild.
 	 * (level 0 is the explicit target, leave it be.) */
 	if (pull && level > 0 && provider == bin && bin != NULL) {
@@ -10014,14 +10068,19 @@ qm_group_gid(const char *name)
 }
 
 static uid_t
-qm_passwd_uid(const char *name, gid_t *gidp)
+qm_passwd_uid
+(
+	const char *root,
+	const char *name,
+	gid_t      *gidp
+)
 {
 	char           path[_Q_PATH_MAX];
 	FILE          *f;
 	struct passwd *pw;
 	uid_t          uid = (uid_t)-1;
 
-	snprintf(path, sizeof(path), "%setc/passwd", portroot);
+	snprintf(path, sizeof(path), "%setc/passwd", root);
 	if ((f = fopen(path, "re")) == NULL)
 		return uid;
 	while ((pw = fgetpwent(f)) != NULL)
@@ -10033,6 +10092,237 @@ qm_passwd_uid(const char *name, gid_t *gidp)
 		}
 	fclose(f);
 	return uid;
+}
+
+/* portage's build directory, built the way portage builds it:
+ *   $PORTAGE_TMPDIR/portage/CAT/PF              merges (PORTAGE_BUILDDIR)
+ *   $PORTAGE_TMPDIR/portage/._unmerge_/CAT/PF   unmerge phases (PKG_TMPDIR)
+ * with portage's owner (the portage account when ROOT has one, else root)
+ * and modes: portage/ 0775, ._unmerge_/ 0700, CAT/ 0770, PF/ and its
+ * temp/ image/ build-info/ 0755
+ * 
+ * every runthrough goes through secure_dir_at(), so a directory somebody else
+ * put there first is taken over and reported instead of used as found (!),
+ * and the next level is created from the open fd of the previous one,
+ * so we should not take it from a path. qm_builddir_open() returns the
+ * open fd of CAT/PF and its path in buf; qm_builddir_sub() adds one
+ * subdirectory under it; qm_unmerge_tmp() does both for an unmerge
+ * and leaves T pointing at ._unmerge_/CAT/PF/temp.
+ * */
+static void
+qm_portage_ids
+(
+  uid_t *uid,
+  gid_t *gid
+)
+{
+  static bool  done = false;
+  static uid_t puid = 0;
+  static gid_t pgid = 0;
+
+  if (!done)
+  {
+    puid = qm_passwd_uid("/", "portage", &pgid);
+    if (puid == (uid_t)-1)
+    {
+      puid = 0;
+      pgid = 0;
+    }
+    done = true;
+  }
+  *uid = puid;
+  *gid = pgid;
+}
+
+static int
+qm_builddir_open
+(
+  const char *sub,
+  const char *cat,
+  const char *pf,
+  char       *buf,
+  size_t      bufsz
+)
+{
+  uid_t uid;
+  gid_t gid;
+  int   bp;
+  int   sfd;
+  int   cfd;
+  int   pfd;
+  int   n;
+
+  qm_portage_ids(&uid, &gid);
+  n = snprintf(buf, bufsz, "%s/portage", port_tmpdir);
+  if (n < 0 ||
+      (size_t)n >= bufsz)
+  {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  if (secure_dir_at(AT_FDCWD, buf, 0775, uid, gid, &bp) != 0)
+    return -1;
+  sfd = bp;
+  if (sub != NULL &&
+      secure_dir_at(bp, sub, 0700, uid, gid, &sfd) != 0)
+  {
+    close(bp);
+    return -1;
+  }
+  if (secure_dir_at(sfd, cat, 0770, uid, gid, &cfd) != 0)
+    cfd = -1;
+  else if (secure_dir_at(cfd, pf, 0755, uid, gid, &pfd) != 0)
+    pfd = -1;
+  if (sfd != bp)
+    close(sfd);
+  close(bp);
+  if (cfd < 0)
+    return -1;
+  close(cfd);
+  if (pfd < 0)
+    return -1;
+  n = snprintf(buf, bufsz, "%s/portage%s%s/%s/%s", port_tmpdir,
+               sub != NULL ? "/" : "", sub != NULL ? sub : "", cat, pf);
+  if (n < 0 ||
+      (size_t)n >= bufsz)
+  {
+    close(pfd);
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  return pfd;
+}
+
+static int
+qm_builddir_sub
+(
+  int         pfd,
+  const char *name
+)
+{
+  uid_t uid;
+  gid_t gid;
+  int   fd;
+
+  qm_portage_ids(&uid, &gid);
+  if (secure_dir_at(pfd, name, 0755, uid, gid, &fd) != 0)
+    return -1;
+  close(fd);
+  return 0;
+}
+
+static int
+qm_unmerge_tmp
+(
+  const atom_ctx *atom,
+  char           *pfbuf,
+  size_t          pfsz,
+  char           *T,
+  size_t          tsz
+)
+{
+  int pfd;
+
+  pfd = qm_builddir_open("._unmerge_", atom->CATEGORY, atom->PF,
+                         pfbuf, pfsz);
+  if (pfd < 0)
+    return -1;
+  if (qm_builddir_sub(pfd, "temp") != 0)
+  {
+    close(pfd);
+    return -1;
+  }
+  close(pfd);
+  if (snprintf(T, tsz, "%s/temp", pfbuf) >= (int)tsz)
+  {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  return 0;
+}
+
+/* run once before the first real merge of a round, like portage's
+ * _check_temp_dir: make sure $PORTAGE_TMPDIR/portage is a directory we
+ * can use (it is created and checked exactly as the merge will do it a
+ * moment later) and stop with portage's wording when it is not, so a bad
+ * PORTAGE_TMPDIR fails before anything is changed instead of half-way.
+ * 
+ * then look at the free space there against the largest package of the
+ * round. the index will tells us the compressed size, the unpacked image
+ * is bigger, so this is a warning with a slight margin
+ * with/if ROOT set it also names the usual fix, PORTAGE_TMPDIR on the target disk.
+ * __QMERGE_TEST_TMPFREE replaces the measured free bytes, for the tests
+ * (similar with portage's, __PORTAGE_TEST_*). */
+static void
+qm_tmpdir_check
+(
+  array *merge
+)
+{
+  char               base[_Q_PATH_MAX];
+  struct statvfs     vfs;
+  unsigned long long freeb;
+  unsigned long long need = 0;
+  const char        *ovr  = getenv("__QMERGE_TEST_TMPFREE");
+  uid_t              uid;
+  gid_t              gid;
+  size_t             i;
+  char              *cpvp;
+  int                fd;
+  char               fb[40];
+  char               nb[40];
+
+  qm_portage_ids(&uid, &gid);
+  if (snprintf(base, sizeof(base), "%s/portage", port_tmpdir) >=
+          (int)sizeof(base) ||
+      secure_dir_at(AT_FDCWD, base, 0775, uid, gid, &fd) != 0)
+    errp("The directory specified in your PORTAGE_TMPDIR variable, "
+         "'%s', does not exist or cannot be used", port_tmpdir);
+  if (geteuid() != 0 &&
+      faccessat(fd, ".", W_OK, 0) != 0)
+    errp("The directory specified in your PORTAGE_TMPDIR variable, "
+         "'%s', is not writable", port_tmpdir);
+
+  array_for_each(merge, i, cpvp)
+  {
+    char          exact[520];
+    atom_ctx     *a;
+    tree_pkg_ctx *bpkg;
+    char         *szs = NULL;
+
+    snprintf(exact, sizeof(exact), "=%s", cpvp);
+    a = atom_explode(exact);
+    if (a == NULL)
+      continue;
+    bpkg = qm_plan_pick(cpvp, a);
+    if (bpkg != NULL)
+      szs = tree_pkg_meta(bpkg, Q_SIZE);
+    if (szs != NULL &&
+        strtoull(szs, NULL, 10) > need)
+      need = strtoull(szs, NULL, 10);
+    atom_implode(a);
+  }
+
+  if (ovr != NULL)
+    freeb = strtoull(ovr, NULL, 10);
+  else if (fstatvfs(fd, &vfs) == 0)
+    freeb = (unsigned long long)vfs.f_bavail * vfs.f_frsize;
+  else
+    freeb = ULLONG_MAX;
+  close(fd);
+
+  if (need > 0 &&
+      freeb < need * 3)
+  {
+    qm_fmt_kib(fb, sizeof(fb), freeb);
+    qm_fmt_kib(nb, sizeof(nb), need);
+    warn("PORTAGE_TMPDIR=%s has %s KiB free; the largest package "
+         "downloads %s KiB and needs more unpacked",
+         port_tmpdir, fb, nb);
+    if (strcmp(portroot, "/") != 0)
+      warn("for ROOT=%s consider PORTAGE_TMPDIR=%svar/tmp",
+           portroot, portroot);
+  }
 }
 
 /* portage-parity merge history: qlop-parseable records appended to
@@ -12750,6 +13040,9 @@ qm_exec_round(struct qm_plan *plan)
 
 	qm_print_use_rejects(plan->merge);
 	qm_print_deadpins(plan->merge);
+	if (!pretend &&
+			!fetch_only)
+		qm_tmpdir_check(plan->merge);
 	/* QMERGE_BLOCKERS feature: drop the soft-blocked installed packages the resolution
 	 * supersedes before merging (with -U, which ideally is safe).
 	 * This is the only place the resolver unmerges a package the user
@@ -14488,7 +14781,7 @@ static void
 qm_drop_privs(void)
 {
 	gid_t pwgid = (gid_t)-1;
-	uid_t uid   = qm_passwd_uid("nobody", &pwgid);
+	uid_t uid   = qm_passwd_uid(portroot, "nobody", &pwgid);
 	gid_t gid   = qm_group_gid("nogroup");
 
 	if (gid == (gid_t)-1)
@@ -15136,23 +15429,31 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			errp("cannot create VDB directory %s", buf);
 	}
 
-	snprintf(buf, sizeof(buf), "%s%s/qmerge/%s/%s",
-			 portroot, port_tmpdir, matom->CATEGORY, matom->PF);
-	if (mkdir_p(buf, 0755) != 0)
-		errp("cannot create work directory %s", buf);
-	xchdir(buf);
+	{
+		static const char *const subs[] = { "temp", "build-info", "image" };
+		int    pf;
+		size_t si;
+
+		pf = qm_builddir_open(NULL, matom->CATEGORY, matom->PF,
+							  buf, sizeof(buf));
+		if (pf < 0)
+			errp("cannot secure work directory for %s/%s under %s/portage",
+				 matom->CATEGORY, matom->PF, port_tmpdir);
+		if (fchdir(pf) != 0)
+			errp("cannot enter work directory %s", buf);
+
+		/* Doesn't actually remove $PWD, just everything under it.
+		 * but this is slightly dangerous, we'll have to do some verifications
+		 * here before doing it. */
+		rm_rf(".");
+
+		for (si = 0; si < ARRAY_SIZE(subs); si++)
+			if (qm_builddir_sub(pf, subs[si]) != 0)
+				errp("cannot create %s in %s", subs[si], buf);
+		close(pf);
+	}
 	D = xasprintf("%s/image", buf);
 	T = xasprintf("%s/temp", buf);
-
-	/* Doesn't actually remove $PWD, just everything under it.
-	 * but this is slightly dangerous, we'll have to do some verifications
-	 * here before doing it. */
-	rm_rf(".");
-
-	if (mkdir("temp", 0755) != 0 ||
-			mkdir("vdb", 0755) != 0 ||
-			mkdir("image", 0755) != 0)
-		errp("cannot create work subdirectories in %s", buf);
 
 	p = tree_pkg_get_path(mpkg);
 	/* p is portroot-relative and cwd is the build tempdir here */
@@ -15293,7 +15594,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 
 		/* now we unpacked everything, we can extract the VDB (metadata)
 		 * and image */
-		xchdir("vdb");
+		xchdir("build-info");
 		a = archive_read_new();
 		t = archive_write_disk_new();
 		qarchive_read_taronly(a);
@@ -15456,7 +15757,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		snprintf(buf, sizeof(buf), "%s/%s", portroot, p);
 
 		tbz2size = 0;
-		if ((vdbfd = open("vdb", O_RDONLY)) == -1)
+		if ((vdbfd = open("build-info", O_RDONLY)) == -1)
 			err("failed to open vdb extraction directory");
 		xc.fd = vdbfd;
 		xc.error = false;
@@ -15545,11 +15846,11 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	fflush(stdout);
 
 	/* we won't realloc, so we can loose the alloc size */
-	eprefix_len = eat_file("vdb/EPREFIX", &eprefix, &eprefix_len) ?
+	eprefix_len = eat_file("build-info/EPREFIX", &eprefix, &eprefix_len) ?
 		strlen(eprefix) : 0;
 	/* don't care/use the string lengths on these */
-	eat_file("vdb/EAPI", &eapi, &eapi_len);
-	eat_file("vdb/DEFINED_PHASES", &pm_phases, &pm_phases_len);
+	eat_file("build-info/EAPI", &eapi, &eapi_len);
+	eat_file("build-info/DEFINED_PHASES", &pm_phases, &pm_phases_len);
 
 	{
 		static char pp[_Q_PATH_MAX];
@@ -15559,10 +15860,10 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	}
 
 	if (!pretend) {
-		pkg_run_func("vdb", pm_phases, PKG_PRETEND, D, T, eapi, replver);
-		pkg_run_func("vdb", pm_phases, PKG_SETUP,   D, T, eapi, replver);
+		pkg_run_func("build-info", pm_phases, PKG_PRETEND, D, T, eapi, replver);
+		pkg_run_func("build-info", pm_phases, PKG_SETUP,   D, T, eapi, replver);
 		qm_vdb_lock();
-		pkg_run_func("vdb", pm_phases, PKG_PREINST, D, T, eapi, replver);
+		pkg_run_func("build-info", pm_phases, PKG_PREINST, D, T, eapi, replver);
 	}
 
 	{
@@ -15635,7 +15936,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		case OLDER:
 		case EQUAL:
 			if (!pretend)
-				pkg_run_func("vdb", pm_phases, PKG_PRERM, D, T, eapi, replver);
+				pkg_run_func("build-info", pm_phases, PKG_PRERM, D, T, eapi, replver);
 			break;
 		default:
 			warn("no idea how we reached here.");
@@ -15645,7 +15946,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	}
 
 	objs = NULL;
-	if ((contents = fopen("vdb/CONTENTS", "w")) == NULL) {
+	if ((contents = fopen("build-info/CONTENTS", "w")) == NULL) {
 		errf("could not open vdb/CONTENTS for writing");
 	} else {
 		char *cpath;
@@ -15719,7 +16020,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 
 	/* run postinst */
 	if (!pretend)
-		pkg_run_func("vdb", pm_phases, PKG_POSTINST, D, T, eapi, replver);
+		pkg_run_func("build-info", pm_phases, PKG_POSTINST, D, T, eapi, replver);
 
 	if (eprefix != NULL)
 		free(eprefix);
@@ -15746,7 +16047,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	if (!pretend) {
 		long counter = qm_counter_tick();
 		bool cok = false;
-		if ((fp = fopen("vdb/COUNTER", "w")) != NULL) {
+		if ((fp = fopen("build-info/COUNTER", "w")) != NULL) {
 			cok = fprintf(fp, "%ld", counter) >= 0;
 			if (fclose(fp) != 0)
 				cok = false;
@@ -15784,7 +16085,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			md5 = hash_file(buf, HASH_MD5);
 			if (md5 != NULL) {
 				bool ok = false;
-				if ((fp = fopen("vdb/BINPKGMD5", "w")) != NULL) {
+				if ((fp = fopen("build-info/BINPKGMD5", "w")) != NULL) {
 					ok = fprintf(fp, "%s\n", md5) >= 0;
 					if (fclose(fp) != 0)
 						ok = false;
@@ -15801,7 +16102,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	 * the mask changes. */
 	if (!pretend && install_mask != NULL) {
 		bool ok = false;
-		if ((fp = fopen("vdb/INSTALL_MASK", "w")) != NULL) {
+		if ((fp = fopen("build-info/INSTALL_MASK", "w")) != NULL) {
 			ok = fprintf(fp, "%s\n", install_mask) >= 0;
 			if (fclose(fp) != 0)
 				ok = false;
@@ -15817,7 +16118,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		bool   fastok;
 		char   vdbtmp[_Q_PATH_MAX + 64];
 
-		tree_vdbmeta_consolidate("vdb", false, false);
+		tree_vdbmeta_consolidate("build-info", false, false);
 
 		/* move the local vdb copy to the final place */
 		len = snprintf(buf, sizeof(buf), "%s%s/%s",
@@ -15829,7 +16130,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		snprintf(buf + len, sizeof(buf) - len, "/%s", matom->PF);
 
 		rm_rf(vdbtmp);
-		fastok = rename("vdb", vdbtmp) == 0;
+		fastok = rename("build-info", vdbtmp) == 0;
 		if (!fastok) {
 			struct stat     vst;
 			int             src_fd = -1;
@@ -15840,7 +16141,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			bool            copyok = false;
 
 			/* e.g. in case of cross-device rename, try copy+delete */
-			if ((src_fd = open("vdb", O_RDONLY|O_CLOEXEC|O_PATH)) >= 0 &&
+			if ((src_fd = open("build-info", O_RDONLY|O_CLOEXEC|O_PATH)) >= 0 &&
 				fstat(src_fd, &vst) == 0 &&
 				mkdir_p(vdbtmp, vst.st_mode) == 0 &&
 				(dst_fd = open(vdbtmp, O_RDONLY|O_CLOEXEC|O_PATH)) >= 0 &&
@@ -15854,7 +16155,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 					if (move_file(src_fd, files[vi]->d_name,
 							  	  dst_fd, files[vi]->d_name,
 							  	  NULL) != 0) {
-						warn("failed to move 'vdb/%s' to '%s': %s",
+						warn("failed to move 'build-info/%s' to '%s': %s",
 							 files[vi]->d_name, vdbtmp, strerror(errno));
 						copyok = false;
 					}
@@ -15885,8 +16186,6 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	xchdir("..");
 	if (!keep_work)
 		rm_rf(matom->PF);
-	/* don't care about return, but when empty, remove */
-	rmdir("../qmerge");
 
 	/* merge-list line colors: one magenta run for the whole atom (bold for
 	 * the explicit target, plain for deps), the [repo] tag like the
@@ -16077,6 +16376,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 	char *buf;
 	char *savep;
 	char T[_Q_PATH_MAX];
+	char TB[_Q_PATH_MAX];
 	int portroot_fd;
 	llist_char *dirs = NULL;
 	bool unmerge_config_protected;
@@ -16089,10 +16389,8 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		qm_elog(rpkg == NULL ? "=== Unmerging... (%s)"
 							 : " === Unmerging... (%s)",
 				atom_format("%[CAT]%[PF]", atom));
-	if (snprintf(T, sizeof(T), "%s%s/qmerge._unmerge_.%s",
-				 portroot, port_tmpdir, atom->PF) >= (int)sizeof(T))
-		err("unmerge work path too long for %s under %s%s",
-			atom->PF, portroot, port_tmpdir);
+	T[0] = '\0';
+	TB[0] = '\0';
 
 	printf("%s***%s unmerging %s\n", YELLOW, NORM,
 			atom_format("%[CATEGORY]%[PF]", atom));
@@ -16111,8 +16409,13 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		if (buf == NULL)
 			buf = q_deconst("0");
 		phases = tree_pkg_meta(pkg_ctx, Q_DEFINED_PHASES);
-		if (phases != NULL) {
-			mkdir_p(T, 0755);
+		if (phases != NULL)
+		{
+			if (T[0] == '\0' &&
+					qm_unmerge_tmp(atom, TB, sizeof(TB), T, sizeof(T)) != 0)
+				errp("cannot secure unmerge directory for %s/%s under "
+					 "%s/portage/._unmerge_",
+					 atom->CATEGORY, atom->PF, port_tmpdir);
 			pkg_run_func_at(portroot_fd, tree_pkg_get_path(pkg_ctx),
 							phases, PKG_PRERM,
 							T, T, buf, "");
@@ -16203,7 +16506,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		}
 
 		/* a path this unmerge releases (no other owner keeps it)
-		 * drops its config-memory entry, portage's stale-confmem rule */
+		 * drops its config-memory entry, portage's orphaned-confmem rule */
 		if (!pretend &&
 				(keep == NULL || contains_set(e->name, keep) == NULL) &&
 				qm_confmem_has(e->name))
@@ -16288,15 +16591,20 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		if (buf == NULL)
 			buf = q_deconst("0");
 		phases = tree_pkg_meta(pkg_ctx, Q_DEFINED_PHASES);
-		if (phases != NULL) {
-			mkdir_p(T, 0755);
+		if (phases != NULL)
+		{
+			if (T[0] == '\0' &&
+					qm_unmerge_tmp(atom, TB, sizeof(TB), T, sizeof(T)) != 0)
+				errp("cannot secure unmerge directory for %s/%s under "
+					 "%s/portage/._unmerge_",
+					 atom->CATEGORY, atom->PF, port_tmpdir);
 			pkg_run_func_at(portroot_fd, tree_pkg_get_path(pkg_ctx),
 							phases, PKG_POSTRM,
 							T, T, buf, rpkg == NULL ? "" : rpkg->PVR);
 		}
 
-		rm_rf(T);
-		rmdir(T);
+		if (TB[0] != '\0')
+			rm_rf(TB);
 
 		if (nskipped > 0) {
 			warn("%s: %zu file(s) could not be removed, the record is kept",
@@ -17070,7 +17378,7 @@ qm_local_index_populate(const char *loc)
 	}
 
 	if (drift && binpkg_index_regen() != 0)
-		warn("local binpkg index may be stale; run `qmerge -i'");
+		warn("local binpkg index may be out of date; run `qmerge -i'");
 }
 
 /* filename -> cpv parsing (qbh_*) lives in libq/binpath.c so it can
@@ -18193,7 +18501,7 @@ qm_ldpath_cache_load(const char *path)
 	return ret;
 }
 
-/* the env-update engine. check_only reports staleness without
+/* the env-update engine. check_only reports outdated files without
  * writing; always_ldconfig mirrors the env-update CLI (no contents
  * gate). touched is the just-(un)merged CONTENTS obj/sym paths for
  * portage's skip-ldconfig-when-no-lib-changed optimisation, NULL
@@ -18679,7 +18987,7 @@ qm_env_update_hook(array *touched)
 	qm_env_update(false, false, false, touched);
 }
 
-/* qmaint env: -c reports stale generated files, -f = env-update CLI */
+/* qmaint env: -c reports outdated generated files, -f = env-update CLI */
 int
 qmerge_env_maint(bool fix, bool no_ldconfig)
 {
@@ -18691,7 +18999,7 @@ qmerge_env_maint(bool fix, bool no_ldconfig)
 	}
 	r = qm_env_update(true, false, no_ldconfig, NULL);
 	if (r != 0) {
-		warn("generated environment files are stale "
+		warn("generated environment files are out of date "
 			 "(run `qmaint env -f`)");
 		return 1;
 	}
@@ -18746,7 +19054,7 @@ qmerge_moves_maint(bool fix)
 	} else if (want == NULL && have == NULL) {
 		printf("Moves: OK (no move instructions, no Moves file)\n");
 	} else if (want == NULL) {
-		printf("Moves: STALE, %s exists but the repo carries no move "
+		printf("Moves: OUTDATED, %s exists but the repo carries no move "
 			   "instructions (run `qmaint moves -f')\n", mpath);
 		ret = EXIT_FAILURE;
 	} else if (have == NULL) {
@@ -18876,8 +19184,8 @@ qmerge_news_maint(bool fix)
 		array  *keys;
 		size_t  i;
 		char   *k;
-		int     missing = 0;
-		int     stale   = 0;
+		int     missing  = 0;
+		int     orphaned = 0;
 
 		keys = set_keys(want);
 		array_for_each(keys, i, k)
@@ -18889,17 +19197,17 @@ qmerge_news_maint(bool fix)
 		keys = set_keys(have);
 		array_for_each(keys, i, k)
 			if (contains_set(k, want) == NULL) {
-				printf("News: stale item %s in %s\n", k, npath);
-				stale++;
+				printf("News: orphaned item %s in %s\n", k, npath);
+				orphaned++;
 			}
 		array_free(keys);
 
-		if (missing == 0 && stale == 0)
+		if (missing == 0 && orphaned == 0)
 			printf("News: OK (%zu item%s)\n", cnt_set(want),
 				   cnt_set(want) == 1 ? "" : "s");
 		else {
-			printf("News: %d missing, %d stale (run `qmaint news -f')\n",
-				   missing, stale);
+			printf("News: %d missing, %d orphaned (run `qmaint news -f')\n",
+				   missing, orphaned);
 			ret = EXIT_FAILURE;
 		}
 	}
@@ -19037,7 +19345,7 @@ qmerge_binhost_maint(bool fix)
 	qbh_quiet_invalid = false;
 	array_sort(files, qbh_pf_cmp);
 
-	/* emaint: missing (sorted), then stale (index order), then
+	/* emaint: missing (sorted), then the outdated ones (index order), then
 	 * add the compressed-index consistency errors */
 	array_for_each(files, i, f) {
 		struct qbh_ie *e = bypath != NULL ?
@@ -19276,7 +19584,7 @@ pkg_download(tree_pkg_ctx *mpkg)
 
 		/* route to the repo that advertised this pkg; only when that
 		 * fails scan the full fallback order */
-		if (repoidx < 0 || fetch_repo((size_t)repoidx, dest, p) != 0)
+		if (repoidx < 0 || fetch_repo((size_t)repoidx, dest, p, NULL) != 0)
 			fetch(dest, p);
 
 		/* verify the pkg exists now. unlink if zero bytes */

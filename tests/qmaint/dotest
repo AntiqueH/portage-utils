@@ -78,7 +78,7 @@ printf 'move old-cat/old new-cat/new\n' > root/pkgs/Moves
 set +e
 qmaint -C -c moves > x; rc=$?
 set -e
-[[ ${rc} -ne 0 && $(<x) == "Moves: STALE, ${ROOT}"*"/pkgs/Moves exists but the repo carries no move instructions (run \`qmaint moves -f')" ]]
+[[ ${rc} -ne 0 && $(<x) == "Moves: OUTDATED, ${ROOT}"*"/pkgs/Moves exists but the repo carries no move instructions (run \`qmaint moves -f')" ]]
 tpass "qmaint -c moves reports a stale Moves file"
 
 qmaint -C -f moves > x

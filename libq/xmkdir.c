@@ -69,6 +69,84 @@ mkdir_p(const char *path, mode_t mode)
 	return mkdir_p_at(AT_FDCWD, path, mode);
 }
 
+/* open directory NAME under DFD, creating it with MODE if missing, and
+ * refuse to trust it just because it exists: mkdir_p() accepts any
+ * existing directory, even one somebody else planted beforehand, and we
+ * extract images and run root scripts in these.
+ * a symlink or a file in its place is an error. as root, give it to
+ * UID:GID (like portage does with the portage account), add MODE's bits,
+ * strip world write, and warn when the previous owner was neither root
+ * nor UID or the directory was world-writable. not root: refuse only a
+ * world-writable directory that is not ours.
+ * returns an fd. whoever calls this then works through that fd (openat,
+ * mkdirat, fchdir), not through the path due to the fact that a path
+ * can be re-pointed by a rename.. */
+int
+secure_dir_at
+(
+  int         dfd,
+  const char *name,
+  mode_t      mode,
+  uid_t       uid,
+  gid_t       gid,
+  int        *outfd
+)
+{
+  struct stat st;
+  mode_t      want;
+  int         fd;
+  bool        created;
+
+  created = mkdirat(dfd, name, mode) == 0;
+  if (!created &&
+      errno != EEXIST)
+    return -1;
+  fd = openat(dfd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0)
+    return -1;
+  if (fstat(fd, &st) != 0)
+  {
+    close(fd);
+    return -1;
+  }
+  want = ((st.st_mode & 07777) | mode) & ~(mode_t)S_IWOTH;
+  if (geteuid() == 0)
+  {
+    if (!created &&
+        st.st_uid != 0 &&
+        st.st_uid != uid)
+      warn("repaired %s: owned by uid %u gid %u, mode %04o",
+           name, (unsigned)st.st_uid, (unsigned)st.st_gid,
+           (unsigned)(st.st_mode & 07777));
+    else if (!created &&
+        (st.st_mode & S_IWOTH))
+      warn("repaired %s: world-writable, mode %04o",
+           name, (unsigned)(st.st_mode & 07777));
+    if ((st.st_uid != uid ||
+        st.st_gid != gid) &&
+        fchown(fd, uid, gid) != 0)
+    {
+      close(fd);
+      return -1;
+    }
+    if ((st.st_mode & 07777) != want &&
+        fchmod(fd, want) != 0)
+    {
+      close(fd);
+      return -1;
+    }
+  }
+  else if (st.st_uid != geteuid() &&
+      (st.st_mode & S_IWOTH))
+  {
+    close(fd);
+    errno = EACCES;
+    return -1;
+  }
+  *outfd = fd;
+  return 0;
+}
+
 /* Emulate `rm -rf PATH` */
 int
 rm_rf_at(int dfd, const char *path)

@@ -2334,15 +2334,108 @@ tend $? "qmerge-test: stupid preconditions: PKGDIR-is-a-file resolve finishes" \
 	|| die "rc=${rc}; ${out}"
 rm -f "${PWD}/pkgfile"
 
+yes | qmerge -FU qmerge-test >/dev/null 2>&1
+sp_alive "sane after path sabotage"
+
+# test the work directories are portage's: $PORTAGE_TMPDIR/portage/CAT/PF for a
+# merge, $PORTAGE_TMPDIR/portage/._unmerge_/CAT/PF for the unmerge phases,
+# nothing qmerge-named, nothing under ROOT, and a directory somebody else
+# put there first out of their own kind heart we need to make sure we don't follow
+tmpbase="${PORTAGE_TMPDIR}/portage"
+tmppf="${tmpbase}/sys-devel/qmerge-test-1.3"
+
 : > "${PWD}/tmpfile"
 out=$(timeout 60 env PORTAGE_TMPDIR="${PWD}/tmpfile" bash -c \
 	"yes | qmerge -Fv =qmerge-test-1.3" 2>&1); rc=$?
-[[ ${rc} -lt 124 ]]
-tend $? "qmerge-test: stupid preconditions: TMPDIR-is-a-file merge finishes" \
+[[ ${rc} -ne 0 && ${rc} -lt 124 && \
+   ${out} == *"The directory specified in your PORTAGE_TMPDIR variable"* && \
+   $(qlist -Iv 2>/dev/null) != *qmerge-test-1.3* ]]
+tend $? "qmerge-test: [TMP] PORTAGE_TMPDIR that is a file stops before merging" \
 	|| die "rc=${rc}; ${out}"
 rm -f "${PWD}/tmpfile"
+
+out=$(yes | qmerge -Fv --keepwork =qmerge-test-1.3 2>&1)
+[[ -d ${tmppf}/image && -d ${tmppf}/temp && \
+   -d ${ROOT}/var/db/pkg/sys-devel/qmerge-test-1.3 && \
+   ! -e ${PORTAGE_TMPDIR}/qmerge && ! -e ${ROOT}${PORTAGE_TMPDIR} ]]
+tend $? "qmerge-test: [TMP] merge works in portage's CAT/PF, build-info moved into the VDB" \
+	|| die "${out}; $(ls -la "${tmpbase}" "${tmppf}" 2>&1)"
+[[ ! -e ${tmppf}/vdb ]]
+tend $? "qmerge-test: [TMP] no qmerge-only vdb/ in the work dir"
+rm -rf "${tmppf}"
+
+out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1)
+[[ -d ${tmpbase}/sys-devel && ! -e ${tmppf} && \
+   $(qlist -Iv 2>/dev/null) == *qmerge-test-1.3* ]]
+tend $? "qmerge-test: [TMP] work dir removed after the merge, category dir kept like portage" \
+	|| die "${out}; $(ls -la "${tmpbase}/sys-devel" 2>&1)"
+
+out=$(yes | qmerge -FU qmerge-test 2>&1)
+[[ -d ${tmpbase}/._unmerge_/sys-devel && \
+   ! -e ${tmpbase}/._unmerge_/sys-devel/qmerge-test-1.3 && \
+   -z $(ls -d "${PORTAGE_TMPDIR}"/qmerge._unmerge_* 2>/dev/null) && \
+   $(qlist -Iv 2>/dev/null) != *qmerge-test* ]]
+tend $? "qmerge-test: [TMP] unmerge phases ran in ._unmerge_/CAT/PF, removed after" \
+	|| die "${out}; $(ls -la "${tmpbase}/._unmerge_" 2>&1)"
+
+rm -rf "${tmpbase}/sys-devel"
+ln -s "${PWD}/nowhere" "${tmpbase}/sys-devel"
+out=$(timeout 60 bash -c "yes | qmerge -Fv =qmerge-test-1.3" 2>&1); rc=$?
+[[ ${rc} -ne 0 && ${rc} -lt 124 && ${out} == *"cannot secure work directory"* && \
+   ! -e ${PWD}/nowhere && $(qlist -Iv 2>/dev/null) != *qmerge-test-1.3* ]]
+tend $? "qmerge-test: [TMP] symlink planted as the category dir is refused, not followed" \
+	|| die "rc=${rc}; ${out}"
+rm -f "${tmpbase}/sys-devel"
+
+mkdir -p "${tmppf}/temp"
+echo keepme > "${PWD}/victim"
+ln -s "${PWD}/victim" "${tmppf}/temp/environment"
+out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+[[ ${rc} -eq 0 && $(cat "${PWD}/victim") == keepme && \
+   $(qlist -Iv 2>/dev/null) == *qmerge-test-1.3* ]]
+tend $? "qmerge-test: [TMP] stale environment symlink in temp/ is dropped, target untouched" \
+	|| die "rc=${rc}; ${out}"
+rm -f "${PWD}/victim"
 yes | qmerge -FU qmerge-test >/dev/null 2>&1
-sp_alive "sane after path sabotage"
+
+mkdir -p "${tmpbase}/sys-devel"
+chmod 0777 "${tmpbase}/sys-devel"
+out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+if [[ $(id -u) -eq 0 ]] ; then
+	[[ ${rc} -eq 0 && ${out} == *"repaired sys-devel: world-writable"* && \
+	   $(stat -c %a "${tmpbase}/sys-devel") != *7 ]]
+	tend $? "qmerge-test: [TMP] world-writable category dir repaired and reported (root)" \
+		|| die "rc=${rc}; ${out}; $(stat -c %a "${tmpbase}/sys-devel")"
+	nob=$(id -u nobody 2>/dev/null)
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	rm -rf "${tmpbase}/sys-devel"
+	mkdir -p "${tmpbase}/sys-devel"
+	chown "${nob}" "${tmpbase}/sys-devel"
+	out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ${out} == *"repaired sys-devel: owned by uid ${nob}"* && \
+	   $(stat -c %u "${tmpbase}/sys-devel") != "${nob}" ]]
+	tend $? "qmerge-test: [TMP] category dir owned by another user taken over and reported (root)" \
+		|| die "rc=${rc}; ${out}; $(stat -c %u "${tmpbase}/sys-devel")"
+else
+	[[ ${rc} -eq 0 ]]
+	tend $? "qmerge-test: [TMP] own world-writable category dir accepted without root" \
+		|| die "rc=${rc}; ${out}"
+fi
+yes | qmerge -FU qmerge-test >/dev/null 2>&1
+rm -rf "${tmpbase}/sys-devel"
+
+out=$(__QMERGE_TEST_TMPFREE=1 bash -c "yes | qmerge -Fv =qmerge-test-1.3" 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"has 1 KiB free; the largest package downloads"* && \
+   ${out} == *"for ROOT=${ROOT}/ consider PORTAGE_TMPDIR=${ROOT}/var/tmp"* ]]
+tend $? "qmerge-test: [TMP] low free space warns with the ROOT recipe and still merges" \
+	|| die "rc=${rc}; ${out}"
+yes | qmerge -FU qmerge-test >/dev/null 2>&1
+out=$(__QMERGE_TEST_TMPFREE=99999999999 bash -c "yes | qmerge -Fv =qmerge-test-1.3" 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} != *"KiB free"* ]]
+tend $? "qmerge-test: [TMP] enough free space: no warning" \
+	|| die "rc=${rc}; ${out}"
+yes | qmerge -FU qmerge-test >/dev/null 2>&1
+sp_alive "sane after tmpdir cases"
 
 mkdir -p "${ROOT}/var/lib/portage"
 printf 'NOT JSON AT ALL {{{{garbage' > "${ROOT}/var/lib/portage/preserved_libs_registry"
@@ -3644,8 +3737,8 @@ tend $? "qmerge-test: [W] previous index intact after failed forced refresh"
 rm -rf cfgttl "${ROOT}/ttlstore"
 
 mkdir -p cfgfw/etc/portage/binrepos.conf "${ROOT}/fwstore" 'fw src'
-printf '[fwrepo]\npriority = 1\nlocation = /fwstore\nsync-uri = http://127.0.0.1:1/\n' \
-	> cfgfw/etc/portage/binrepos.conf/f.conf
+printf '[fwrepo]\npriority = 1\nlocation = /fwstore\nsync-uri = %s/fw src\n' \
+	"${PWD}" > cfgfw/etc/portage/binrepos.conf/f.conf
 printf 'TIMESTAMP: %s\nVERSION: 0\n\nCPV: fake/b-1\n' "$(date +%s)" \
 	> 'fw src/Packages'
 gzip -c 'fw src/Packages' > 'fw src/Packages.gz'
@@ -3654,7 +3747,7 @@ printf '#!/bin/sh\necho "$#|$1" >> "${FWLOG}"\nexec sh -c "$1"\n' \
 printf '#!/bin/sh\necho "$#|$1" >> "${FWLOG2}"\nexec sh -c "$1"\n' \
 	> fwwrap2.sh
 chmod +x fwwrap.sh fwwrap2.sh
-QFC='cp "'"${PWD}"'/fw src/${FILE}" "${DISTDIR}/${FILE}"'
+QFC='cp "${URI}" "${DISTDIR}/${FILE}"'
 
 outfw=$(FWLOG=${PWD}/fw.log PORTAGE_CONFIGROOT=${PWD}/cfgfw \
 	QFETCHCOMMAND="${QFC}" QFETCH_WRAPPER="${PWD}/fwwrap.sh" \
@@ -3693,6 +3786,17 @@ outfw=$(PORTAGE_CONFIGROOT=${PWD}/cfgfw QFETCHCOMMAND="${QFC}" \
 	grep -q 'fake/b-1' "${ROOT}/fwstore/Packages"
 tend $? "qmerge-test: [FW] no wrapper set leaves the fetch path unchanged" \
 	|| die "${outfw}"
+[[ -z $(ls "${ROOT}/fwstore"/*.__download__ 2>/dev/null) && \
+   ! -e ${PORTAGE_TMPDIR}/portage/Packages && ! -e ${PORTAGE_TMPDIR}/portage/Packages.gz ]]
+tend $? "qmerge-test: [FW] index staged next to its store, nothing left in PORTAGE_TMPDIR"
+echo keepme > "${PWD}/victim"
+ln -s "${PWD}/victim" "${ROOT}/fwstore/Packages.gz.__download__"
+outfw=$(PORTAGE_CONFIGROOT=${PWD}/cfgfw QFETCHCOMMAND="${QFC}" qmerge -f 2>&1)
+[[ $(cat "${PWD}/victim") == keepme && ! -L ${ROOT}/fwstore/Packages.gz.__download__ && \
+   -s ${ROOT}/fwstore/Packages ]]
+tend $? "qmerge-test: [FW] planted download symlink removed, target untouched" \
+	|| die "${outfw}"
+rm -f "${PWD}/victim"
 rm -rf cfgfw 'fw src' fwwrap.sh fwwrap2.sh fw.log fw2.log "${ROOT}/fwstore"
 
 # ||MORE TESTS||
