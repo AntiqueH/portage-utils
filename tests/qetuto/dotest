@@ -63,6 +63,9 @@ out=$(QETUTO_EXTERNAL_REFRESH=1 qetuto -C -v 2>/dev/null)
 [[ -f ${home}/gpg.conf && -f ${home}/gpg-agent.conf && -f ${home}/dirmngr.conf ]]
 tpass "bootstrap creates the keyring under ROOT"
 
+[[ -z $(pgrep -f "gpg-agent --homedir ${ROOT}/etc/portage/gnupg.getuto.tmp") ]]
+tpass "bootstrap leaves no gpg-agent on the staging directory"
+
 mykeyid=$(<${home}/mykeyid)
 [[ ${mykeyid} =~ ^[0-9A-F]{40}$ ]]
 keys | grep -q "^fpr:::::::::${mykeyid}:"
@@ -82,24 +85,118 @@ out=$(env -u QETUTO_KEYSERVERS qetuto -C -v 2>/dev/null)
 [[ ${out} == *"already up-to-date"* ]]
 tpass "refresh within a day is skipped"
 
-# an old stamp triggers the refresh: the key file is re-imported and the
-# stamp renewed; without QETUTO_EXTERNAL_REFRESH=1 no keyserver or WKD
+# an old last run timestamp file triggers the refresh: the key file is
+# re-imported and the last run timestamp file renewed; without
+# QETUTO_EXTERNAL_REFRESH=1 no keyserver or WKD
 touch -d '2 days ago' ${home}/.getuto.last
 before=$(stat -c %Y ${home}/.getuto.last)
 out=$(qetuto -C -v 2>/dev/null)
 [[ ${out} == *"Updating GnuPG keyring"* ]]
 [[ $(stat -c %Y ${home}/.getuto.last) -gt ${before} ]]
 keys | grep -q "^fpr:::::::::${fpr}:"
-tpass "old stamp triggers the refresh and renews the stamp"
+tpass "old last run timestamp file triggers the refresh and is renewed"
 agents_down
 
 # external refresh -> the keyserver is unreachable, the run still ends
-# cleanly and the stamp is renewed
+# cleanly and the last run timestamp file is renewed
 touch -d '2 days ago' ${home}/.getuto.last
 before=$(stat -c %Y ${home}/.getuto.last)
 QETUTO_EXTERNAL_REFRESH=1 qetuto -C 2>/dev/null
 [[ $(stat -c %Y ${home}/.getuto.last) -gt ${before} ]]
 tpass "external refresh survives an unreachable keyserver"
+agents_down
+
+# every run ends by checking the keyring: check release key if it's gone
+# or not signed by the local trust key, or a lost local trust key, is a
+# failure
+cp -a ${home} home.good
+gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
+agents_down
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -ne 0 && ${err} == *"release key ${fpr} is not trusted"* ]]
+[[ ${err} == *"and run qetuto again"* ]]
+tpass "a removed release key is reported"
+agents_down
+
+# refresh should bring the key back from the release file, but no one
+# signs it again: mark this one as a failure again
+touch -d '2 days ago' ${home}/.getuto.last
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+keys | grep -q "^fpr:::::::::${fpr}:"
+[[ ${rc} -ne 0 && ${err} == *"release key ${fpr} is not trusted"* ]]
+tpass "a re-imported but unsigned release key is reported"
+agents_down
+
+rm -rf ${home}
+cp -a home.good ${home}
+rm -f ${home}/pubring.kbx
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -ne 0 && ${err} == *"no local trust key"* ]]
+tpass "a lost local trust key is reported"
+agents_down
+
+rm -rf ${home}
+cp -a home.good ${home}
+head -c 1640 /dev/urandom > ${home}/trustdb.gpg
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -ne 0 && ${err} == *"gpg cannot read the keyring"* ]]
+[[ ${err} == *"and run qetuto again"* ]]
+tpass "a keyring gpg cannot read is reported"
+agents_down
+
+rm -rf ${home}
+cp -a home.good ${home}
+qetuto -C
+tpass "an intact keyring passes the final look"
+agents_down
+
+# we have to check if a broken keyring (or changed?) outputs a failure
+# in the same manner as getuto.
+# the last run timestamp file should not renewed when the refresh fails
+cp ${home}/gpg.conf gpg.conf.good
+echo bogus-option-xyz >> ${home}/gpg.conf
+touch -d '2 days ago' ${home}/.getuto.last
+before=$(stat -c %Y ${home}/.getuto.last)
+set +e
+qetuto -C >/dev/null 2>&1
+rc=$?
+set -e
+cp gpg.conf.good ${home}/gpg.conf
+[[ ${rc} -ne 0 && $(stat -c %Y ${home}/.getuto.last) -eq ${before} ]]
+tpass "refresh with an invalid gpg.conf fails and keeps the old last run timestamp file"
+agents_down
+
+rm -f ${home}/trustdb.gpg
+touch -d '2 days ago' ${home}/.getuto.last
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -ne 0 && ${err} == *"trustdb.gpg"* ]]
+tpass "refresh without trustdb.gpg fails"
+agents_down
+
+head -c 4096 /dev/urandom > ${home}/pubring.kbx
+touch -d '2 days ago' ${home}/.getuto.last
+before=$(stat -c %Y ${home}/.getuto.last)
+set +e
+qetuto -C >/dev/null 2>&1
+rc=$?
+set -e
+[[ ${rc} -ne 0 && $(stat -c %Y ${home}/.getuto.last) -eq ${before} ]]
+tpass "refresh with a damaged pubring.kbx fails and keeps the old last run timestamp file"
 agents_down
 
 # bootstrap without a release key file fails and leaves no staging dir

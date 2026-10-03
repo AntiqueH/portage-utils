@@ -404,58 +404,189 @@ qet_fingerprints(bool secret, const char *exclude)
 	return fps;
 }
 
-static int
-qet_refresh(const char *lastrun)
+static int qet_refresh
+(
+  const char *lastrun
+)
 {
-	struct stat st;
-	time_t      now = time(NULL);
-	time_t      lst = 0;
-	char       *av[16];
-	size_t      k;
+  struct stat  st;
+  time_t       now;
+  time_t       lst;
+  char        *av[16];
+  size_t       k;
+  int          rc;
 
-	if (stat(lastrun, &st) == 0)
-		lst = st.st_mtime;
-	if (now - 86400 < lst) {
-		if (!qet_quiet)
-			printf("GnuPG keyring for package signatures already "
-				   "up-to-date.\n");
-		return 0;
-	}
-	if (!qet_quiet)
-		printf("Updating GnuPG keyring for package signatures\n");
+  now = time(NULL);
+  lst = 0;
 
-	for (k = 0; qet_keyfiles[k] != NULL; k++) {
-		qet_gpg_argv(av, 16, "--batch", "--import", qet_keyfiles[k], NULL);
-		(void)qet_spawn(av, NULL, NULL);
-	}
+  if (stat(lastrun, &st) == 0)
+    lst = st.st_mtime;
+  if (now - 86400 < lst)
+  {
+    if (!qet_quiet)
+      printf("GnuPG keyring for package signatures already "
+             "up-to-date.\n");
+    return 0;
+  }
+  if (!qet_quiet)
+    printf("Updating GnuPG keyring for package signatures\n");
 
-	if (qet_external) {
-		for (k = 0; qet_keyservers[k] != NULL; k++) {
-			char *tav[16];
-			size_t n = 0;
+  for (k = 0; qet_keyfiles[k] != NULL; k++)
+  {
+    qet_gpg_argv(av, 16, "--batch", "--import", qet_keyfiles[k], NULL);
+    rc = qet_spawn(av, NULL, NULL);
+    if (rc != 0)
+    {
+      warn("gpg --import %s failed", qet_keyfiles[k]);
+      return rc > 0 ? rc : 1;
+    }
+  }
 
-			tav[n++] = q_deconst("timeout");
-			tav[n++] = q_deconst("-k");
-			tav[n++] = q_deconst(QET_GPG_KILL);
-			tav[n++] = q_deconst(QET_GPG_TERM);
-			tav[n++] = q_deconst("gpg");
-			if (qet_quiet) {
-				tav[n++] = q_deconst("--quiet");
-				tav[n++] = q_deconst("--no-permission-warning");
-			}
-			tav[n++] = q_deconst("--batch");
-			tav[n++] = q_deconst("--keyserver");
-			tav[n++] = (char *)qet_keyservers[k];
-			tav[n++] = q_deconst("--refresh-keys");
-			tav[n] = NULL;
-			(void)qet_spawn(tav, NULL, NULL);
-		}
+  if (qet_external)
+  {
+    for (k = 0; qet_keyservers[k] != NULL; k++)
+    {
+      char   *tav[16];
+      size_t  n;
 
-		qet_wkd_locate();
-	}
+      n        = 0;
+      tav[n++] = q_deconst("timeout");
+      tav[n++] = q_deconst("-k");
+      tav[n++] = q_deconst(QET_GPG_KILL);
+      tav[n++] = q_deconst(QET_GPG_TERM);
+      tav[n++] = q_deconst("gpg");
+      if (qet_quiet)
+      {
+        tav[n++] = q_deconst("--quiet");
+        tav[n++] = q_deconst("--no-permission-warning");
+      }
+      tav[n++] = q_deconst("--batch");
+      tav[n++] = q_deconst("--keyserver");
+      tav[n++] = (char *)qet_keyservers[k];
+      tav[n++] = q_deconst("--refresh-keys");
+      tav[n]   = NULL;
+      (void)qet_spawn(tav, NULL, NULL);
+    }
 
-	qet_touch(lastrun);
-	return 0;
+    qet_wkd_locate();
+  }
+
+  qet_touch(lastrun);
+  return 0;
+}
+
+static int qet_verify
+(
+  void
+)
+{
+  char   *av[16];
+  char   *fields[16];
+  char   *out;
+  char   *line;
+  char   *sp;
+  set    *valid;
+  size_t  k;
+  int     nf;
+  int     bad;
+  char    val;
+  bool    primary;
+  bool    ultimate;
+
+  out      = NULL;
+  valid    = create_set();
+  bad      = 0;
+  val      = '\0';
+  primary  = false;
+  ultimate = false;
+
+  qet_gpg_argv(av, 16, "--no-permission-warning", "--batch", "--with-colons",
+               "--list-keys", NULL);
+  if (qet_spawn(av, NULL, &out) != 0 ||
+      out == NULL)
+  {
+    free(out);
+    free_set(valid);
+    warn("gpg cannot read the keyring in %s", qet_home);
+    warn("remove %s and run qetuto again", qet_home);
+    return 1;
+  }
+  for (line = strtok_r(out, "\n", &sp);
+       line != NULL;
+       line = strtok_r(NULL, "\n", &sp))
+  {
+    if (strncmp(line, "pub:", 4) == 0)
+    {
+      nf      = qet_colon_fields(line, fields, 16);
+      val     = nf > 1 ? fields[1][0] : '\0';
+      primary = true;
+    }
+    else if (primary &&
+             strncmp(line, "fpr:", 4) == 0)
+    {
+      primary = false;
+      nf      = qet_colon_fields(line, fields, 16);
+      if (nf < 10 ||
+          val == '\0')
+        continue;
+      if (val == 'u')
+        ultimate = true;
+      if (strchr("fuer", val) != NULL)
+        add_set(fields[9], valid);
+    }
+  }
+  free(out);
+
+  if (!ultimate)
+  {
+    warn("no local trust key in %s", qet_home);
+    bad++;
+  }
+
+  for (k = 0; qet_keyfiles[k] != NULL; k++)
+  {
+    out     = NULL;
+    primary = false;
+    qet_gpg_argv(av, 16, "--no-permission-warning", "--batch",
+                 "--with-colons", "--show-keys", qet_keyfiles[k], NULL);
+    if (qet_spawn(av, NULL, &out) != 0 ||
+        out == NULL)
+    {
+      warn("cannot read the keys of %s", qet_keyfiles[k]);
+      bad++;
+      free(out);
+      continue;
+    }
+    for (line = strtok_r(out, "\n", &sp);
+         line != NULL;
+         line = strtok_r(NULL, "\n", &sp))
+    {
+      if (strncmp(line, "pub:", 4) == 0)
+      {
+        primary = true;
+      }
+      else if (primary &&
+               strncmp(line, "fpr:", 4) == 0)
+      {
+        primary = false;
+        nf      = qet_colon_fields(line, fields, 16);
+        if (nf < 10 ||
+            contains_set(fields[9], valid) != NULL)
+          continue;
+        warn("release key %s is not trusted in %s", fields[9], qet_home);
+        bad++;
+      }
+    }
+    free(out);
+  }
+  free_set(valid);
+
+  if (bad > 0)
+  {
+    warn("remove %s and run qetuto again", qet_home);
+    return 1;
+  }
+  return 0;
 }
 
 static int
@@ -511,7 +642,6 @@ qet_bootstrap(const char *lastrun)
 	f = fopen(path, "w");
 	if (f != NULL) {
 		fputs("no-greeting\n", f);
-		fputs("no-auto-check-trustdb\n", f);
 		fclose(f);
 	}
 
@@ -703,6 +833,8 @@ qet_bootstrap(const char *lastrun)
 	strcat(path, "/trustdb.gpg");
 	chmod(path, 0644);
 
+	qet_gpgconf_kill();
+
 	if (rename(staging, orig) != 0) {
 		warnp("cannot move %s into place", staging);
 		goto fail;
@@ -718,62 +850,81 @@ qet_bootstrap(const char *lastrun)
  fail:
 	free(pass);
 	free(mykeyid);
+	qet_gpgconf_kill();
 	rmav[2] = staging;
 	(void)qet_spawn(rmav, NULL, NULL);
 	return 1;
 }
 
-int qetuto_main(int argc, char **argv)
+int qetuto_main
+(
+  int    argc,
+  char **argv
+)
 {
-	int         ret;
-	char        lastrun[_Q_PATH_MAX + 16];
-	char        trustdb[_Q_PATH_MAX + 16];
-	size_t      rl;
-	struct stat st;
+  int         ret;
+  char        lastrun[_Q_PATH_MAX + 16];
+  char        trustdb[_Q_PATH_MAX + 16];
+  size_t      rl;
+  struct stat st;
 
-	while ((ret = GETOPT_LONG(QETUTO, qetuto, "")) != -1) {
-		switch (ret) {
-			COMMON_GETOPTS_CASES(qetuto)
-		}
-	}
+  while ((ret = GETOPT_LONG(QETUTO, qetuto, "")) != -1)
+  {
+    switch (ret)
+    {
+    COMMON_GETOPTS_CASES(qetuto)
+    }
+  }
 
-	qet_quiet    = verbose == 0;
-	qet_external = qetuto_external_refresh_conf != NULL &&
-				   strcmp(qetuto_external_refresh_conf, "1") == 0;
+  qet_quiet    = verbose == 0;
+  qet_external = qetuto_external_refresh_conf != NULL &&
+                 strcmp(qetuto_external_refresh_conf, "1") == 0;
 
-	qet_root = xstrdup(portroot);
-	rl = strlen(qet_root);
-	while (rl > 1 && qet_root[rl - 1] == '/')
-		qet_root[--rl] = '\0';
-	if (strcmp(qet_root, "/") == 0)
-		qet_root[0] = '\0';
+  qet_root = xstrdup(portroot);
+  rl       = strlen(qet_root);
+  while (rl > 1 &&
+         qet_root[rl - 1] == '/')
+    qet_root[--rl] = '\0';
+  if (strcmp(qet_root, "/") == 0)
+    qet_root[0] = '\0';
 
-	if (geteuid() != 0 && qet_root[0] == '\0')
-		err("qetuto must be run as root");
+  if (geteuid() != 0 &&
+      qet_root[0] == '\0')
+    err("qetuto must be run as root");
 
-	snprintf(qet_home, sizeof(qet_home), "%s/etc/portage/gnupg", qet_root);
-	setenv("GNUPGHOME", qet_home, 1);
-	snprintf(lastrun, sizeof(lastrun), "%s/.getuto.last", qet_home);
+  snprintf(qet_home, sizeof(qet_home), "%s/etc/portage/gnupg", qet_root);
+  setenv("GNUPGHOME", qet_home, 1);
+  snprintf(lastrun, sizeof(lastrun), "%s/.getuto.last", qet_home);
 
-	qet_build_lists();
+  qet_build_lists();
 
-	qet_gpgconf_kill();
+  qet_gpgconf_kill();
 
-	if (stat(qet_home, &st) != 0) {
-		if (!qet_quiet)
-			printf("Initializing %s\n", qet_home);
-		ret = qet_bootstrap(lastrun);
-	} else {
-		setenv("LC_ALL", "C.UTF-8", 1);
-		ret = qet_refresh(lastrun);
-	}
+  if (stat(qet_home, &st) != 0)
+  {
+    if (!qet_quiet)
+      printf("Initializing %s\n", qet_home);
+    ret = qet_bootstrap(lastrun);
+  }
+  else
+  {
+    setenv("LC_ALL", "C.UTF-8", 1);
+    ret = qet_refresh(lastrun);
+  }
 
-	snprintf(trustdb, sizeof(trustdb), "%s/trustdb.gpg", qet_home);
-	chmod(trustdb, 0644);
+  snprintf(trustdb, sizeof(trustdb), "%s/trustdb.gpg", qet_home);
+  if (chmod(trustdb, 0644) != 0 &&
+      ret == 0)
+  {
+    warnp("cannot access %s", trustdb);
+    ret = 1;
+  }
+  if (ret == 0)
+    ret = qet_verify();
 
-	qet_gpgconf_kill();
-	qet_free_lists();
-	free(qet_root);
-	qet_root = NULL;
-	return ret;
+  qet_gpgconf_kill();
+  qet_free_lists();
+  free(qet_root);
+  qet_root = NULL;
+  return ret;
 }
