@@ -15292,25 +15292,111 @@ qm_collision_protect(atom_ctx *matom, array *slotmembers,
 
 
 /* what to restore when a package image is unpacked onto disk: file
- * modes, times, acls, xattrs and the path safety checks, and when we
- * run as root also the owner and group the builder recorded.
+ * modes, times and the path safety checks, with FEATURES=xattr also
+ * the xattrs, and when we run as root also the owner and group the
+ * builder recorded. acls should not be restored.
  * this has escaped everyone, implementing as per bug #31 reported
  * by 0times. */
-static int
-qm_image_extract_flags(void)
+static int qm_image_extract_flags
+(
+  void
+)
 {
-	int flags = ARCHIVE_EXTRACT_PERM |
-			ARCHIVE_EXTRACT_TIME |
-			ARCHIVE_EXTRACT_ACL |
-			ARCHIVE_EXTRACT_FFLAGS |
-			ARCHIVE_EXTRACT_XATTR |
-			ARCHIVE_EXTRACT_SECURE_SYMLINKS |
-			ARCHIVE_EXTRACT_SECURE_NODOTDOT |
-			ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS;
+  int flags;
 
-	if (geteuid() == 0)
-		flags |= ARCHIVE_EXTRACT_OWNER;
-	return flags;
+  flags = ARCHIVE_EXTRACT_PERM |
+          ARCHIVE_EXTRACT_TIME |
+          ARCHIVE_EXTRACT_FFLAGS |
+          ARCHIVE_EXTRACT_SECURE_SYMLINKS |
+          ARCHIVE_EXTRACT_SECURE_NODOTDOT |
+          ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS;
+
+  if (contains_set("xattr", features) != NULL)
+    flags |= ARCHIVE_EXTRACT_XATTR;
+  if (geteuid() == 0)
+    flags |= ARCHIVE_EXTRACT_OWNER;
+  return flags;
+}
+
+static bool qm_xattr_excluded
+(
+  const char *name
+)
+{
+  char *pats;
+  char *pat;
+  char *sp;
+  bool  ret;
+
+  if (xattr_exclude == NULL ||
+      xattr_exclude[0] == '\0')
+    return false;
+
+  ret  = false;
+  pats = xstrdup(xattr_exclude);
+  for (pat = strtok_r(pats, " \t\n", &sp);
+       pat != NULL;
+       pat = strtok_r(NULL, " \t\n", &sp))
+  {
+    if (fnmatch(pat, name, 0) == 0)
+    {
+      ret = true;
+      break;
+    }
+  }
+  free(pats);
+  return ret;
+}
+
+static void qm_strip_excluded_xattrs
+(
+  struct archive_entry *entry
+)
+{
+  const char  *name;
+  const void  *value;
+  char       **names;
+  void       **values;
+  size_t      *sizes;
+  size_t       size;
+  int          cnt;
+  int          kept;
+  int          i;
+
+  cnt = archive_entry_xattr_reset(entry);
+  if (cnt <= 0)
+    return;
+
+  names  = xmalloc(sizeof(*names) * (size_t)cnt);
+  values = xmalloc(sizeof(*values) * (size_t)cnt);
+  sizes  = xmalloc(sizeof(*sizes) * (size_t)cnt);
+  kept   = 0;
+  while (kept < cnt &&
+         archive_entry_xattr_next(entry, &name, &value, &size) == ARCHIVE_OK)
+  {
+    if (qm_xattr_excluded(name))
+      continue;
+    names[kept]  = xstrdup(name);
+    values[kept] = xmalloc(size + 1);
+    memcpy(values[kept], value, size);
+    sizes[kept]  = size;
+    kept++;
+  }
+
+  if (kept < cnt)
+  {
+    archive_entry_xattr_clear(entry);
+    for (i = 0; i < kept; i++)
+      archive_entry_xattr_add_entry(entry, names[i], values[i], sizes[i]);
+  }
+  for (i = 0; i < kept; i++)
+  {
+    free(names[i]);
+    free(values[i]);
+  }
+  free(names);
+  free(values);
+  free(sizes);
 }
 
 /* we need some explanations here for each of the elements bellow,
@@ -15600,9 +15686,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 		qarchive_read_taronly(a);
 		archive_write_disk_set_options(t, (ARCHIVE_EXTRACT_PERM |
 									   	   ARCHIVE_EXTRACT_TIME |
-									   	   ARCHIVE_EXTRACT_ACL |
 									   	   ARCHIVE_EXTRACT_FFLAGS |
-									   	   ARCHIVE_EXTRACT_XATTR |
 									   	   ARCHIVE_EXTRACT_SECURE_SYMLINKS |
 									   	   ARCHIVE_EXTRACT_SECURE_NODOTDOT |
 									   	   ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS));
@@ -15685,7 +15769,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			fname = strchr(fname, '/');
 			if (fname == NULL)
 				continue;
-			fname++;
+			while (*fname == '/')
+				fname++;
 			if (*fname == '\0')
 				/* bug #968185 */
 				continue;
@@ -15708,17 +15793,21 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			{
 				const char *hlinktrg = archive_entry_hardlink(entry);
 				hlinktrg = strchr(hlinktrg, '/');
+				while (hlinktrg != NULL &&
+					   *hlinktrg == '/')
+					hlinktrg++;
 				if (hlinktrg == NULL ||
-					hlinktrg[1] == '\0')
+					*hlinktrg == '\0')
 				/* really, how? */
 				{
 					warn("%s has invalid hardlink target '%s', skipping",
 						 fname, archive_entry_hardlink(entry));
 					continue;
 				}
-				archive_entry_set_hardlink(entry, &hlinktrg[1]);
+				archive_entry_set_hardlink(entry, hlinktrg);
 			}
 
+			qm_strip_excluded_xattrs(entry);
 			if (archive_write_header(t, entry) != ARCHIVE_OK)
 				err("failed to unpack image '%s': %s",
 					fname, archive_error_string(t));
@@ -15810,6 +15899,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 			while ((r = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
 				if (verbose > 1)
 					printf("%s\n", archive_entry_pathname(entry));
+				qm_strip_excluded_xattrs(entry);
 				if (archive_write_header(t, entry) != ARCHIVE_OK)
 					err("failed to unpack binpkg '%s': %s",
 						archive_entry_pathname(entry),

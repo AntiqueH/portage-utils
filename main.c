@@ -49,6 +49,7 @@ char *qetuto_keys_conf;
 char *qetuto_external_refresh_conf;
 char *binpkg_gpg_verify_gpg_home;
 char *binpkg_tar_opts;
+char *xattr_exclude;
 char *accept_chosts;
 char *binpkg_gpg_signing_base_command;
 char *binpkg_gpg_signing_digest;
@@ -1392,6 +1393,11 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  BINPKG_GPG_VERIFY_GPG_HOME, binpkg_gpg_verify_gpg_home, true,
 		   CONFIG_EPREFIX "etc/portage/gnupg")
 	_Q_EVS(STR,  PORTAGE_BINPKG_TAR_OPTS, binpkg_tar_opts, true, "")
+	_Q_EVS(NSTR, PORTAGE_XATTR_EXCLUDE, xattr_exclude,      true,
+		   "bcachefs.* bcachefs_effective.* btrfs.* security.evm "
+		   "security.ima security.selinux system.nfs4_acl "
+		   "user.apache_handler user.Beagle.* user.dublincore.* "
+		   "user.mime_encoding user.xdg.*")
 	_Q_EVS(STR,  ACCEPT_CHOSTS,        accept_chosts,       true,  "")
 	_Q_EVS(STR,  BINPKG_GPG_SIGNING_BASE_COMMAND, binpkg_gpg_signing_base_command,
 		   true, "/usr/bin/flock /run/lock/portage-binpkg-gpg.lock "

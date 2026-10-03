@@ -356,6 +356,53 @@ done < "${ffcv}"
 tend $? "qmerge-test: [FWF] every CONTENTS entry traces back to the payload" \
 	|| die "not in payload: ${ffmiss}"
 
+# testing quickpkg vs qmerge
+# gpkg test packages built by portage's quickpkg: merged from the gpkg
+# out of a PKGDIR of their own, and what gets in must equal the payload
+# of the tbz2 twin we unpacked previously
+if [[ -n ${GPKG_ENABLED} ]] ; then
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	mkdir -p "${ROOT}/pgpkgs/sys-devel"
+	cp "${as}/packages-gpkg/sys-devel/qmerge-test-1.3.gpkg.tar" \
+		"${ROOT}/pgpkgs/sys-devel/"
+	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	out=$(yes | PKGDIR=/pgpkgs qmerge -F =sys-devel/qmerge-test-1.3 2>&1); rc=$?
+	pgvdb="${ROOT}/var/db/pkg/sys-devel/qmerge-test-1.3"
+	[[ ${rc} -eq 0 && $(<"${pgvdb}/BINPKGMD5") == \
+	   "$(md5sum "${ROOT}/pgpkgs/sys-devel/qmerge-test-1.3.gpkg.tar" | cut -d' ' -f1)" ]]
+	tend $? "qmerge-test: [portage gpkg] quickpkg-built gpkg merges" \
+		|| die "rc=${rc}; ${out}"
+	qm_merged "sys-devel/qmerge-test-1.3" "[portage gpkg] record and files in place"
+
+	pgbad=""
+	while IFS= read -r pgp ; do
+		pgrel=${pgp#ffref/}
+		if [[ -d ${pgp} ]] ; then
+			[[ -d ${ROOT}/${pgrel} ]] || pgbad+="dir:${pgrel} "
+		else
+			cmp -s "${pgp}" "${ROOT}/${pgrel}" || pgbad+="content:${pgrel} "
+		fi
+	done < <(find ffref -mindepth 1)
+	[[ -z ${pgbad} ]]
+	tend $? "qmerge-test: [portage gpkg] merged files equal the tbz2 payload" \
+		|| die "mismatches: ${pgbad}"
+
+	cp "${as}/packages-gpkg/sys-devel/qmerge-test-2.0.gpkg.tar" \
+		"${ROOT}/pgpkgs/sys-devel/"
+	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	out=$(yes | PKGDIR=/pgpkgs qmerge -F =sys-devel/qmerge-test-2.0 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -x ${ROOT}/usr/bin/qmerge-test2 && \
+	   ! -e ${ROOT}/usr/bin/qmerge-test && ! -d ${pgvdb} && \
+	   -d ${ROOT}/var/db/pkg/sys-devel/qmerge-test-2.0 ]]
+	tend $? "qmerge-test: [portage gpkg] upgrade to the 2.0 gpkg replaces 1.3" \
+		|| die "rc=${rc}; ${out}"
+
+	yes | PKGDIR=/pgpkgs qmerge -FU qmerge-test >/dev/null 2>&1
+	rm -rf "${ROOT}/pgpkgs"
+else
+	echo "${WARN}SKIPPED:${NORMAL} [portage gpkg] needs a build with gpkg support"
+fi
+
 yes | qmerge -FU qmerge-test >/dev/null 2>&1
 rm -rf ffref
 rm -Rf "${ROOT}"/etc "${ROOT}"/usr
@@ -927,6 +974,33 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 		mkdir "${gvex}/md/metadata/sub"; echo x > "${gvex}/md/metadata/sub/EVIL"
 		gv_md_repack
 		gv_reject "nested metadata member refused" "nested metadata member"
+
+		# quickpkg run with a ROOT other than / names the image members
+		# image//path; portage merges those, so do we, hardlinks included
+		gv_restore
+		rm -rf "${gvex}/im"; mkdir "${gvex}/im"
+		zstd -dc "${gvex}/${gvpfx}/image.tar.zst" | tar x -C "${gvex}/im"
+		ln "${gvex}/im/image/usr/bin/qmerge-test" \
+			"${gvex}/im/image/usr/bin/qmerge-test.hl"
+		( cd "${gvex}/im" && tar --format=ustar \
+			--transform='s,^image/,image//,' -cf im.tar image && \
+		  zstd -q -f im.tar -o "../${gvpfx}/image.tar.zst" )
+		gvds=$(tar tf "${gvex}/im/im.tar" | grep -c '^image//usr/bin/qmerge-test')
+		sed -i "s#^DATA image.tar.zst .*#DATA image.tar.zst $(stat -c %s \
+			"${gvex}/${gvpfx}/image.tar.zst") SHA512 $(sha512sum \
+			"${gvex}/${gvpfx}/image.tar.zst" | cut -d" " -f1)#" \
+			"${gvex}/${gvpfx}/Manifest"
+		( cd "${gvex}" && tar --format=ustar -cf "${gvtgt}" ${gvmem} )
+		gv_index
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
+		out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfggv" \
+			qmerge -Fv =${gvpv} 2>&1); rc=$?
+		[[ ${rc} -eq 0 && ${gvds} -eq 2 && -x ${ROOT}/usr/bin/qmerge-test && \
+		   $(stat -c %i "${ROOT}/usr/bin/qmerge-test") == \
+		   "$(stat -c %i "${ROOT}/usr/bin/qmerge-test.hl" 2>/dev/null)" ]]
+		tend $? "qmerge-test: [gpkg verify] image members named image//path merge, hardlink kept" \
+			|| die "rc=${rc} members=${gvds}; ${out}"
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
 	else
 		echo "${WARN}SKIPPED:${NORMAL} [gpkg verify] duplicate metadata member (need zstd)"
 	fi
@@ -1600,11 +1674,14 @@ else
 	echo "${WARN}SKIPPED:${NORMAL} verify-signature: checks (need gpkg + gpgme builds and gpg installed)"
 fi
 
-# [xattr] xattr + gpkg: qpkg -g must record xattrs (pax image) and the
-# merge must restore them
+# [xattr] xattr + gpkg: with FEATURES=xattr qpkg -g records the xattrs
+# (pax image) and the merge restores them, minus PORTAGE_XATTR_EXCLUDE;
+# without the feature nothing is recorded or restored, and acls are
+# never recorded (portage features)
 if [[ -n ${GPKG_ENABLED} ]] && type -P setfattr >/dev/null \
 		&& type -P getfattr >/dev/null ; then
 	xaroot="${ROOT}/pkgs/sys-devel"
+	xafeat="${FEATURES} xattr"
 	yes | qmerge -FU qmerge-test >/dev/null 2>&1
 	rm -rf "${xaroot}/qmerge-test"
 	rm -f "${xaroot}"/qmerge-test-1.3*.tbz2 "${xaroot}"/qmerge-test-1.3*.gpkg.tar
@@ -1612,10 +1689,10 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P setfattr >/dev/null \
 	yes | qmerge -Fv =qmerge-test-1.3 >/dev/null 2>&1
 	if setfattr -n user.qa -v xa-roundtrip \
 			"${ROOT}/usr/bin/qmerge-test" 2>/dev/null ; then
-		qpkg -g qmerge-test-1.3 >/dev/null 2>&1
+		FEATURES="${xafeat}" qpkg -g qmerge-test-1.3 >/dev/null 2>&1
 		yes | qmerge -FU qmerge-test >/dev/null 2>&1
 		rm -f "${xaroot}/qmerge-test-1.3.tbz2"
-		out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1)
+		out=$(yes | FEATURES="${xafeat}" qmerge -Fv =qmerge-test-1.3 2>&1)
 		tend $? "qmerge-test: [xattr] merge from xattr-carrying gpkg" || die "${out}"
 		xaval=$(getfattr --only-values -n user.qa \
 			"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
@@ -1625,12 +1702,12 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P setfattr >/dev/null \
 		if setfattr -n user.qraw -v 0xfffe80ff \
 				"${ROOT}/usr/bin/qmerge-test" 2>/dev/null ; then
 			rm -f "${xaroot}"/qmerge-test-1.3*.gpkg.tar
-			qpkg -g qmerge-test-1.3 >/dev/null 2>&1
+			FEATURES="${xafeat}" qpkg -g qmerge-test-1.3 >/dev/null 2>&1
 			gnew="${xaroot}/qmerge-test-1.3.gpkg.tar"
 			touch -d "@$(( $(stat -c %Y "${gnew}") + 2 ))" "${gnew}"
 			q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 			yes | qmerge -FU qmerge-test >/dev/null 2>&1
-			out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1)
+			out=$(yes | FEATURES="${xafeat}" qmerge -Fv =qmerge-test-1.3 2>&1)
 			xaraw=$(getfattr -e hex -n user.qraw --absolute-names \
 				"${ROOT}/usr/bin/qmerge-test" 2>/dev/null \
 				| grep -o '0x[0-9a-f]*')
@@ -1641,6 +1718,56 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P setfattr >/dev/null \
 		else
 			echo "${WARN}SKIPPED:${NORMAL} [xattr] filesystem rejects binary xattr values"
 		fi
+
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
+		out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+		xaval=$(getfattr --only-values -n user.qa \
+			"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+		[[ ${rc} -eq 0 && -z ${xaval} ]]
+		tend $? "qmerge-test: [xattr] not restored without FEATURES=xattr" \
+			|| die "rc=${rc} got '${xaval}'; ${out}"
+
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
+		out=$(yes | FEATURES="${xafeat}" PORTAGE_XATTR_EXCLUDE="user.nope user.qa" \
+			qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+		xaval=$(getfattr --only-values -n user.qa \
+			"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+		[[ ${rc} -eq 0 && -z ${xaval} ]]
+		tend $? "qmerge-test: [xattr] PORTAGE_XATTR_EXCLUDE keeps a named xattr out" \
+			|| die "rc=${rc} got '${xaval}'; ${out}"
+
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
+		yes | FEATURES="${xafeat}" qmerge -Fv =qmerge-test-1.3 >/dev/null 2>&1
+		xaacl=0
+		if type -P setfacl >/dev/null && type -P bsdtar >/dev/null && \
+				setfacl -m u:0:r-x "${ROOT}/usr/bin/qmerge-test" 2>/dev/null ; then
+			xaacl=1
+		fi
+		rm -f "${xaroot}"/qmerge-test-1.3*.gpkg.tar
+		qpkg -g qmerge-test-1.3 >/dev/null 2>&1
+		gnew="${xaroot}/qmerge-test-1.3.gpkg.tar"
+		touch -d "@$(( $(stat -c %Y "${gnew}") + 4 ))" "${gnew}"
+		q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		if [[ ${xaacl} -eq 1 ]] ; then
+			tar xOf "${gnew}" --wildcards '*/image.tar*' > xaimg 2>/dev/null
+			xamode=$(bsdtar -tvf xaimg 2>/dev/null | \
+				awk '$NF ~ /usr\/bin\/qmerge-test$/ { print $1 }')
+			[[ -n ${xamode} && ${xamode} != *+ ]]
+			tend $? "qmerge-test: [xattr] acls are not recorded by qpkg" \
+				|| die "mode field '${xamode}'"
+			rm -f xaimg
+		else
+			echo "${WARN}SKIPPED:${NORMAL} [xattr] acl check (no setfacl/bsdtar or fs support)"
+		fi
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
+		out=$(yes | FEATURES="${xafeat}" qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+		xaval=$(getfattr --only-values -n user.qa \
+			"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+		[[ ${rc} -eq 0 && -z ${xaval} ]]
+		tend $? "qmerge-test: [xattr] not recorded by qpkg without FEATURES=xattr" \
+			|| die "rc=${rc} got '${xaval}'; ${out}"
+		rm -f "${xaroot}"/qmerge-test-1.3*.gpkg.tar.checksum_failure
+
 		yes | qmerge -FU qmerge-test >/dev/null 2>&1
 	else
 		echo "${WARN}SKIPPED:${NORMAL} [xattr] filesystem rejects user xattrs"
@@ -1761,14 +1888,45 @@ if type -P setfattr >/dev/null && type -P getfattr >/dev/null && \
 		setfattr -n user.qtb -v tb-roundtrip \
 			"${ROOT}/usr/bin/qmerge-test" 2>/dev/null ; then
 	rm -f "${tbroot}"/qmerge-test-1.3*.tbz2
-	qpkg -x qmerge-test-1.3 >/dev/null 2>&1
+	FEATURES="${FEATURES} xattr" qpkg -x qmerge-test-1.3 >/dev/null 2>&1
 	yes | qmerge -FU qmerge-test >/dev/null 2>&1
-	out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1)
+	out=$(yes | FEATURES="${FEATURES} xattr" qmerge -Fv =qmerge-test-1.3 2>&1)
 	tbxa=$(getfattr --only-values -n user.qtb \
 		"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
 	[[ ${tbxa} == "tb-roundtrip" ]]
 	tend $? "qmerge-test: [TB] user xattr survives the tbz2 roundtrip" \
 		|| die "got '${tbxa}'; ${out}"
+
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+	tbxa=$(getfattr --only-values -n user.qtb \
+		"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+	[[ ${rc} -eq 0 && -z ${tbxa} ]]
+	tend $? "qmerge-test: [TB] xattr not restored from the tbz2 without FEATURES=xattr" \
+		|| die "rc=${rc} got '${tbxa}'; ${out}"
+
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	out=$(yes | FEATURES="${FEATURES} xattr" PORTAGE_XATTR_EXCLUDE="user.qtb" \
+		qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+	tbxa=$(getfattr --only-values -n user.qtb \
+		"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+	[[ ${rc} -eq 0 && -z ${tbxa} ]]
+	tend $? "qmerge-test: [TB] PORTAGE_XATTR_EXCLUDE keeps a named xattr out of the tbz2 merge" \
+		|| die "rc=${rc} got '${tbxa}'; ${out}"
+
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	yes | FEATURES="${FEATURES} xattr" qmerge -Fv =qmerge-test-1.3 >/dev/null 2>&1
+	tbxa=$(getfattr --only-values -n user.qtb \
+		"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+	rm -f "${tbroot}"/qmerge-test-1.3*.tbz2
+	qpkg -x qmerge-test-1.3 >/dev/null 2>&1
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	out=$(yes | FEATURES="${FEATURES} xattr" qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
+	tbxb=$(getfattr --only-values -n user.qtb \
+		"${ROOT}/usr/bin/qmerge-test" 2>/dev/null)
+	[[ ${rc} -eq 0 && ${tbxa} == "tb-roundtrip" && -z ${tbxb} ]]
+	tend $? "qmerge-test: [TB] xattr not recorded in the tbz2 by qpkg without FEATURES=xattr" \
+		|| die "rc=${rc} before '${tbxa}' after '${tbxb}'; ${out}"
 else
 	echo "${WARN}SKIPPED:${NORMAL} [TB] xattr roundtrip (no setfattr/getfattr or fs support)"
 fi

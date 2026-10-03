@@ -192,6 +192,7 @@ extern char *qmerge_respect_use_conf;
 extern char *qmerge_rebuilt_conf;
 extern char *binpkg_gpg_verify_gpg_home;
 extern char *binpkg_tar_opts;
+extern char *xattr_exclude;
 extern char *accept_chosts;
 extern char *binpkg_gpg_signing_base_command;
 extern char *binpkg_gpg_signing_digest;

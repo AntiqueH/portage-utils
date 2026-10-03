@@ -456,7 +456,22 @@ qgpkg_add_member(struct archive *a, const char *path, const char *entname)
 }
 #endif
 
-/* libarchive imlpementation over the old format 
+static int qpkg_read_disk_flags
+(
+  void
+)
+{
+  int flags;
+
+  flags = ARCHIVE_READDISK_NO_ACL;
+  if (contains_set("xattr", features) == NULL &&
+      (binpkg_tar_opts == NULL ||
+       strstr(binpkg_tar_opts, "--xattrs") == NULL))
+    flags |= ARCHIVE_READDISK_NO_XATTR;
+  return flags;
+}
+
+/* libarchive imlpementation over the old format
  * needs a little more docs love here */
 static bool
 qpkg_write_image(struct archive *a, tree_pkg_ctx *pkg, char *line,
@@ -478,6 +493,7 @@ qpkg_write_image(struct archive *a, tree_pkg_ctx *pkg, char *line,
 	bool gerr = false;
 
 	ard = archive_read_disk_new();
+	archive_read_disk_set_behavior(ard, qpkg_read_disk_flags());
 	lres = archive_entry_linkresolver_new();
 	archive_entry_linkresolver_set_strategy(lres, archive_format(a));
 	for (; (line = strtok_r(line, "\n", &savep)) != NULL; line = NULL) {
@@ -1023,7 +1039,8 @@ qgpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 #endif
 }
 
-/* now xattrs/acls/sparse/hardlinks are identified and defined, so those flags are satisfied.
+/* --xattrs turns the xattrs on like FEATURES=xattr, --acls is accepted and
+ * ignored like quickpkg, sparse files and hardlinks are kept.
  * anything else is warned about and ignored */
 static void
 qpkg_tar_opts_check(void)
