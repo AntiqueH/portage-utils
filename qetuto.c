@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -27,6 +28,7 @@
 #include "rmspace.h"
 #include "safe_io.h"
 #include "set.h"
+#include "stat-time.h"
 #include "xvasprintf.h"
 #include "xmkdir.h"
 
@@ -111,10 +113,14 @@ qet_build_lists(void)
 		const char *spec = (qetuto_keys_conf != NULL &&
 							qetuto_keys_conf[0] != '\0')
 				? qetuto_keys_conf : QET_KEYS_DEFAULT;
-		char  **rel = qet_split_list(spec);
+		char   *all = xasprintf("%s %s", spec,
+								qetuto_extra_keys_conf != NULL
+								? qetuto_extra_keys_conf : "");
+		char  **rel = qet_split_list(all);
 		size_t  n   = 0;
 		size_t  i;
 
+		free(all);
 		while (rel[n] != NULL)
 			n++;
 		qet_keyfiles = xmalloc(sizeof(*qet_keyfiles) * (n + 1));
@@ -404,6 +410,39 @@ qet_fingerprints(bool secret, const char *exclude)
 	return fps;
 }
 
+/* checking whether we can trust all newly added release keys.
+ * every new key in it gets one that only root user can and should change
+ * if it's writable by other users, we refuse to trust the key. */
+static bool qet_keyfile_secure
+(
+  const char *path
+)
+{
+  struct stat st;
+
+  if (stat(path, &st) != 0)
+    return true;
+
+  if (!S_ISREG(st.st_mode))
+  {
+    warn("%s is not a regular file, refusing to trust its keys", path);
+    return false;
+  }
+  if (st.st_uid != 0 &&
+      st.st_uid != geteuid())
+  {
+    warn("%s is not owned by root, refusing to trust its keys", path);
+    return false;
+  }
+  if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+  {
+    warn("%s is writable by group or others, refusing to trust its keys",
+         path);
+    return false;
+  }
+  return true;
+}
+
 static int qet_refresh
 (
   const char *lastrun
@@ -415,13 +454,42 @@ static int qet_refresh
   char        *av[16];
   size_t       k;
   int          rc;
+  struct timespec lts;
+  struct timespec cts;
+  struct timespec mts;
+  bool         fresh;
+  bool         newer;
 
-  now = time(NULL);
-  lst = 0;
+  now         = time(NULL);
+  lst         = 0;
+  lts.tv_sec  = 0;
+  lts.tv_nsec = 0;
+  newer       = false;
 
   if (stat(lastrun, &st) == 0)
+  {
     lst = st.st_mtime;
-  if (now - 86400 < lst)
+    lts = get_stat_mtime(&st);
+  }
+  fresh = now - 86400 < lst;
+
+  for (k = 0; qet_keyfiles[k] != NULL; k++)
+  {
+    if (stat(qet_keyfiles[k], &st) != 0)
+      continue;
+    cts = get_stat_ctime(&st);
+    mts = get_stat_mtime(&st);
+    if (cts.tv_sec > lts.tv_sec ||
+        (cts.tv_sec == lts.tv_sec &&
+         cts.tv_nsec > lts.tv_nsec) ||
+        mts.tv_sec > lts.tv_sec ||
+        (mts.tv_sec == lts.tv_sec &&
+         mts.tv_nsec > lts.tv_nsec))
+      newer = true;
+  }
+
+  if (fresh &&
+      !newer)
   {
     if (!qet_quiet)
       printf("GnuPG keyring for package signatures already "
@@ -429,18 +497,30 @@ static int qet_refresh
     return 0;
   }
   if (!qet_quiet)
-    printf("Updating GnuPG keyring for package signatures\n");
+  {
+    if (fresh)
+      printf("Importing changed release key files\n");
+    else
+      printf("Updating GnuPG keyring for package signatures\n");
+  }
 
   for (k = 0; qet_keyfiles[k] != NULL; k++)
   {
+    if (!qet_keyfile_secure(qet_keyfiles[k]))
+      return 1;
     qet_gpg_argv(av, 16, "--batch", "--import", qet_keyfiles[k], NULL);
     rc = qet_spawn(av, NULL, NULL);
     if (rc != 0)
     {
       warn("gpg --import %s failed", qet_keyfiles[k]);
+      if (stat(qet_keyfiles[k], &st) == 0)
+        warn("remove %s and run qetuto again", qet_home);
       return rc > 0 ? rc : 1;
     }
   }
+
+  if (fresh)
+    return 0;
 
   if (qet_external)
   {
@@ -475,9 +555,85 @@ static int qet_refresh
   return 0;
 }
 
+/* sign one release key with the local trust key, so gpg treats it as
+ * trusted. this is the step that turns "the key is in the keyring" into
+ * "packages signed with this key are accepted".
+ * the passphrase of the local trust key is read from the pass file in
+ * the keyring directory. the first gpg call is the normal way, the
+ * second one is the same thing asked differently, for the gpg versions
+ * where the first refuses. if both fail nothing is signed and the check
+ * after us reports the key as not trusted. */
+static void qet_lsign
+(
+  char *fp
+)
+{
+  char    passfile[_Q_PATH_MAX + 16];
+  char   *av[18];
+  size_t  n;
+
+  snprintf(passfile, sizeof(passfile), "%s/pass", qet_home);
+
+  n       = 0;
+  av[n++] = q_deconst("gpg");
+  if (qet_quiet)
+  {
+    av[n++] = q_deconst("--quiet");
+    av[n++] = q_deconst("--no-permission-warning");
+  }
+  av[n++] = q_deconst("--batch");
+  av[n++] = q_deconst("--yes");
+  av[n++] = q_deconst("--no-tty");
+  av[n++] = q_deconst("--passphrase-file");
+  av[n++] = passfile;
+  av[n++] = q_deconst("--pinentry-mode");
+  av[n++] = q_deconst("loopback");
+  av[n++] = q_deconst("--quick-lsign-key");
+  av[n++] = fp;
+  av[n]   = NULL;
+  if (qet_spawn(av, NULL, NULL) == 0)
+    return;
+
+  n       = 0;
+  av[n++] = q_deconst("gpg");
+  if (qet_quiet)
+  {
+    av[n++] = q_deconst("--quiet");
+    av[n++] = q_deconst("--no-permission-warning");
+  }
+  av[n++] = q_deconst("--command-fd");
+  av[n++] = q_deconst("0");
+  av[n++] = q_deconst("--yes");
+  av[n++] = q_deconst("--no-tty");
+  av[n++] = q_deconst("--passphrase-file");
+  av[n++] = passfile;
+  av[n++] = q_deconst("--pinentry-mode");
+  av[n++] = q_deconst("loopback");
+  av[n++] = q_deconst("--lsign-key");
+  av[n++] = fp;
+  av[n]   = NULL;
+  (void)qet_spawn(av, "y\ny\n", NULL);
+}
+
+/* the keyring check, done on every run, before anything is changed.
+ * first step, check: list the keys in the keyring and the keys in the release
+ * key file(s) and compare. only a read.
+ * second step, act on what the check found, and only then:
+ *   repair 2: a key of a file is not in the keyring -> import that file,
+ *             then start again with repair 1.
+ *   repair 1 and 2: a key is in the keyring but not trusted -> sign it
+ *             with the local trust key, then start again with repair 0.
+ *   repair 0: change nothing, only report.
+ * an expired or revoked release key is fine.
+ * if something is still wrong after that, the run fails and says what:
+ *   - there is no local trust key
+ *   - a key could not be imported or signed
+ *   - a key file can be changed by someone other than root
+ *   - gpg cannot read the keyring
+ * the fix is then to remove the keyring directory and run qetuto again. */
 static int qet_verify
 (
-  void
+  int repair
 )
 {
   char   *av[16];
@@ -486,16 +642,23 @@ static int qet_verify
   char   *line;
   char   *sp;
   set    *valid;
+  set    *present;
   size_t  k;
   int     nf;
   int     bad;
+  int     lsigned;
+  int     imported;
   char    val;
   bool    primary;
   bool    ultimate;
+  bool    tried;
 
   out      = NULL;
   valid    = create_set();
+  present  = create_set();
   bad      = 0;
+  lsigned  = 0;
+  imported = 0;
   val      = '\0';
   primary  = false;
   ultimate = false;
@@ -507,6 +670,7 @@ static int qet_verify
   {
     free(out);
     free_set(valid);
+    free_set(present);
     warn("gpg cannot read the keyring in %s", qet_home);
     warn("remove %s and run qetuto again", qet_home);
     return 1;
@@ -533,6 +697,7 @@ static int qet_verify
         ultimate = true;
       if (strchr("fuer", val) != NULL)
         add_set(fields[9], valid);
+      add_set(fields[9], present);
     }
   }
   free(out);
@@ -541,12 +706,19 @@ static int qet_verify
   {
     warn("no local trust key in %s", qet_home);
     bad++;
+    repair = 0;
   }
 
   for (k = 0; qet_keyfiles[k] != NULL; k++)
   {
     out     = NULL;
     primary = false;
+    tried   = false;
+    if (!qet_keyfile_secure(qet_keyfiles[k]))
+    {
+      bad++;
+      continue;
+    }
     qet_gpg_argv(av, 16, "--no-permission-warning", "--batch",
                  "--with-colons", "--show-keys", qet_keyfiles[k], NULL);
     if (qet_spawn(av, NULL, &out) != 0 ||
@@ -573,6 +745,33 @@ static int qet_verify
         if (nf < 10 ||
             contains_set(fields[9], valid) != NULL)
           continue;
+        if (repair == 2 &&
+            contains_set(fields[9], present) == NULL)
+        {
+          if (!tried)
+          {
+            char *iav[16];
+
+            if (!qet_quiet)
+              printf("Importing release keys from %s\n", qet_keyfiles[k]);
+            qet_gpg_argv(iav, 16, "--batch", "--import", qet_keyfiles[k],
+                         NULL);
+            (void)qet_spawn(iav, NULL, NULL);
+            tried = true;
+          }
+          imported++;
+          continue;
+        }
+        if (repair > 0 &&
+            contains_set(fields[9], present) != NULL)
+        {
+          if (!qet_quiet)
+            printf("Signing release key %s with the local trust key\n",
+                   fields[9]);
+          qet_lsign(fields[9]);
+          lsigned++;
+          continue;
+        }
         warn("release key %s is not trusted in %s", fields[9], qet_home);
         bad++;
       }
@@ -580,6 +779,18 @@ static int qet_verify
     free(out);
   }
   free_set(valid);
+  free_set(present);
+
+  if (lsigned > 0)
+  {
+    qet_gpg_argv(av, 16, "--no-permission-warning", "--batch",
+                 "--check-trustdb", NULL);
+    (void)qet_spawn(av, NULL, NULL);
+  }
+  if (imported > 0)
+    return qet_verify(1);
+  if (lsigned > 0)
+    return qet_verify(0);
 
   if (bad > 0)
   {
@@ -731,6 +942,8 @@ qet_bootstrap(const char *lastrun)
 		for (kf = 0; qet_keyfiles[kf] != NULL; kf++) {
 			if (stat(qet_keyfiles[kf], &st) != 0)
 				continue;
+			if (!qet_keyfile_secure(qet_keyfiles[kf]))
+				goto fail;
 			qet_gpg_argv(av, 24, "--batch", "--import", qet_keyfiles[kf],
 						 NULL);
 			if (qet_spawn(av, NULL, NULL) == 0)
@@ -856,17 +1069,214 @@ qet_bootstrap(const char *lastrun)
 	return 1;
 }
 
+/* everything qetuto does to the keyring: create it or refresh it, then
+ * the keyring check verification. returns 0 when the keyring is good, something else
+ * when not. */
+static int qet_work
+(
+  void
+)
+{
+  int         ret;
+  char        lastrun[_Q_PATH_MAX + 16];
+  char        trustdb[_Q_PATH_MAX + 16];
+  struct stat st;
+
+  snprintf(lastrun, sizeof(lastrun), "%s/.getuto.last", qet_home);
+
+  qet_build_lists();
+
+  qet_gpgconf_kill();
+
+  if (stat(qet_home, &st) != 0)
+  {
+    if (!qet_quiet)
+      printf("Initializing %s\n", qet_home);
+    ret = qet_bootstrap(lastrun);
+  }
+  else
+  {
+    setenv("LC_ALL", "C.UTF-8", 1);
+    ret = qet_refresh(lastrun);
+  }
+
+  snprintf(trustdb, sizeof(trustdb), "%s/trustdb.gpg", qet_home);
+  if (chmod(trustdb, 0644) != 0 &&
+      ret == 0)
+  {
+    warnp("cannot access %s", trustdb);
+    ret = 1;
+  }
+  if (ret == 0)
+    ret = qet_verify(2);
+
+  qet_gpgconf_kill();
+  qet_free_lists();
+  return ret;
+}
+
+static volatile sig_atomic_t qet_child;
+
+static void qet_forward
+(
+  int sig
+)
+{
+  (void)sig;
+  if (qet_child > 0)
+    kill(-(pid_t)qet_child, SIGTERM);
+}
+
+/* QETUTO_NONFATAL=1: never let a keyring problem stop emerge/qmerge.
+ * emerge stops when its trust helper returns anything but 0, so here
+ * the work runs in a child process and so we can continue watching it:
+ *   - the child reports a problem      -> we say so and return 0
+ *   - the child crashes                -> we say so and return 0
+ *   - the child takes longer than QETUTO_TIMEOUT seconds
+ *                                      -> we stop it, say so, return 0
+ * we 'presume' this is safe: the keyring decides which signatures are accepted,
+ * a package whose signature cannot be verified is still refused later
+ * so from the post-run verifications we are covered thanks to q/emerge. */
+static int qet_supervise
+(
+  void
+)
+{
+  struct sigaction sa;
+  struct timespec  nap;
+  char             staging[_Q_PATH_MAX + 16];
+  time_t           deadline;
+  long             limit;
+  pid_t            pid;
+  pid_t            w;
+  int              status;
+  int              i;
+  bool             late;
+
+  limit = 0;
+  if (qetuto_timeout_conf != NULL)
+    limit = strtol(qetuto_timeout_conf, NULL, 10);
+  if (limit <= 0)
+    limit = 120;
+  /* the keyserver calls have their own limit of up to 2.5 minutes each
+   * and the WKD lookup comes after them. we thus let them be. */
+  if (qet_external)
+  {
+    i = 0;
+    if (qetuto_keyservers_conf != NULL &&
+        qetuto_keyservers_conf[0] != '\0')
+    {
+      char **srv;
+
+      srv = qet_split_list(qetuto_keyservers_conf);
+      while (srv[i] != NULL)
+        free(srv[i++]);
+      free(srv);
+    }
+    else
+    {
+      while (qet_keyservers_default[i] != NULL)
+        i++;
+    }
+    limit += 150L * i + 150;
+  }
+  status      = 0;
+  late        = false;
+  w           = 0;
+  nap.tv_sec  = 0;
+  nap.tv_nsec = 50000000;
+
+  fflush(NULL);
+  pid = fork();
+  if (pid < 0)
+  {
+    warnp("the binary package keyring was not updated (cannot fork)");
+    return 0;
+  }
+  if (pid == 0)
+  {
+    setpgid(0, 0);
+    status = qet_work();
+    fflush(NULL);
+    _exit(status);
+  }
+
+  setpgid(pid, pid);
+  qet_child = pid;
+  VAL_CLEAR(sa);
+  sa.sa_handler = qet_forward;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGINT, &sa, NULL);
+  sigaction(SIGTERM, &sa, NULL);
+
+  deadline = time(NULL) + limit;
+  for (;;)
+  {
+    w = waitpid(pid, &status, WNOHANG);
+    if (w == pid)
+      break;
+    if (w < 0 &&
+        errno != EINTR)
+      break;
+    if (time(NULL) >= deadline)
+    {
+      late = true;
+      kill(-pid, SIGTERM);
+      for (i = 0; i < 40; i++)
+      {
+        w = waitpid(pid, &status, WNOHANG);
+        if (w == pid)
+          break;
+        nanosleep(&nap, NULL);
+      }
+      if (w != pid)
+      {
+        kill(-pid, SIGKILL);
+        w = waitpid(pid, &status, 0);
+      }
+      break;
+    }
+    nanosleep(&nap, NULL);
+  }
+  qet_child = 0;
+
+  if (!late &&
+      w == pid &&
+      WIFEXITED(status) &&
+      WEXITSTATUS(status) == 0)
+    return 0;
+
+  qet_gpgconf_kill();
+  snprintf(staging, sizeof(staging), "%s.getuto.tmp", qet_home);
+  setenv("GNUPGHOME", staging, 1);
+  qet_gpgconf_kill();
+  setenv("GNUPGHOME", qet_home, 1);
+
+  if (late)
+    warn("the binary package keyring was not updated "
+         "(took longer than %ld seconds)", limit);
+  else if (w == pid &&
+           WIFSIGNALED(status))
+    warn("the binary package keyring was not updated "
+         "(stopped by signal %d)", WTERMSIG(status));
+  else if (w == pid &&
+           WIFEXITED(status))
+    warn("the binary package keyring was not updated "
+         "(exit code %d)", WEXITSTATUS(status));
+  else
+    warn("the binary package keyring was not updated");
+  warn("continuing, signed binary packages may be refused");
+  return 0;
+}
+
 int qetuto_main
 (
   int    argc,
   char **argv
 )
 {
-  int         ret;
-  char        lastrun[_Q_PATH_MAX + 16];
-  char        trustdb[_Q_PATH_MAX + 16];
-  size_t      rl;
-  struct stat st;
+  int    ret;
+  size_t rl;
 
   while ((ret = GETOPT_LONG(QETUTO, qetuto, "")) != -1)
   {
@@ -894,36 +1304,13 @@ int qetuto_main
 
   snprintf(qet_home, sizeof(qet_home), "%s/etc/portage/gnupg", qet_root);
   setenv("GNUPGHOME", qet_home, 1);
-  snprintf(lastrun, sizeof(lastrun), "%s/.getuto.last", qet_home);
 
-  qet_build_lists();
-
-  qet_gpgconf_kill();
-
-  if (stat(qet_home, &st) != 0)
-  {
-    if (!qet_quiet)
-      printf("Initializing %s\n", qet_home);
-    ret = qet_bootstrap(lastrun);
-  }
+  if (qetuto_nonfatal_conf != NULL &&
+      strcmp(qetuto_nonfatal_conf, "1") == 0)
+    ret = qet_supervise();
   else
-  {
-    setenv("LC_ALL", "C.UTF-8", 1);
-    ret = qet_refresh(lastrun);
-  }
+    ret = qet_work();
 
-  snprintf(trustdb, sizeof(trustdb), "%s/trustdb.gpg", qet_home);
-  if (chmod(trustdb, 0644) != 0 &&
-      ret == 0)
-  {
-    warnp("cannot access %s", trustdb);
-    ret = 1;
-  }
-  if (ret == 0)
-    ret = qet_verify();
-
-  qet_gpgconf_kill();
-  qet_free_lists();
   free(qet_root);
   qet_root = NULL;
   return ret;

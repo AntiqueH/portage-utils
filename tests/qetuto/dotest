@@ -43,6 +43,7 @@ done
 fpr=$(gpg --batch --with-colons --list-keys release@localhost \
 	| awk -F: '/^fpr:/ { print $10; exit }')
 gpg --batch --quiet --armor --export > root/keys/release.asc
+chmod 644 root/keys/release.asc
 [[ $(gpg --batch --with-colons --list-keys | wc -c) -gt 4096 ]]
 gpgconf --kill all >/dev/null 2>&1 || :
 unset GNUPGHOME
@@ -110,28 +111,102 @@ agents_down
 # or not signed by the local trust key, or a lost local trust key, is a
 # failure
 cp -a ${home} home.good
+kval() { keys | awk -F: -v f="$1" \
+	'$1 == "pub" { v = $2 } $1 == "fpr" && $10 == f { print v; exit }'; }
+
+# if say we lost a release key, we should import from the key file
+# and sign it again, even if the last run timestamp file is still valid
 gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
 agents_down
-set +e
-err=$(qetuto -C 2>&1 >/dev/null)
-rc=$?
-set -e
-[[ ${rc} -ne 0 && ${err} == *"release key ${fpr} is not trusted"* ]]
-[[ ${err} == *"and run qetuto again"* ]]
-tpass "a removed release key is reported"
+before=$(stat -c %Y ${home}/.getuto.last)
+qetuto -C
+[[ $(kval ${fpr}) == f && $(stat -c %Y ${home}/.getuto.last) -eq ${before} ]]
+tpass "a removed release key is imported and signed again the same day"
 agents_down
 
-# refresh should bring the key back from the release file, but no one
-# signs it again: mark this one as a failure again
-touch -d '2 days ago' ${home}/.getuto.last
+# if we add a key file into QEETUTO_KEYS after the keyring was made:
+# we import and sign the new key
+mkdir -m 700 gen2
+GNUPGHOME=${PWD}/gen2 gpg --batch --quiet --passphrase '' \
+	--quick-generate-key 'Later Key <later@localhost>' ed25519 sign never \
+	>/dev/null 2>&1
+fpr2=$(GNUPGHOME=${PWD}/gen2 gpg --batch --with-colons --list-keys \
+	later@localhost | awk -F: '/^fpr:/ { print $10; exit }')
+GNUPGHOME=${PWD}/gen2 gpg --batch --quiet --armor --export > root/keys/later.asc
+chmod 644 root/keys/later.asc
+gpgconf --homedir ${PWD}/gen2 --kill all >/dev/null 2>&1 || :
+[[ -n ${fpr2} && -s root/keys/later.asc ]]
+QETUTO_KEYS="/keys/release.asc /keys/later.asc" qetuto -C
+[[ $(kval ${fpr2}) == f && $(kval ${fpr}) == f ]]
+tpass "a key file added to QETUTO_KEYS later is imported and signed"
+agents_down
+
+# QETUTO_EXTRA_KEYS adds its files to the ones of QETUTO_KEYS.
+# both the base key and the extra key(s) are cared for.
+# at least that's what we're testing
+rm -rf ${home}
+cp -a home.good ${home}
+gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
+agents_down
+[[ -z $(kval ${fpr}) && -z $(kval ${fpr2}) ]]
+QETUTO_EXTRA_KEYS="/keys/later.asc" qetuto -C
+[[ $(kval ${fpr2}) == f && $(kval ${fpr}) == f ]]
+tpass "QETUTO_EXTRA_KEYS adds its key files to those of QETUTO_KEYS"
+agents_down
+
+# test key file changed after the last run (a new user id here, in real
+# life a new subkey or a revocation) is imported the same day, and the
+# last run timestamp file we leave it alone
+before=$(stat -c %Y ${home}/.getuto.last)
+GNUPGHOME=${PWD}/gen gpg --batch --quiet --passphrase '' \
+	--pinentry-mode loopback --quick-add-uid ${fpr} \
+	'Renewed <renewed@localhost>' >/dev/null 2>&1
+GNUPGHOME=${PWD}/gen gpg --batch --quiet --armor --export > root/keys/release.asc
+chmod 644 root/keys/release.asc
+gpgconf --homedir ${PWD}/gen --kill all >/dev/null 2>&1 || :
+! keys | grep -q 'renewed@localhost' || false
+qetuto -C
+keys | grep -q 'renewed@localhost'
+[[ $(kval ${fpr}) == f && $(stat -c %Y ${home}/.getuto.last) -eq ${before} ]]
+tpass "a key file changed after the last run is imported the same day"
+agents_down
+touch home.good/.getuto.last
+
+# if we don't have a passphrase of the local trust key, we can't sign
+# anything.
+# they key should return as unsigned, outputting a fail msg
+rm -rf ${home}
+cp -a home.good ${home}
+gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
+agents_down
+rm -f ${home}/pass
 set +e
 err=$(qetuto -C 2>&1 >/dev/null)
 rc=$?
 set -e
 keys | grep -q "^fpr:::::::::${fpr}:"
 [[ ${rc} -ne 0 && ${err} == *"release key ${fpr} is not trusted"* ]]
-tpass "a re-imported but unsigned release key is reported"
+[[ ${err} == *"and run qetuto again"* ]]
+tpass "a release key that cannot be signed is reported"
 agents_down
+
+# a key file that someone other than its owner can change is not a
+# source of trust. we won't import/sign it.
+rm -rf ${home}
+cp -a home.good ${home}
+gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
+agents_down
+chmod 664 root/keys/release.asc
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+chmod 644 root/keys/release.asc
+[[ ${rc} -ne 0 && ${err} == *"writable by group or others"* ]]
+[[ -z $(kval ${fpr}) ]]
+tpass "a key file writable by group or others is refused"
+agents_down
+touch home.good/.getuto.last
 
 rm -rf ${home}
 cp -a home.good ${home}
@@ -159,8 +234,56 @@ agents_down
 rm -rf ${home}
 cp -a home.good ${home}
 qetuto -C
-tpass "an intact keyring passes the final look"
+tpass "an intact keyring passes the keyring check"
 agents_down
+
+# QETUTO_NONFATAL=1, for q/emerge that stops on a failed trust helper
+# (emerge does): whatever goes wrong with the keyring, qetuto says so
+# and still ends with 0.
+# we must check a problem the keyring check reports
+gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
+agents_down
+rm -f ${home}/pass
+set +e
+err=$(QETUTO_NONFATAL=1 qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -eq 0 && ${err} == *"release key ${fpr} is not trusted"* ]]
+[[ ${err} == *"keyring was not updated (exit code 1)"* ]]
+[[ ${err} == *"continuing, signed binary packages may be refused"* ]]
+tpass "QETUTO_NONFATAL: a reported keyring problem ends with 0"
+agents_down
+
+# the working process dies: gpg stand-in kills the process that
+# started it
+rm -rf ${home}
+cp -a home.good ${home}
+mkdir -p fakegpg
+printf '#!/bin/sh\nkill -SEGV $PPID\n' > fakegpg/gpg
+chmod +x fakegpg/gpg
+set +e
+err=$(PATH=${PWD}/fakegpg:${PATH} QETUTO_NONFATAL=1 qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -eq 0 && ${err} == *"keyring was not updated (stopped by signal"* ]]
+tpass "QETUTO_NONFATAL: a crash of the working process ends with 0"
+agents_down
+
+# the work never finishes: gpg stand-in that sleeps, and a short limit
+printf '#!/bin/sh\nsleep 60\n' > fakegpg/gpg
+SECONDS=0
+set +e
+err=$(PATH=${PWD}/fakegpg:${PATH} QETUTO_NONFATAL=1 QETUTO_TIMEOUT=2 \
+	qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+[[ ${rc} -eq 0 && ${err} == *"took longer than 2 seconds"* && ${SECONDS} -lt 20 ]]
+tpass "QETUTO_NONFATAL: a run over QETUTO_TIMEOUT is stopped and ends with 0"
+rm -rf fakegpg
+agents_down
+
+rm -rf ${home}
+cp -a home.good ${home}
 
 # we have to check if a broken keyring (or changed?) outputs a failure
 # in the same manner as getuto.
@@ -207,6 +330,17 @@ rc=$?
 set -e
 [[ ${rc} -ne 0 && ! -e ${home} && ! -e ${home}.getuto.tmp ]]
 tpass "bootstrap without a release key fails cleanly"
+
+# test wether we refuse a bootstrap from a keyring that gpg cannot read
+chmod 664 root/keys/release.asc
+set +e
+err=$(qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+chmod 644 root/keys/release.asc
+[[ ${rc} -ne 0 && ${err} == *"writable by group or others"* ]]
+[[ ! -e ${home} && ! -e ${home}.getuto.tmp ]]
+tpass "bootstrap from a key file writable by group or others is refused"
 
 # bootstrap without a working openssl fails and the staging should be removed
 mkdir -p fakebin
