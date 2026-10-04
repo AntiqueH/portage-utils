@@ -93,6 +93,41 @@ qm_unmerged() {
 	tend $? "qmerge-test: $2" || die "$(qlist -Iv 2>&1)"
 }
 
+qm_gpkg_usable() {
+	[[ -n ${GPKG_ENABLED} ]] && type -P zstd >/dev/null
+}
+
+qm_gpkg_craft() {
+	local store=$1 cat=$2 pf=$3 src w kv
+	shift 3
+	src="${as}/packages-gpkg/sys-devel/qmerge-test-1.3.gpkg.tar"
+	w="${PWD}/gpkg-craft-${pf}"
+	rm -rf "${w}" && mkdir -p "${w}/md" "${w}/${pf}" "${store}/${cat}" || return 1
+	tar xf "${src}" -C "${w}" || return 1
+	zstd -dqc "${w}/qmerge-test-1.3/metadata.tar.zst" | tar x -C "${w}/md" || return 1
+	[[ -s ${w}/md/metadata/PF ]] || return 1
+	rm -f "${w}/md/metadata/"*.ebuild "${w}/md/metadata/BINPKGMD5" || return 1
+	: > "${w}/md/metadata/${pf}.ebuild" || return 1
+	echo "${cat}" > "${w}/md/metadata/CATEGORY" || return 1
+	echo "${pf}" > "${w}/md/metadata/PF" || return 1
+	for kv in "$@" ; do
+		printf '%s' "${kv#*=}" > "${w}/md/metadata/${kv%%=*}" || return 1
+	done
+	( cd "${w}/md" && tar --format=ustar -cf md.tar metadata && \
+	  zstd -q -f md.tar -o "../${pf}/metadata.tar.zst" ) || return 1
+	cp "${w}/qmerge-test-1.3/image.tar.zst" "${w}/${pf}/" || return 1
+	: > "${w}/${pf}/gpkg-1" || return 1
+	( cd "${w}/${pf}" && for kv in gpkg-1 metadata.tar.zst image.tar.zst ; do
+		printf 'DATA %s %s SHA512 %s\n' "${kv}" "$(stat -c %s "${kv}")" \
+			"$(sha512sum "${kv}" | cut -d' ' -f1)" || exit 1
+	  done > Manifest ) || return 1
+	( cd "${w}" && tar --format=ustar -cf "${store}/${cat}/${pf}.gpkg.tar" \
+		"${pf}/gpkg-1" "${pf}/metadata.tar.zst" "${pf}/image.tar.zst" \
+		"${pf}/Manifest" ) || return 1
+	[[ -s ${store}/${cat}/${pf}.gpkg.tar ]] || return 1
+	rm -rf "${w}"
+}
+
 # finally we can search like real professionals.
 # search: version-aware atom keys and --exact atom for precision
 
@@ -2649,24 +2684,33 @@ qmaint binhost -f >/dev/null 2>&1
 # we're starting to pretend we have not enough neurons to run qmerge safely
 # so this will prove qmerge a production-ready binary PM
 urstore="${ROOT}/pkgs"
+urext=tbz2
+qm_gpkg_usable && urext=gpkg.tar
 ur_craft() {
 	local urname=$1 urdep=$2
+	if [[ ${urext} == gpkg.tar ]] ; then
+		qm_gpkg_craft "${urstore}" dev-libs "${urname}-1.0" \
+			SLOT=0 'KEYWORDS=**' "RDEPEND=${urdep}" \
+			|| die "unclean resolve: could not craft ${urname}-1.0.${urext}"
+		return 0
+	fi
 	mkdir -p "ur-${urname}/xp"
 	(
-		cd "ur-${urname}"
-		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
-		qtbz2 -s b.tbz2 >/dev/null
-		( cd xp && qxpak -x ../b.xpak >/dev/null )
-		echo dev-libs > xp/CATEGORY
-		echo "${urname}-1.0" > xp/PF
-		echo 0 > xp/SLOT
-		echo '**' > xp/KEYWORDS
-		printf '%s' "${urdep}" > xp/RDEPEND
-		( cd xp && rm -f ./*.ebuild; touch "${urname}-1.0.ebuild"
-		  qxpak -c ../new.xpak $(ls) )
-		mkdir -p "${urstore}/dev-libs"
-		qtbz2 -j b.tar.bz2 new.xpak "${urstore}/dev-libs/${urname}-1.0.tbz2"
-	)
+		cd "ur-${urname}" && \
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2 && \
+		qtbz2 -s b.tbz2 >/dev/null && \
+		( cd xp && qxpak -x ../b.xpak >/dev/null ) && \
+		echo dev-libs > xp/CATEGORY && \
+		echo "${urname}-1.0" > xp/PF && \
+		echo 0 > xp/SLOT && \
+		echo '**' > xp/KEYWORDS && \
+		printf '%s' "${urdep}" > xp/RDEPEND && \
+		( cd xp && rm -f ./*.ebuild && touch "${urname}-1.0.ebuild" && \
+		  qxpak -c ../new.xpak $(ls) ) && \
+		mkdir -p "${urstore}/dev-libs" && \
+		qtbz2 -j b.tar.bz2 new.xpak "${urstore}/dev-libs/${urname}-1.0.tbz2" && \
+		[[ -s ${urstore}/dev-libs/${urname}-1.0.tbz2 ]]
+	) || die "unclean resolve: could not craft ${urname}-1.0.${urext}"
 	rm -rf "ur-${urname}"
 }
 
@@ -2695,7 +2739,7 @@ tend $? "qmerge-test: unclean resolve: garbage RDEPEND does not hang or crash" \
 out=$(timeout 60 qmerge -p "=dev-libs/goodnb-1.0" 2>&1); rc=$?
 [[ ${rc} -eq 0 && ${out} == *"goodnb-1.0"* ]]
 tend $? "qmerge-test: unclean resolve: healthy neighbor unaffected by garbage deps" \
-	|| die "rc=${rc}; ${out}"
+	|| die "rc=${rc}; ${out}; store: $(ls -la "${urstore}/dev-libs" 2>&1 | head -50); index: $(grep -A12 'CPV: dev-libs/goodnb' "${urstore}/Packages" 2>&1); packages in index: $(grep -c '^CPV: ' "${urstore}/Packages" 2>&1); installed: $(qlist -Iv 2>&1)"
 
 out=$(timeout 60 qmerge -p dev-libs/cyca 2>&1); rc=$?
 [[ ${rc} -lt 124 && ${out} == *"cyca-1.0"* ]]
@@ -2729,7 +2773,7 @@ for i in $(seq 1 30); do
 	yes | qmerge -FU "chain${i}" >/dev/null 2>&1
 done
 
-rm -f "${urstore}/dev-libs/goneb-1.0.tbz2"
+rm -f "${urstore}/dev-libs/goneb-1.0.${urext}"
 out=$(timeout 60 bash -c "yes | qmerge dev-libs/needa" 2>&1); rc=$?
 [[ ${rc} -lt 124 && ${out} == *"cannot satisfy dependency dev-libs/goneb"* ]] && \
 	{ [[ ${rc} -ne 0 ]] || qlist -I 2>/dev/null | grep -q dev-libs/needa; }
