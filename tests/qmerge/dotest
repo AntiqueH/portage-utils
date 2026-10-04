@@ -397,6 +397,36 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	tend $? "qmerge-test: [portage gpkg] upgrade to the 2.0 gpkg replaces 1.3" \
 		|| die "rc=${rc}; ${out}"
 
+	# -u should never downgrade normally. when the binhost only shows
+	# a older version than the installed one, qmerge keeps the installed
+	# one and should output a message:  one line normally, the package
+	# and the way to downgrade with -v, nothing with -q, and nothing while
+	# the installed version is presented
+	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ${out} != *"not downgraded"* ]]
+	tend $? "qmerge-test: [downgrade notice] none while the installed version is offered" \
+		|| die "${out}"
+	rm -f "${ROOT}/pgpkgs/sys-devel/qmerge-test-2.0.gpkg.tar"
+	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ${out} == *"1 installed package is newer"*"not downgraded (use -v to list it)"* && \
+	   ${out} != *"[binary"* ]]
+	tend $? "qmerge-test: [downgrade notice] -u keeps the newer installed version and says so" \
+		|| die "${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -puv sys-devel/qmerge-test 2>&1)
+	[[ ${out} == *"sys-devel/qmerge-test-2.0 (offered: 1.3 from "* && \
+	   ${out} == *"qmerge =sys-devel/qmerge-test-1.3"* && ${out} != *"[binary"* ]]
+	tend $? "qmerge-test: [downgrade notice] -v lists the package and how to downgrade" \
+		|| die "${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -puq sys-devel/qmerge-test 2>&1)
+	[[ ${out} != *"not downgraded"* ]]
+	tend $? "qmerge-test: [downgrade notice] -q prints none" || die "${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -p =sys-devel/qmerge-test-1.3 2>&1)
+	[[ ${out} == *"[binary"*"D"*"sys-devel/qmerge-test-1.3"* && \
+	   ${out} != *"not downgraded"* ]]
+	tend $? "qmerge-test: [downgrade notice] the named version is offered as a downgrade" \
+		|| die "${out}"
+
 	yes | PKGDIR=/pgpkgs qmerge -FU qmerge-test >/dev/null 2>&1
 	rm -rf "${ROOT}/pgpkgs"
 else
@@ -1033,7 +1063,7 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	qxpak -x "${gvxi}" BUILD_ID >/dev/null 2>&1
 	[[ $(qxpak -l "${gvxi}" 2>/dev/null | grep -c "^BUILD_ID$") -eq 1 && \
 	   $(cat BUILD_ID 2>/dev/null) == "${gvxn}" ]]
-	tend $? "qmerge-test: [qpkg] instance xpak records the computed BUILD_ID, not the stale VDB one" \
+	tend $? "qmerge-test: [qpkg] instance xpak records the computed BUILD_ID, not the old VDB one" \
 		|| die "file=${gvxi} n=${gvxn} got=$(cat BUILD_ID 2>/dev/null)"
 	rm -f BUILD_ID
 
@@ -2551,7 +2581,7 @@ ln -s "${PWD}/victim" "${tmppf}/temp/environment"
 out=$(yes | qmerge -Fv =qmerge-test-1.3 2>&1); rc=$?
 [[ ${rc} -eq 0 && $(cat "${PWD}/victim") == keepme && \
    $(qlist -Iv 2>/dev/null) == *qmerge-test-1.3* ]]
-tend $? "qmerge-test: [TMP] stale environment symlink in temp/ is dropped, target untouched" \
+tend $? "qmerge-test: [TMP] leftover environment symlink in temp/ is dropped, target untouched" \
 	|| die "rc=${rc}; ${out}"
 rm -f "${PWD}/victim"
 yes | qmerge -FU qmerge-test >/dev/null 2>&1
@@ -3422,12 +3452,12 @@ tend $? "qmerge-test: vdb metadata: per-field files deleted, reads served from t
 touch "${vmdir}"
 out=$(q --root "${ROOT}" qmaint vdb 2>&1); rc=$?
 [[ ${rc} -ne 0 && ${out} == *"1 are missing, stale"* ]]
-tend $? "qmerge-test: vdb metadata: changed pkg dir makes the file stale" \
+tend $? "qmerge-test: vdb metadata: changed pkg dir makes the file out of date" \
 	|| die "rc=${rc}; ${out}"
 
 out=$(q --root "${ROOT}" qmaint vdb --remove 2>&1); rc=$?
 [[ ${rc} -ne 0 && ${out} == *"cannot be safely removed"* && -f ${vmf} ]]
-tend $? "qmerge-test: vdb metadata: remove refuses a stale only-copy file" \
+tend $? "qmerge-test: vdb metadata: remove refuses an out of date only-copy file" \
 	|| die "rc=${rc}; ${out}"
 
 vmrec=$(sed -n 's/^#dir_mtime=//p' "${vmf}" | tail -n1)
@@ -3701,7 +3731,7 @@ tend $? "qmerge-test: [B] compress-index twin carries TIMESTAMP (file mtime + gz
 
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 [[ ! -e ${ROOT}/packages/Packages.gz ]]
-tend $? "qmerge-test: [B] plain regen drops the stale gz twin"
+tend $? "qmerge-test: [B] plain regen drops the leftover gz twin"
 
 # -F force-install: bypass the soft candidate checks (usepkg-exclude here)
 # for the NAMED target only, and pick the newest binpkg regardless of SLOT.
@@ -4542,7 +4572,7 @@ if ${plcc}; then
 	[[ $? -eq 0 && ! -e ${ROOT}/usr/lib64/old/libplG.so.1 && \
 	   -f ${ROOT}/usr/lib64/libplG.so.1 ]] && \
 		! grep -q 'libplG' "${REGP}" 2>/dev/null
-	tend $? "qmerge-test: [PL] installed alternative provider prunes stale preserve" \
+	tend $? "qmerge-test: [PL] installed alternative provider prunes the orphaned preserved library" \
 		|| die "${outg6} $(cat "${REGP}" 2>/dev/null)"
 else
 	skip "[PL] GC keeps chain via preserved-only consumer (need cc)"
@@ -4550,7 +4580,7 @@ else
 	skip "[PL] preserve decision counts a preserved consumer (need cc)"
 	skip "[PL] pure preserved cycle removed (bug 652382) (need cc)"
 	skip "[PL] partial entry keeps the survivor path (need cc)"
-	skip "[PL] installed alternative provider prunes stale preserve (need cc)"
+	skip "[PL] installed alternative provider prunes the orphaned preserved library (need cc)"
 fi
 
 mkpl pnone-1.0 '' '' 'x86_64: libghost.so.9' '' usr/bin/pnone
@@ -4960,7 +4990,7 @@ tend $? "qmerge-test: [SU] usedep-driven collision unified on the older build" \
 
 # testing a version masked in one backtrack round and checked to set again in the next
 # must not be reported as missing at the end.
-# installed: tprov-1.0, toldc-1.0 (wants ~tprov-1.0), tstale-1.0 (pins
+# installed: tprov-1.0, toldc-1.0 (wants ~tprov-1.0), toutdated-1.0 (pins
 # tprov:0/1= and has no rebuild). binhost: tprov-2.0 and toldc-2.0 (wants
 # ~tprov-2.0).
 while read -r tname tver tslot tdep; do
@@ -4987,11 +5017,11 @@ done <<-EOF
 	tprov 2.0 0/2
 	toldc 1.0 0 ~dev-libs/tprov-1.0
 	toldc 2.0 0 ~dev-libs/tprov-2.0
-	tstale 1.0 0 dev-libs/tprov:0/1=
+	toutdated 1.0 0 dev-libs/tprov:0/1=
 EOF
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-yes | qmerge =dev-libs/toldc-1.0 =dev-libs/tstale-1.0 >/dev/null 2>&1
-outsr=$(qmerge -puDN dev-libs/toldc dev-libs/tstale 2>&1)
+yes | qmerge =dev-libs/toldc-1.0 =dev-libs/toutdated-1.0 >/dev/null 2>&1
+outsr=$(qmerge -puDN dev-libs/toldc dev-libs/toutdated 2>&1)
 rcsr=$?
 plansr=$(echo "${outsr}" | grep '\[binary')
 [[ ${rcsr} -eq 0 && ${plansr} == *"dev-libs/tprov-2.0"* && \
@@ -5000,12 +5030,12 @@ plansr=$(echo "${outsr}" | grep '\[binary')
    ${outsr} != *"no binary packages to satisfy"* ]]
 tend $? "qmerge-test: [SU] a version planned after backtracking is not reported missing" \
 	|| die "rc=${rcsr} ${outsr}"
-yes | qmerge -FU dev-libs/toldc dev-libs/tstale dev-libs/tprov >/dev/null 2>&1
+yes | qmerge -FU dev-libs/toldc dev-libs/toutdated dev-libs/tprov >/dev/null 2>&1
 rm -f "${ROOT}/packages/dev-libs/tprov-1.0.tbz2" \
 	"${ROOT}/packages/dev-libs/tprov-2.0.tbz2" \
 	"${ROOT}/packages/dev-libs/toldc-1.0.tbz2" \
 	"${ROOT}/packages/dev-libs/toldc-2.0.tbz2" \
-	"${ROOT}/packages/dev-libs/tstale-1.0.tbz2"
+	"${ROOT}/packages/dev-libs/toutdated-1.0.tbz2"
 
 rm -f "${ROOT}/packages/dev-libs/prov-1.0.tbz2" \
 	"${ROOT}/packages/dev-libs/prov-2.0.tbz2" \
@@ -6448,13 +6478,13 @@ tend $? "qmerge-test: [DC] an interrupted merge record is not an installed packa
 outdc=$(qmerge -pc 2>&1)
 [[ ${outdc} == *"No packages selected for removal by depclean"* && ${outdc} != *MERGING* ]]
 tend $? "qmerge-test: [DC] depclean never selects an interrupted merge record" || die "${outdc}"
-mkdir -p "${ROOT}/var/db/pkg/dc-libs/.stale-1" "${ROOT}/var/db/pkg/dc-libs/CVS" \
+mkdir -p "${ROOT}/var/db/pkg/dc-libs/.hidden-1" "${ROOT}/var/db/pkg/dc-libs/CVS" \
 	"${ROOT}/var/db/pkg/dc-libs/lost+found" "${ROOT}/var/db/pkg/dc-libs/bad name-1"
 out=$(qlist -I 2>err)
 [[ ${out} == "dc-libs/A" && $(<err) == "!!! Invalid db entry: "*"/dc-libs/bad name-1" ]]
 tend $? "qmerge-test: [DC] a VDB directory outside PMS naming is reported once and skipped" \
 	|| die "${out} $(<err)"
-rm -rf "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2" "${ROOT}/var/db/pkg/dc-libs/.stale-1" \
+rm -rf "${ROOT}/var/db/pkg/dc-libs/-MERGING-A-2" "${ROOT}/var/db/pkg/dc-libs/.hidden-1" \
 	"${ROOT}/var/db/pkg/dc-libs/CVS" "${ROOT}/var/db/pkg/dc-libs/lost+found" \
 	"${ROOT}/var/db/pkg/dc-libs/bad name-1"
 

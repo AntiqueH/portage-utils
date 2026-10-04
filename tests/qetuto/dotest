@@ -221,7 +221,7 @@ agents_down
 
 rm -rf ${home}
 cp -a home.good ${home}
-head -c 1640 /dev/urandom > ${home}/trustdb.gpg
+head -c 1640 /dev/zero | tr '\0' '\377' > ${home}/trustdb.gpg
 set +e
 err=$(qetuto -C 2>&1 >/dev/null)
 rc=$?
@@ -311,7 +311,7 @@ set -e
 tpass "refresh without trustdb.gpg fails"
 agents_down
 
-head -c 4096 /dev/urandom > ${home}/pubring.kbx
+head -c 4096 /dev/zero | tr '\0' '\377' > ${home}/pubring.kbx
 touch -d '2 days ago' ${home}/.getuto.last
 before=$(stat -c %Y ${home}/.getuto.last)
 set +e

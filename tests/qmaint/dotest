@@ -79,12 +79,12 @@ set +e
 qmaint -C -c moves > x; rc=$?
 set -e
 [[ ${rc} -ne 0 && $(<x) == "Moves: OUTDATED, ${ROOT}"*"/pkgs/Moves exists but the repo carries no move instructions (run \`qmaint moves -f')" ]]
-tpass "qmaint -c moves reports a stale Moves file"
+tpass "qmaint -c moves reports a leftover Moves file"
 
 qmaint -C -f moves > x
 [[ $(<x) == ">>> removed ${ROOT}"*"/pkgs/Moves (repo carries no move instructions)" ]]
 [[ ! -e root/pkgs/Moves ]]
-tpass "qmaint -f moves removes the stale Moves file"
+tpass "qmaint -f moves removes the leftover Moves file"
 
 mkdir -p root/rep1/profiles/updates
 printf 'move old-cat/old new-cat/new\n' > root/rep1/profiles/updates/1Q-2026

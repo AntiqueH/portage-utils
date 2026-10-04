@@ -287,6 +287,9 @@ char noreplace = 0;
 static size_t qm_l0_targets = 0;
 static size_t qm_l0_held    = 0;
 static bool   qm_plan_empty = false;
+static array *qm_dg_ignored = NULL;
+static set   *qm_dg_seen    = NULL;
+static char  *qm_dg_example = NULL;
 static int qm_deselect = -1;
 char oneshot = 0;
 char force_download = 0;
@@ -9381,6 +9384,99 @@ qm_bin_newer(tree_pkg_ctx *bin, tree_pkg_ctx *inst)
 							ATOM_COMP_NOSUBSLOT | ATOM_COMP_NOREPO) == NEWER;
 }
 
+/* -u keeps an installed package when the best version the binhosts
+ * show is older. remember that here so the user is told about it
+ * after the merge list. */
+static void qm_note_ignored_downgrade
+(
+  tree_pkg_ctx *bin,
+  tree_pkg_ctx *inst
+)
+{
+  depend_atom *ia;
+  depend_atom *ba;
+  const char  *rn;
+  char        *key;
+
+  if (bin == NULL ||
+      inst == NULL ||
+      !qm_bin_newer(inst, bin))
+    return;
+
+  ia  = tree_pkg_atom(inst, false);
+  ba  = tree_pkg_atom(bin, false);
+  key = xasprintf("%s/%s", ia->CATEGORY, ia->PF);
+  if (qm_dg_seen == NULL)
+    qm_dg_seen = create_set();
+  if (contains_set(key, qm_dg_seen) != NULL)
+  {
+    free(key);
+    return;
+  }
+  add_set(key, qm_dg_seen);
+
+  rn = qm_repo_name_of_pkg(bin);
+  if (rn == NULL)
+    rn = "local";
+  if (rn[0] == '@')
+    rn++;
+  if (qm_dg_ignored == NULL)
+    qm_dg_ignored = array_new();
+  array_append(qm_dg_ignored,
+               xasprintf("%s (offered: %s from %s)", key, ba->PVR, rn));
+  if (qm_dg_example == NULL)
+    qm_dg_example = xasprintf("=%s/%s-%s", ba->CATEGORY, ba->PN, ba->PVR);
+  free(key);
+}
+
+/* the notice for what qm_note_ignored_downgrade has taken into
+ * consideration: one line with the count, or with -v every package
+ * and how to downgrade one.
+ * -q prints nothing. the entries are dropped afterwards, so
+ * the notice appears once per run. */
+static void qm_print_ignored_downgrades
+(
+  void
+)
+{
+  size_t  n;
+  size_t  cnt;
+  char   *line;
+
+  if (qm_dg_ignored == NULL)
+    return;
+
+  cnt = array_cnt(qm_dg_ignored);
+  if (cnt > 0 &&
+      !qm_user_quiet)
+  {
+    if (qm_user_verbose == 0)
+    {
+      printf("\n%s!!!%s %zu installed package%s newer than the "
+             "binhosts packages, not downgraded (use -v to list %s)\n\n",
+             RED, NORM, cnt, cnt == 1 ? " is" : "s are",
+             cnt == 1 ? "it" : "them");
+    }
+    else
+    {
+      printf("\n%s!!!%s The following installed packages are newer than "
+             "binhosts packages, not downgraded:\n", RED, NORM);
+      array_for_each(qm_dg_ignored, n, line)
+        printf("    %s\n", line);
+      printf("    to downgrade one of them, install the version: "
+             "qmerge %s\n\n", qm_dg_example);
+    }
+  }
+
+  array_deepfree(qm_dg_ignored, free);
+  qm_dg_ignored = NULL;
+  if (qm_dg_seen != NULL)
+    free_set(qm_dg_seen);
+  qm_dg_seen = NULL;
+  free(qm_dg_example);
+  qm_dg_example = NULL;
+}
+
 /* -F forces newest binpkgs to match the atom across repos with no soft filters
  * Somewhat clone the qm_repair_pick repo-scan.*/
 static tree_pkg_ctx *
@@ -9502,6 +9598,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 					  !qm_bin_newer(inst, bin))) {
 				provider = inst;
 				pull     = false;
+				qm_note_ignored_downgrade(bin, inst);
 			}
 		} else if (inst != NULL &&
 				   atom_satisfied_by(atom, inst, parent_use)) {
@@ -9546,6 +9643,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	} else if (inst != NULL && atom_satisfied_by(atom, inst, parent_use)) {
 		provider = inst;
 		pull     = false;
+		if (update_only)
+			qm_note_ignored_downgrade(bin, inst);
 	} else if (bin != NULL && atom_satisfied_by(atom, bin, parent_use)) {
 		provider = bin;
 		pull     = true;
@@ -13040,6 +13139,7 @@ qm_exec_round(struct qm_plan *plan)
 
 	qm_print_use_rejects(plan->merge);
 	qm_print_deadpins(plan->merge);
+	qm_print_ignored_downgrades();
 	if (!pretend &&
 			!fetch_only)
 		qm_tmpdir_check(plan->merge);
@@ -13749,6 +13849,7 @@ resolve_again:
 		 * that would otherwise read as a bare cannot-satisfy. */
 		qm_print_use_rejects(NULL);
 		qm_print_deadpins(plan.merge);
+		qm_print_ignored_downgrades();
 		if (!qm_kg_summary())
 			warn("nothing to merge (no candidates could be satisfied)");
 		array_deepfree(plan.merge, free);
@@ -14007,6 +14108,7 @@ resolve_again:
 		}
 		qm_print_use_rejects(plan.merge);
 		qm_print_deadpins(plan.merge);
+		qm_print_ignored_downgrades();
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
 		/* surface subslot conflicts in the merge list too, like emerge does.
