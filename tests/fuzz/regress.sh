@@ -14,7 +14,7 @@ for t in "${TARGETS[@]}"; do
     mapfile -t inputs < <(find "tests/fuzz/seeds/${t}" "tests/fuzz/regressions/${t}" \
         -type f 2>/dev/null)
     [ "${#inputs[@]}" -eq 0 ] && continue
-    if ASAN_OPTIONS=detect_leaks=0 "tests/fuzz/.bin/fuzz_${t}" "${inputs[@]}" \
+    if ASAN_OPTIONS=detect_leaks=1 "tests/fuzz/.bin/fuzz_${t}" "${inputs[@]}" \
             >/dev/null 2>&1; then
         printf 'regress fuzz_%-14s OK (%d inputs)\n' "$t" "${#inputs[@]}"
     else

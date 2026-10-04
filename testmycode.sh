@@ -884,7 +884,7 @@ fuzz_gate_libfuzzer() {
                 regress=()
                 [ -d "tests/fuzz/regressions/$bt" ] && \
                     regress=("tests/fuzz/regressions/$bt")
-                ASAN_OPTIONS="detect_leaks=0" \
+                ASAN_OPTIONS="detect_leaks=1" \
                     TMPDIR="$PWD/tests/r/tmp" \
                     "tests/fuzz/.bin/fuzz_$bt" \
                     -max_total_time="$FUZZSECS" -print_final_stats=1 \

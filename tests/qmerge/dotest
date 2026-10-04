@@ -1775,7 +1775,7 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P setfattr >/dev/null \
 			out=$(yes | FEATURES="${xafeat}" qmerge -Fv =qmerge-test-1.3 2>&1)
 			xaraw=$(getfattr -e hex -n user.qraw --absolute-names \
 				"${ROOT}/usr/bin/qmerge-test" 2>/dev/null \
-				| grep -o '0x[0-9a-f]*')
+				| sed -n 's/^user\.qraw=//p')
 			[[ ${xaraw} == "0xfffe80ff" ]]
 			tend $? "qmerge-test: [xattr] non-UTF-8 xattr value survives byte-exact" \
 				|| die "got '${xaraw}'; ${out}"

@@ -13,15 +13,20 @@
 
 #include "main.h"
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <xalloc.h>
 
-#include "eat_file.h"
 #include "elfneeded.h"
+#include "safe_io.h"
 #include "xvasprintf.h"
+
+#define ELF_NEEDED_MAX ((off_t)512 * 1024 * 1024)
 
 static const struct {
 	unsigned int  em;
@@ -121,6 +126,58 @@ elf_needed_str(const char *buf, size_t len, size_t off)
 	return buf + off;
 }
 
+/* introducing a mechanism that reads the file into memory and tells how many
+ * bytes were actually read. */
+static char *elf_needed_load
+(
+  const char *path,
+  size_t     *len
+)
+{
+  struct stat  st;
+  char        *buf;
+  size_t       want;
+  size_t       have;
+  ssize_t      rd;
+  int          fd;
+
+  *len = 0;
+  fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    return NULL;
+  if (fstat(fd, &st) != 0 ||
+      !S_ISREG(st.st_mode) ||
+      st.st_size <= 0)
+  {
+    close(fd);
+    return NULL;
+  }
+
+  if (st.st_size > ELF_NEEDED_MAX)
+    want = BUFSIZE;
+  else
+    want = (size_t)st.st_size;
+  buf = xmalloc(want);
+  have = 0;
+  while (have < want)
+  {
+    rd = safe_read(fd, buf + have, want - have);
+    if (rd < 0)
+    {
+      close(fd);
+      free(buf);
+      return NULL;
+    }
+    if (rd == 0)
+      break;
+    have += (size_t)rd;
+  }
+  close(fd);
+
+  *len = have;
+  return buf;
+}
+
 elf_needed *
 elf_needed_read(const char *path)
 {
@@ -145,7 +202,8 @@ elf_needed_read(const char *path)
 	size_t               i;
 	size_t               esz;
 
-	if (!eat_file(path, &buf, &len) || buf == NULL || len < 52)
+	buf = elf_needed_load(path, &len);
+	if (buf == NULL || len < 52)
 		goto out;
 	d = (const unsigned char *)buf;
 	if (memcmp(d, "\177ELF", 4) != 0)
