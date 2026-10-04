@@ -259,7 +259,7 @@ agents_down
 rm -rf ${home}
 cp -a home.good ${home}
 mkdir -p fakegpg
-printf '#!/bin/sh\nkill -SEGV $PPID\n' > fakegpg/gpg
+printf '#!/bin/sh\nkill -KILL $PPID\n' > fakegpg/gpg
 chmod +x fakegpg/gpg
 set +e
 err=$(PATH=${PWD}/fakegpg:${PATH} QETUTO_NONFATAL=1 qetuto -C 2>&1 >/dev/null)
