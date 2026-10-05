@@ -1,0 +1,3 @@
+c>=dev-libs/old-1.0:0[a] !dev-libs/old dev-libs/older dev-libs/old*
+dev-libs/old
+dev-libs/new

@@ -828,6 +828,10 @@ expand_config_refs(const char *s)
  * recursively if it points to a directory (we don't care about EAPI for
  * dirs, basically PMS 5.2.5 EAPI restriction is ignored) */
 enum portage_file_type { ENV_FILE, PMASK_FILE };
+
+static char *conf_root     = NULL;
+static char *conf_root_src = NULL;
+
 static void
 read_portage_file(const char *file, enum portage_file_type type, void *data)
 {
@@ -1037,6 +1041,13 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 						break;
 					snprintf(npath, sizeof(npath), "%s%s:%zu:%zu-%zu",
 							portroot, file + 1, curline, cbeg, cend);
+					if (strcmp(vars[i].name, "ROOT") == 0) {
+						free(conf_root);
+						free(conf_root_src);
+						conf_root     = xstrdup(s);
+						conf_root_src = xstrdup(npath);
+						break;
+					}
 					set_portage_env_var(&vars[i], s, npath);
 					break;
 				}
@@ -1582,6 +1593,8 @@ read_repos_conf(const char *repos_conf, char **primary)
 	}
 }
 
+static char *cli_root = NULL;
+
 static void
 initialize_portage_env(void)
 {
@@ -1695,6 +1708,9 @@ initialize_portage_env(void)
 	read_license_groups();
 	read_pkgcfg("package.license", &pkg_license);
 
+	if (conf_root != NULL)
+		set_portage_env_var(&vars_to_read[0], conf_root, conf_root_src);
+
 	/* finally, check the env */
 	for (i = 0; vars_to_read[i].name; i++)
 	{
@@ -1707,6 +1723,11 @@ initialize_portage_env(void)
 		s   = getenv(var->name);
 		if (s != NULL)
 			set_portage_env_var(var, s, var->name);
+	}
+	if (cli_root != NULL)
+	{
+		set_portage_env_var(&vars_to_read[0], cli_root, "command line");
+		vars_to_read[0].from_cli = true;
 	}
 
 	/* special snowflake, NO_COLOR is apparently some standard now,
@@ -1965,9 +1986,8 @@ int main(int argc, char **argv)
 						root = realroot;
 					else
 						errp("--root argument could not be resolved");
-					set_portage_env_var(&vars_to_read[0], root,
-										"command line");  /* ROOT */
-					vars_to_read[0].from_cli = true;
+					free(cli_root);
+					cli_root = xstrdup(root);
 				} else if (strcmp(&argv[i][2], "overlay") == 0 &&
 						   argv[i + 1] != NULL)
 				{

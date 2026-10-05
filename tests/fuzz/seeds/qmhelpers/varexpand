@@ -1,0 +1,4 @@
+gcurl -o "${DISTDIR}/${FILE}" \$URI $PORTAGE_SSH_OPTS ${URI} ${NOPE $
+/var/cache/distfiles
+https://host/path
+file.gpkg.tar

@@ -2824,6 +2824,60 @@ tend $? "qmerge-test: unclean resolve: garbage profile atoms tolerated" \
 	|| die "rc=${rc}; ${out}"
 rm -rf cfgur
 
+ur_craft sysmember ""
+qmaint binhost -f >/dev/null 2>&1
+mkdir -p cfgsys/etc/portage/make.profile
+printf 'ACCEPT_KEYWORDS="**"\n' > cfgsys/etc/portage/make.conf
+printf '*dev-libs/sysmember\n' > cfgsys/etc/portage/make.profile/packages
+out=$(timeout 60 env PORTAGE_CONFIGROOT="${PWD}/cfgsys" \
+	qmerge -p @system 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sysmember-1.0"* ]]
+tend $? "qmerge-test: system set: @system comes from the profile under PORTAGE_CONFIGROOT" \
+	|| die "rc=${rc}; ${out}"
+out=$(timeout 60 env PORTAGE_CONFIGROOT="${PWD}/cfgsys" \
+	qmerge -pu @world 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sysmember-1.0"* ]]
+tend $? "qmerge-test: system set: @world includes that system set" \
+	|| die "rc=${rc}; ${out}"
+
+mkdir -p rootopt/etc/portage rootopt/var/db/pkg
+printf 'INSTALL_MASK="from-inside-the-root"\n' > rootopt/etc/portage/make.conf
+printf 'INSTALL_MASK="from-the-config-root"\n' >> cfgsys/etc/portage/make.conf
+out=$(env PORTAGE_CONFIGROOT="${PWD}/cfgsys" \
+	q --root "${PWD}/rootopt" -e INSTALL_MASK 2>&1)
+[[ ${out} == "from-the-config-root" ]]
+tend $? "qmerge-test: root option: --root does not move the configuration" \
+	|| die "${out}"
+out=$(env ROOT=/not/a/real/root PORTAGE_CONFIGROOT="${PWD}/cfgsys" \
+	q --root "${PWD}/rootopt" -e ROOT 2>&1)
+[[ ${out} == "${PWD}/rootopt/" ]]
+tend $? "qmerge-test: root option: --root wins over ROOT from the environment" \
+	|| die "${out}"
+out=$(timeout 60 env PORTAGE_CONFIGROOT="${PWD}/cfgsys" \
+	qmerge --root "${ROOT}" -p @system 2>&1); rc=$?
+[[ ${rc} -eq 0 && ${out} == *"dev-libs/sysmember-1.0"* ]]
+tend $? "qmerge-test: root option: @system with --root comes from the profile under PORTAGE_CONFIGROOT" \
+	|| die "rc=${rc}; ${out}"
+rm -rf cfgsys rootopt
+
+mkdir -p cfgmc/etc/portage/make.conf rootmc/var/db/pkg
+printf 'ROOT="%s/rootmc"\n' "${PWD}" > cfgmc/etc/portage/make.conf/00-root.conf
+printf 'INSTALL_MASK="read-after-the-root-line"\n' \
+	> cfgmc/etc/portage/make.conf/50-later.conf
+out=$(env -u ROOT PORTAGE_CONFIGROOT="${PWD}/cfgmc" q -e INSTALL_MASK 2>&1)
+[[ ${out} == "read-after-the-root-line" ]]
+tend $? "qmerge-test: root option: ROOT in make.conf does not hide the config files after it" \
+	|| die "${out}"
+out=$(env -u ROOT PORTAGE_CONFIGROOT="${PWD}/cfgmc" q -e ROOT 2>&1)
+[[ ${out} == "${PWD}/rootmc/" ]]
+tend $? "qmerge-test: root option: ROOT in make.conf sets the root" \
+	|| die "${out}"
+out=$(env ROOT=/not/a/real/root PORTAGE_CONFIGROOT="${PWD}/cfgmc" q -e ROOT 2>&1)
+[[ ${out} == "/not/a/real/root/" ]]
+tend $? "qmerge-test: root option: ROOT from the environment wins over make.conf" \
+	|| die "${out}"
+rm -rf cfgmc rootmc
+
 rm -rf "${urstore}/dev-libs"
 qmaint binhost -f >/dev/null 2>&1
 

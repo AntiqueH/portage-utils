@@ -90,10 +90,18 @@ q_profile_follow_at(int dir_fd, const char *dir, const char *file,
 	return data;
 }
 
-void *
-q_profile_follow(const char *file, q_profile_callback_t callback, void *data)
+void *q_profile_follow
+(
+  const char           *root,
+  const char           *file,
+  q_profile_callback_t  callback,
+  void                 *data
+)
 {
-	/* Walk the profiles and read the file in question */
-	data = q_profile_follow_at(AT_FDCWD, CONFIG_EPREFIX "etc/make.profile", file, callback, data);
-	return q_profile_follow_at(AT_FDCWD, CONFIG_EPREFIX "etc/portage/make.profile", file, callback, data);
+  char path[_Q_PATH_MAX];
+
+  snprintf(path, sizeof(path), "%s/etc/make.profile", root);
+  data = q_profile_follow_at(AT_FDCWD, path, file, callback, data);
+  snprintf(path, sizeof(path), "%s/etc/portage/make.profile", root);
+  return q_profile_follow_at(AT_FDCWD, path, file, callback, data);
 }

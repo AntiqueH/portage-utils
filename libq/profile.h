@@ -8,6 +8,7 @@
 
 typedef void *(q_profile_callback_t)(void *, char *);
 void *q_profile_follow(
+		const char *root,
 		const char *file, q_profile_callback_t callback,
 		void *data);
 

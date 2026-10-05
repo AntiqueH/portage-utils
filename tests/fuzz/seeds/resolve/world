@@ -1,0 +1,37 @@
+jCPV: dc-libs/N-1
+SLOT: 0
+KEYWORDS: amd64
+LICENSE: GPL-2
+EAPI: 8
+USE: a
+IUSE: a b
+RDEPEND: dc-libs/M a? ( dc-libs/A )
+SIZE: 10
+MD5: d41d8cd98f00b204e9800998ecf8427e
+PATH: dc-libs/N-1.gpkg.tar
+BUILD_TIME: 5
+
+CPV: dc-libs/M-2
+SLOT: 0/2
+KEYWORDS: amd64
+RDEPEND: || ( dc-libs/B dc-libs/Z ) !dc-libs/Q
+SIZE: 10
+PATH: dc-libs/M-2.gpkg.tar
+
+CPV: dc-libs/D-2
+SLOT: 0
+KEYWORDS: amd64
+USE: a
+IUSE: a
+RDEPEND: dc-libs/A:=
+SIZE: 10
+PATH: dc-libs/D-2.gpkg.tar
+
+CPV: dc-libs/F-2
+SLOT: 0
+KEYWORDS: ~amd64
+LICENSE: EULA
+RDEPEND: dc-libs/C[a]
+SIZE: 1
+PATH: dc-libs/F-2.gpkg.tar
+

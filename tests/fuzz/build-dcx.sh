@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build the fuzz_dcx target
+# Build a fuzz target that compiles main.c and qmerge.c,
+# fuzz_dcx, or the target named as the first argument (qmhelpers, resolve)
 # Takes the source list, preprocessor flags and libraries from the generated
 # Makefile so it follows configure (vendored curl, gpgme, libarchive).
 #
@@ -11,6 +12,7 @@ cd "$(dirname "$0")/../.."
 : "${CC:=clang}"
 : "${FUZZ_CFLAGS:=-O1 -g -fsanitize=fuzzer,address,undefined}"
 : "${OUT:=tests/fuzz/.bin}"
+T=${1:-dcx}
 [ -f Makefile ] || { echo "build-dcx.sh: run ./configure first" >&2; exit 1; }
 mkvar() {
 	make -s -f Makefile -f - __q_print "__Q_VAR=$1" <<'EOF'
@@ -25,5 +27,5 @@ libs=$(mkvar LIBS)
 mkdir -p "$OUT"
 # shellcheck disable=SC2086
 "$CC" $FUZZ_CFLAGS -DHAVE_CONFIG_H -I. $qcpp \
-	tests/fuzz/fuzz_dcx.c $qsrc $qlibs $libs -o "$OUT/fuzz_dcx"
-echo "built $OUT/fuzz_dcx"
+	"tests/fuzz/fuzz_$T.c" $qsrc $qlibs $libs -o "$OUT/fuzz_$T"
+echo "built $OUT/fuzz_$T"

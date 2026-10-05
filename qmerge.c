@@ -1379,6 +1379,7 @@ static size_t             qm_nbinrepos = 0;
 /* candidate-selection scan order by (priority, name). storage order is
  * untouched, @local stays at index 0 */
 static size_t            *qm_walk_order = NULL;
+static bool               qm_binrepos_loaded = false;
 
 /* priority scale: 1 is the top, larger sinks lower; 0 is reserved for
  * the emergency repos, reachable only through an explicit @name
@@ -1538,7 +1539,6 @@ binrepos_cmp(const void *a, const void *b)
 static void
 binrepos_load(void)
 {
-	static bool loaded = false;
 	char        path[_Q_PATH_MAX];
 	int         prio;
 	char       *bh;
@@ -1546,9 +1546,9 @@ binrepos_load(void)
 	char       *sp;
 	int         n;
 
-	if (loaded)
+	if (qm_binrepos_loaded)
 		return;
-	loaded = true;
+	qm_binrepos_loaded = true;
 
 	snprintf(path, sizeof(path), "%s/%s", CONFIG_EPREFIX,
 			 "usr/share/portage/config/binrepos.conf");
@@ -4537,7 +4537,7 @@ qm_news_relevant(const char *hdrs)
 
 		prof_init = true;
 		prof[0] = '\0';
-		snprintf(lp, sizeof(lp), "%setc/portage/make.profile", portroot);
+		snprintf(lp, sizeof(lp), "%s/etc/portage/make.profile", configroot);
 		if (realpath(lp, rp) != NULL &&
 				(sub = strstr(rp, "/profiles/")) != NULL)
 			snprintf(prof, sizeof(prof), "%s",
@@ -20396,11 +20396,12 @@ qm_profile_set_enabled(void)
 	ssize_t n;
 	char   *s;
 
-	n = readlink(CONFIG_EPREFIX "etc/portage/make.profile",
-				 lnk, sizeof(lnk) - 1);
-	if (n < 0)
-		n = readlink(CONFIG_EPREFIX "etc/make.profile",
-					 lnk, sizeof(lnk) - 1);
+	snprintf(dir, sizeof(dir), "%s/etc/portage/make.profile", configroot);
+	n = readlink(dir, lnk, sizeof(lnk) - 1);
+	if (n < 0) {
+		snprintf(dir, sizeof(dir), "%s/etc/make.profile", configroot);
+		n = readlink(dir, lnk, sizeof(lnk) - 1);
+	}
 	if (n < 0)
 		return false;
 	lnk[n] = '\0';
@@ -20408,7 +20409,7 @@ qm_profile_set_enabled(void)
 	if (lnk[0] == '/')
 		snprintf(dir, sizeof(dir), "%s", lnk);
 	else
-		snprintf(dir, sizeof(dir), CONFIG_EPREFIX "etc/portage/%s", lnk);
+		snprintf(dir, sizeof(dir), "%s/etc/portage/%s", configroot, lnk);
 
 	/* ascend to the repo root's metadata/layout.conf */
 	while (1) {
@@ -20504,7 +20505,7 @@ qmerge_expand_setname(const char *name, set *q)
 	if (strcmp(name, "system") == 0) {
 		size_t before = q != NULL ? cnt_set(q) : 0;
 
-		q = q_profile_follow("packages", qmerge_add_set_system, q);
+		q = q_profile_follow(configroot, "packages",qmerge_add_set_system, q);
 		if ((q != NULL ? cnt_set(q) : 0) == before)
 			warn("@system is empty: no profile packages found "
 				 "(no profile configured?)");
@@ -20513,7 +20514,7 @@ qmerge_expand_setname(const char *name, set *q)
 	if (strcmp(name, "profile") == 0) {
 		if (!qm_profile_set_enabled())
 			return q;
-		return q_profile_follow("packages", qmerge_add_set_profile, q);
+		return q_profile_follow(configroot, "packages",qmerge_add_set_profile, q);
 	}
 	/* revdep packages still NEEDing a preserved library.
 	 * a revdep whose only candidate build still links the preserved soname
@@ -26330,9 +26331,9 @@ static void
 qm_dc_add_profile_sets(struct qm_dc *dc, bool with_selected, bool *set_error,
 					   size_t counts[3])
 {
-	set   *sys  = q_profile_follow("packages", qmerge_add_set_system, NULL);
+	set   *sys  = q_profile_follow(configroot, "packages",qmerge_add_set_system, NULL);
 	set   *prof = qm_profile_set_enabled()
-			? q_profile_follow("packages", qmerge_add_set_profile, NULL) : NULL;
+			? q_profile_follow(configroot, "packages",qmerge_add_set_profile, NULL) : NULL;
 	set   *world = qm_world_load("world");
 	set   *wsets = qm_world_load("world_sets");
 	array *ks;
@@ -26695,7 +26696,7 @@ qm_dc_unmerge(struct qm_dc *dc, array *cleanlist, bool ordered,
 
 	/* @system through new-style virtuals */
 	{
-		set   *sys = q_profile_follow("packages", qmerge_add_set_system, NULL);
+		set   *sys = q_profile_follow(configroot, "packages",qmerge_add_set_system, NULL);
 		array *ks  = sys != NULL ? set_keys(sys) : array_new();
 		char  *k;
 
@@ -28948,6 +28949,7 @@ int qmerge_main(int argc, char **argv)
 	qm_gb_excl_cli = qm_gb_incl_cli = NULL;
 	free(qm_binrepos);
 	qm_binrepos = NULL;
+	qm_binrepos_loaded = false;
 
 	if (qm_bintrees != NULL) {
 		size_t ti;
@@ -29066,8 +29068,10 @@ int qmerge_main(int argc, char **argv)
 		hash_free(qm_plan_notices);
 		qm_plan_notices = NULL;
 	}
-	if (qmerge_vdb_tree != NULL)
+	if (qmerge_vdb_tree != NULL) {
 		tree_close(qmerge_vdb_tree);
+		qmerge_vdb_tree = NULL;
+	}
 
 	return ret;
 }

@@ -198,9 +198,11 @@
 #              per target. A binhost is network input; this check gate feeds the
 #              parsers hostile bytes. Engine: clang+libFuzzer when present,
 #              else gcc+AFL++ (afl-gcc-fast + the AFL_DRIVER libFuzzer-compat
-#              main), else SKIP. Leak checking is off here (that is asan's
-#              job); crash inputs land in tests/r/artifacts/, the growing
-#              corpus in tests/r/corpus/.
+#              main), else SKIP. Leak checking is active. Crash inputs land in
+#              tests/r/artifacts/, the growing artifacts in tests/r/corpus/.
+#              With clang the targets then run a second time under the
+#              memory sanitizer ("fuzz msan" in the summary), on the same
+#              corpus, to catch reads of memory that was not yet written.
 #   cbmc       Bounded verification of the PMS version-ordering axioms
 #              (reflexivity, antisymmetry, transitivity) for atom_compare_str
 #              via tests/cbmc/atom_axioms.c. The authoritative check is a
@@ -294,7 +296,7 @@ NONBUILT_SRC="qglsa.c template.c"
 VG_CHROOT_DEFAULT="/home/work/sources/qmerge_chroot_x86_64_tests"
 ALL_GATES=(gcc warnings clang opt lto c23 asan integer cppcheck fanalyzer tidy heap m32 static valgrind fuzz cbmc tsan flagmatrix)
 OPTIONAL_GATES=(warnings tidy m32 static valgrind fuzz cbmc tsan flagmatrix)
-FUZZ_TARGETS=(atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx)
+FUZZ_TARGETS=(atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve)
 
 HAVE_GCC=0;   command -v gcc   >/dev/null 2>&1 && HAVE_GCC=1
 HAVE_CLANG=0; command -v clang >/dev/null 2>&1 && HAVE_CLANG=1
@@ -821,6 +823,7 @@ fuzz_gate() {
     # AFL_DRIVER libFuzzer-compat main). SKIP if neither engine is present.
     if [ "$HAVE_CLANG" -eq 1 ]; then
         fuzz_gate_libfuzzer
+        fuzz_gate_libfuzzer memory "fuzz msan"
     elif command -v afl-gcc-fast >/dev/null 2>&1 && [ -f "$AFL_DRIVER" ]; then
         fuzz_gate_afl
     else
@@ -829,42 +832,65 @@ fuzz_gate() {
     fi
 }
 
+# $1 sanitizer is address,undefined (default) or memory
+# $2 name shown in the summary is fuzz (default) or "fuzz msan"
+# the memory run will use the already generated testcases the address run has previously extended, keeps its
+# binaries in tests/r/msan-bin and its logs and crash inputs under a ".msan"
+# name, and links tests/fuzz/msan_strtok_r.c into every target
 fuzz_gate_libfuzzer() {
-    show "check gate fuzz: libFuzzer on the remote-input parsers (${FUZZSECS}s per target)"
+    local san=${1:-address,undefined} label=${2:-fuzz}
+    local sanflags="-fsanitize=$san" envopt="ASAN_OPTIONS=detect_leaks=1"
+    local bin=tests/fuzz/.bin tag=""
+    local extra=()
+    if [ "$san" = memory ]; then
+        sanflags="-fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer"
+        envopt="MSAN_OPTIONS=symbolize=0"
+        bin=tests/r/msan-bin
+        tag=".msan"
+    fi
+    show "check gate $label: libFuzzer ($san) on the remote-input parsers (${FUZZSECS}s per target)"
     if ! command -v clang >/dev/null 2>&1; then
-        note SKIP "fuzz (clang not installed)"
+        note SKIP "$label (clang not installed)"
         return 0
     fi
     make clean >>"$QOUT" 2>&1
     if ! CC=clang ./configure "${FEATURES[@]}" --disable-openmp \
-            CFLAGS="-O1 -g -fsanitize=address,undefined -fsanitize=fuzzer-no-link -fno-sanitize-recover=all" \
-            LDFLAGS="-fsanitize=address,undefined" >/dev/null 2>&1 \
+            CFLAGS="-O1 -g $sanflags -fsanitize=fuzzer-no-link -fno-sanitize-recover=all" \
+            LDFLAGS="-fsanitize=$san" >/dev/null 2>&1 \
             || ! make -j"$CPU_JOBS" CC=clang; then
-        note FAIL "fuzz (instrumented build)"
+        note FAIL "$label (instrumented build)"
         return 0
     fi
     local gpgme_cflags t ok=1
     local built=()
     gpgme_cflags=$(pkg-config --cflags gpgme 2>/dev/null || gpgme-config --cflags 2>/dev/null || :)
-    mkdir -p tests/fuzz/.bin tests/r/artifacts tests/r/tmp
+    mkdir -p "$bin" tests/r/artifacts tests/r/tmp
+    if [ "$san" = memory ]; then
+        if ! clang -O1 -g $sanflags -c tests/fuzz/msan_strtok_r.c \
+                -o "$bin/msan_strtok_r.o"; then
+            note FAIL "$label (strtok_r helper build)"
+            return 0
+        fi
+        extra=("$bin/msan_strtok_r.o")
+    fi
     for t in "${FUZZ_TARGETS[@]}"; do
         mkdir -p "tests/r/corpus/$t"
-        if [ "$t" = dcx ]; then
-            if CC=clang FUZZ_CFLAGS="-fsanitize=fuzzer,address,undefined -O1 -g" \
-                    OUT=tests/fuzz/.bin tests/fuzz/build-dcx.sh >>"$QOUT" 2>&1; then
+        if [ "$t" = dcx ] || [ "$t" = qmhelpers ] || [ "$t" = resolve ]; then
+            if CC=clang FUZZ_CFLAGS="-fsanitize=fuzzer $sanflags -O1 -g ${extra[*]}" \
+                    OUT="$bin" tests/fuzz/build-dcx.sh "$t" >>"$QOUT" 2>&1; then
                 built+=("$t")
             else
-                printf 'fuzz_dcx: harness build failed\n' >&2
+                printf 'fuzz_%s: harness build failed\n' "$t" >&2
                 ok=0
             fi
             continue
         fi
-        if ! clang -fsanitize=fuzzer,address,undefined -O1 -g \
+        if ! clang -fsanitize=fuzzer $sanflags -O1 -g \
                 -DHAVE_CONFIG_H -I. -Ilibq -Iautotools/gnulib $gpgme_cflags \
-                "tests/fuzz/fuzz_$t.c" \
+                "tests/fuzz/fuzz_$t.c" "${extra[@]}" \
                 libq/libq.a autotools/gnulib/libgnu.a \
                 -larchive -lz -lb2 \
-                -o "tests/fuzz/.bin/fuzz_$t"; then
+                -o "$bin/fuzz_$t"; then
             printf 'fuzz_%s: harness build failed\n' "$t" >&2
             ok=0
             continue
@@ -884,32 +910,36 @@ fuzz_gate_libfuzzer() {
                 regress=()
                 [ -d "tests/fuzz/regressions/$bt" ] && \
                     regress=("tests/fuzz/regressions/$bt")
-                ASAN_OPTIONS="detect_leaks=1" \
+                env "$envopt" \
                     TMPDIR="$PWD/tests/r/tmp" \
-                    "tests/fuzz/.bin/fuzz_$bt" \
+                    "$bin/fuzz_$bt" \
                     -max_total_time="$FUZZSECS" -print_final_stats=1 \
                     -timeout=25 -print_funcs=0 \
                     "${dictarg[@]}" \
-                    -artifact_prefix="tests/r/artifacts/${bt}-" \
+                    -artifact_prefix="tests/r/artifacts/${bt}${tag}-" \
                     "tests/r/corpus/$bt" "tests/fuzz/seeds/$bt" \
                     "${regress[@]}"
-            ) >"tests/r/artifacts/$bt.gatelog" 2>&1 &
+            ) >"tests/r/artifacts/$bt$tag.gatelog" 2>&1 &
             pids+=($!)
             names+=("$bt")
         done
         for bn in "${!pids[@]}"; do
             if ! wait "${pids[$bn]}"; then
-                printf 'fuzz_%s: FAILED, reproducer in tests/r/artifacts/\n' \
-                    "${names[$bn]}" >&2
+                printf 'fuzz_%s: FAILED (%s), reproducer in tests/r/artifacts/\n' \
+                    "${names[$bn]}" "$san" >&2
+                if [ "$san" = memory ]; then
+                    printf '  source lines of a report: llvm-addr2line -f -e %s/fuzz_%s <the +0x... offsets>\n' \
+                        "$bin" "${names[$bn]}" >&2
+                fi
                 ok=0
             fi
-            cat "tests/r/artifacts/${names[$bn]}.gatelog"
+            cat "tests/r/artifacts/${names[$bn]}$tag.gatelog"
         done
     done
     if [ "$ok" -eq 1 ]; then
-        note PASS "fuzz (${FUZZ_TARGETS[*]})"
+        note PASS "$label (${FUZZ_TARGETS[*]})"
     else
-        note FAIL "fuzz (${FUZZ_TARGETS[*]})"
+        note FAIL "$label (${FUZZ_TARGETS[*]})"
     fi
 }
 

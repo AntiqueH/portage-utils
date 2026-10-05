@@ -10,7 +10,7 @@ cd "$(dirname "$0")/../.."
 : "${LIB_FUZZING_ENGINE:=-fsanitize=fuzzer}"
 : "${OUT:=tests/fuzz/.bin}"
 : "${JOBS:=$(nproc)}"
-read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx}"
+read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve}"
 
 gpgme_cflags=$(pkg-config --cflags gpgme 2>/dev/null || gpgme-config --cflags 2>/dev/null || :)
 
@@ -22,9 +22,9 @@ make -j"$JOBS" CC="$CC" >/dev/null
 mkdir -p "$OUT"
 inc="-DHAVE_CONFIG_H -I. -Ilibq -Iautotools/gnulib ${gpgme_cflags}"
 for t in "${TARGETS[@]}"; do
-    if [ "$t" = dcx ]; then
+    if [ "$t" = dcx ] || [ "$t" = qmhelpers ] || [ "$t" = resolve ]; then
         CC="$CC" FUZZ_CFLAGS="${CFLAGS} ${LIB_FUZZING_ENGINE}" OUT="$OUT" \
-            tests/fuzz/build-dcx.sh
+            tests/fuzz/build-dcx.sh "$t"
         continue
     fi
     "$CC" ${CFLAGS} ${LIB_FUZZING_ENGINE} ${inc} \

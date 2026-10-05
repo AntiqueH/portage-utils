@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 
 : "${SOAKSECS:=600}"
 : "${FORKS:=6}"
-read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx}"
+read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve}"
 
 tests/fuzz/build.sh
 

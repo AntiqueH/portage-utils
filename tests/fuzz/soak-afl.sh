@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 : "${SOAKSECS:=600}"
 : "${FORKS:=6}"
 : "${AFL_DRIVER:=/usr/lib64/afl/libAFLDriver.a}"
-read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx}"
+read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve}"
 
 CC=afl-gcc-fast AFL_USE_ASAN=1 SANFLAGS='' CFLAGS='-O1 -g' COV_FLAGS='' \
     LIB_FUZZING_ENGINE="$AFL_DRIVER" tests/fuzz/build.sh
