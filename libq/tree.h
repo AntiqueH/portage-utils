@@ -87,6 +87,10 @@ enum tree_pkg_meta_keys {
 
 tree_ctx           *tree_new(const char *portroot, const char *path,
                              enum tree_open_type type, bool quiet);
+tree_ctx           *tree_new_binpkg_cache(const char *portroot,
+                                          const char *pkgs_path,
+                                          const char *index_path,
+                                          bool quiet);
 tree_ctx           *tree_merge(tree_ctx *tree1, tree_ctx *tree2);
 void                tree_close(tree_ctx *tree);
 void                tree_close_cb(void *tree);

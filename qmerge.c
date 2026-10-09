@@ -1373,6 +1373,7 @@ struct qm_binrepo {
 	/* xpak-skip warning shown once per repo */
 	bool  xpak_warned;
 	bool  index_dead;
+	bool  loc_was_pkgdir;
 };
 static struct qm_binrepo *qm_binrepos  = NULL;
 static size_t             qm_nbinrepos = 0;
@@ -1434,6 +1435,7 @@ binrepos_add(const char *name, const char *uri, const char *loc, int priority,
 		keypkg != NULL && *keypkg != '\0' ? xstrdup(keypkg) : NULL;
 	qm_binrepos[qm_nbinrepos].xpak_warned = false;
 	qm_binrepos[qm_nbinrepos].index_dead  = false;
+	qm_binrepos[qm_nbinrepos].loc_was_pkgdir = false;
 	if (gbex != NULL && *gbex != '\0') {
 		char src[192];
 
@@ -1601,14 +1603,27 @@ binrepos_load(void)
 			npkg[--nlen] = '\0';
 
 		for (i = 0; i < qm_nbinrepos; i++) {
+			char dflt[_Q_PATH_MAX];
+
 			if (qm_binrepos[i].loc == NULL ||
 					strcmp(qm_binrepos[i].loc, npkg) != 0)
 				continue;
-			warn("binrepo '%s': location = PKGDIR conflicts with the "
-				 "@local PKGDIR; using /var/cache/binhost/%s instead",
-				 qm_binrepos[i].name, qm_binrepos[i].name);
+			snprintf(dflt, sizeof(dflt), "/var/cache/binhost/%s",
+					 qm_binrepos[i].name);
+			if (strcmp(dflt, npkg) == 0)
+				warn("binrepo '%s': PKGDIR is set to its download directory "
+					 "%s; the @local repository indexes the packages "
+					 "downloaded from this binhost as its own while PKGDIR "
+					 "stays there",
+					 qm_binrepos[i].name, npkg);
+			else
+				warn("binrepo '%s': its location %s is PKGDIR, the @local "
+					 "package directory; the packages of this binhost go to "
+					 "%s instead",
+					 qm_binrepos[i].name, npkg, dflt);
 			free(qm_binrepos[i].loc);
 			qm_binrepos[i].loc = NULL;
+			qm_binrepos[i].loc_was_pkgdir = true;
 		}
 
 		/* by default the LOWEST scan priority (QMERGE_LOCAL_PRIORITY overrides,
@@ -2395,40 +2410,25 @@ qm_index_hdr_val(const char *path, const char *key, char *val, size_t vlen)
 	return ret;
 }
 
-static void
-qm_uri_host(const char *uri, char *buf, size_t buflen)
+static void qm_iso_time
+(
+  time_t  ts,
+  char   *buf,
+  size_t  buflen
+)
 {
-	const char *p = strstr(uri, "://");
-	const char *e;
-	const char *at;
-	size_t      n;
+  struct tm tmv;
+  size_t    n;
 
-	p = p != NULL ? p + 3 : uri;
-	e = strchr(p, '/');
-	if (e == NULL)
-		e = p + strlen(p);
-	at = memchr(p, '@', (size_t)(e - p));
-	if (at != NULL)
-		p = at + 1;
-	n = (size_t)(e - p);
-	if (n >= buflen)
-		n = buflen - 1;
-	memcpy(buf, p, n);
-	buf[n] = '\0';
-}
-
-static void
-qm_iso_time(time_t ts, char *buf, size_t buflen)
-{
-	struct tm tmv;
-	size_t    n;
-
-	localtime_r(&ts, &tmv);
-	n = strftime(buf, buflen, "%Y-%m-%dT%H:%M:%S%z", &tmv);
-	if (n >= 5 && n + 2 <= buflen) {
-		memmove(buf + n - 1, buf + n - 2, 2);
-		buf[n - 2] = ':';
-	}
+  localtime_r(&ts, &tmv);
+  n = strftime(buf, buflen, "%Y-%m-%dT%H:%M:%S%z", &tmv);
+  if (n >= 5 &&
+      n + 2 <= buflen)
+  {
+    memmove(buf + n - 1, buf + n - 2, 2);
+    buf[n - 2] = ':';
+    buf[n + 1] = '\0';
+  }
 }
 
 static bool
@@ -2558,6 +2558,146 @@ qm_gunzip_file
 	return ok;
 }
 
+/* the cache of what binhost i publishes (its Packages index, Moves and
+ * News.tar) lives under portage's path var/cache/edb/binhost/<host>/<url
+ * path>, so emerge and qmerge will have to share it. the repository path holds
+ * the downloaded packages. @local (no sync-uri) keeps its index in
+ * PKGDIR. a sync-uri whose path goes up with ".." or that gives no usable
+ * name falls back to var/cache/edb/binhost/<repository name> */
+static const char *qm_repo_cache
+(
+  size_t  i,
+  char   *buf,
+  size_t  buflen
+)
+{
+  const char *uri;
+  const char *host;
+  const char *path;
+  const char *p;
+  const char *seg;
+  size_t      hlen;
+  size_t      plen;
+  size_t      n;
+  bool        ok;
+
+  if (qm_binrepos[i].uri == NULL ||
+      qm_binrepos[i].uri[0] == '\0')
+    return qm_repo_loc(i, buf, buflen);
+
+  uri = qm_binrepos[i].uri;
+  p   = strstr(uri, "://");
+  if (p != NULL)
+  {
+    host = p + 3;
+    path = strchr(host, '/');
+    if (path == NULL)
+      path = host + strlen(host);
+    p = memchr(host, '@', (size_t)(path - host));
+    if (p != NULL)
+      host = p + 1;
+    hlen = (size_t)(path - host);
+    p    = memchr(host, ':', hlen);
+    if (p != NULL)
+      hlen = (size_t)(p - host);
+  }
+  else
+  {
+    host = uri;
+    hlen = 0;
+    path = uri;
+  }
+  while (*path == '/')
+    path++;
+  plen = strlen(path);
+  while (plen > 0 &&
+         path[plen - 1] == '/')
+    plen--;
+
+  ok = (hlen > 0 ||
+        plen > 0) &&
+       hlen <= 255 &&
+       plen <= 3000;
+  for (seg = path; ok && seg < path + plen; seg++)
+  {
+    if (seg[0] == '.' &&
+        seg[1] == '.' &&
+        (seg == path || seg[-1] == '/') &&
+        (seg + 2 == path + plen || seg[2] == '/'))
+      ok = false;
+  }
+  if (ok)
+  {
+    n = (size_t)snprintf(buf, buflen, "/var/cache/edb/binhost%s%.*s%s%.*s",
+                         hlen > 0 ? "/" : "", (int)MIN(hlen, 255), host,
+                         plen > 0 ? "/" : "", (int)MIN(plen, 3000), path);
+    if (n >= buflen)
+      ok = false;
+  }
+  if (!ok)
+    snprintf(buf, buflen, "/var/cache/edb/binhost/%s", qm_binrepos[i].name);
+  return buf;
+}
+
+/* treating the case when a older qmerge kept the fetched index next
+ * to the downloaded packages.
+ * but a copy that came from the binhost (which carries DOWNLOAD_TIMESTAMP)
+ * is moved to the cache once, with the Moves and News files that belong to
+ * it.
+ * a index written locally into the location is left alone and not used
+ * for the binhost */
+static void qm_repo_cache_migrate
+(
+  size_t i
+)
+{
+  static const char *const files[] = {
+    "Packages", "Packages.gz", "Moves", ".moves-applied",
+    "News.tar", ".news-applied"
+  };
+  char        locbuf[_Q_PATH_MAX];
+  char        cbuf[_Q_PATH_MAX];
+  char        from[_Q_PATH_MAX + 32];
+  char        to[_Q_PATH_MAX + 32];
+  char        v[64];
+  const char *loc;
+  const char *cdir;
+  struct stat st;
+  size_t      k;
+
+  if (qm_binrepos[i].uri == NULL ||
+      qm_binrepos[i].uri[0] == '\0')
+    return;
+  loc  = qm_repo_loc(i, locbuf, sizeof(locbuf));
+  cdir = qm_repo_cache(i, cbuf, sizeof(cbuf));
+  if (strcmp(loc, cdir) == 0)
+    return;
+
+  snprintf(to, sizeof(to), "%s%s/%s", portroot, cdir, Packages);
+  if (stat(to, &st) == 0)
+    return;
+  snprintf(from, sizeof(from), "%s%s/%s", portroot, loc, Packages);
+  if (stat(from, &st) != 0 ||
+      !qm_index_hdr_val(from, "DOWNLOAD_TIMESTAMP", v, sizeof(v)))
+    return;
+
+  snprintf(to, sizeof(to), "%s%s", portroot, cdir);
+  if (mkdir_p(to, 0755) != 0)
+  {
+    warnp("cannot create the index cache %s", to);
+    return;
+  }
+  for (k = 0; k < ARRAY_SIZE(files); k++)
+  {
+    snprintf(from, sizeof(from), "%s%s/%s", portroot, loc, files[k]);
+    snprintf(to, sizeof(to), "%s%s/%s", portroot, cdir, files[k]);
+    if (stat(from, &st) != 0)
+      continue;
+    if (rename(from, to) != 0)
+      warnp("cannot move %s to %s", from, to);
+  }
+}
+
 static void
 qmerge_initialize(void)
 {
@@ -2611,7 +2751,10 @@ qmerge_initialize(void)
 			if (qm_binrepos[i].uri == NULL || qm_binrepos[i].uri[0] == '\0')
 				continue;
 
-			loc = qm_repo_loc(i, locbuf, sizeof(locbuf));
+			/* everything fetched here lands in the index cache, the
+			 * repository location is for the packages only */
+			qm_repo_cache_migrate(i);
+			loc = qm_repo_cache(i, locbuf, sizeof(locbuf));
 
 			/* frozen repo: the cached index is served forever.
 			 * an empty cache still fetches once */
@@ -2669,8 +2812,14 @@ qmerge_initialize(void)
 			if (!qm_index_force) {
 				char lts[64];
 
-				if (qm_index_hdr_val(spath, "TIMESTAMP",
-									 lts, sizeof(lts)))
+				/* only a copy that came from the binhost (it carries
+				 * DOWNLOAD_TIMESTAMP) may say "nothing newer than this";
+				 * an index written locally into this directory must not
+				 * make the binhost answer 304 */
+				if (qm_index_hdr_val(spath, "DOWNLOAD_TIMESTAMP",
+									 lts, sizeof(lts)) &&
+						qm_index_hdr_val(spath, "TIMESTAMP",
+										 lts, sizeof(lts)))
 					qm_fetch_ims = (time_t)atoll(lts);
 			}
 
@@ -2719,7 +2868,6 @@ qmerge_initialize(void)
 				char      rver[64];
 				char      lts[64];
 				bool      ver_ok = false;
-				bool      keep   = false;
 				long long rtsv;
 				long long ltsv   = 0;
 
@@ -2756,32 +2904,21 @@ qmerge_initialize(void)
 				}
 				rtsv = atoll(rts);
 				if (qm_index_hdr_val(spath, "TIMESTAMP",
-									 lts, sizeof(lts))) {
+									 lts, sizeof(lts)))
 					ltsv = atoll(lts);
-					keep = ltsv >= rtsv;
-				}
-				if (keep && rtsv < ltsv) {
-					char host[256];
-					char lb[64] = "";
-					char rb[64] = "";
+				if (ltsv > rtsv)
+				{
+					char lb[64];
+					char rb[64];
 
-					qm_uri_host(qm_binrepos[i].uri, host, sizeof(host));
-					if (verbose) {
-						qm_iso_time((time_t)ltsv, lb, sizeof(lb));
-						qm_iso_time((time_t)rtsv, rb, sizeof(rb));
-					}
-					fprintf(stderr, "%s[%s] WARNING: Service %s did not "
-							"respect If-Modified-Since. Consider asking "
-							"the service operator to enable support for "
-							"If-Modified-Since or using another service"
-							"%s%s%s%s%s.%s\n",
-							YELLOW, qm_binrepos[i].name, host,
-							verbose ? " (local: " : "",
-							lb, verbose ? ", remote: " : "", rb,
-							verbose ? ")" : "", NORM);
+					qm_iso_time((time_t)ltsv, lb, sizeof(lb));
+					qm_iso_time((time_t)rtsv, rb, sizeof(rb));
+					warn("[%s] the fetched Packages index is older (%s) "
+						 "than the cached copy (%s); using the fetched "
+						 "one, the binhost decides",
+						 qm_binrepos[i].name, rb, lb);
 				}
-				if (!keep &&
-						!qm_store_index("Packages.__download__", sdir))
+				if (!qm_store_index("Packages.__download__", sdir))
 					warnp("failed to move fresh Packages index into %s",
 						  sdir);
 			}
@@ -2902,8 +3039,19 @@ qm_bintree(size_t i)
 	}
 
 	if (i == 0)
+	{
 		qm_local_index_populate(loc);
-	qm_bintrees[i] = tree_new(portroot, loc, TREETYPE_BINPKG, true);
+		qm_bintrees[i] = tree_new(portroot, loc, TREETYPE_BINPKG, true);
+	}
+	else
+	{
+		char        cbuf[_Q_PATH_MAX];
+		const char *cdir;
+
+		qm_repo_cache_migrate(i);
+		cdir = qm_repo_cache(i, cbuf, sizeof(cbuf));
+		qm_bintrees[i] = tree_new_binpkg_cache(portroot, loc, cdir, true);
+	}
 	return qm_bintrees[i];
 }
 
@@ -3007,6 +3155,9 @@ qm_print_repos(void)
 
 			printf("  %-16s pkgdir   %s\n", "",
 				   qm_repo_loc(w, locbuf, sizeof(locbuf)));
+			if (qm_binrepos[w].uri != NULL && qm_binrepos[w].uri[0] != '\0')
+				printf("  %-16s index    %s\n", "",
+					   qm_repo_cache(w, locbuf, sizeof(locbuf)));
 			if (qm_binrepos[w].gb_excl != NULL &&
 					array_cnt(qm_binrepos[w].gb_excl) > 0)
 				printf("  %-16s getbinpkg-exclude: %zu atom(s)\n", "",
@@ -4153,7 +4304,7 @@ qm_apply_moves_binhost(void)
 	for (i = 0; i < nrepo; i++) {
 		char        locbuf[_Q_PATH_MAX];
 		const char *loc = qm_nbinrepos > 0 ?
-				qm_repo_loc(i, locbuf, sizeof(locbuf)) : pkgdir;
+				qm_repo_cache(i, locbuf, sizeof(locbuf)) : pkgdir;
 		const char *rname = qm_nbinrepos > 0 ?
 				qm_binrepos[i].name : "binhost";
 		char       *mpath = NULL;
@@ -4212,7 +4363,7 @@ qm_apply_moves_repos(bool notice)
 		for (i = 0; i < nrepo && !have_moves; i++) {
 			char        locbuf[_Q_PATH_MAX];
 			const char *loc = qm_nbinrepos > 0 ?
-					qm_repo_loc(i, locbuf, sizeof(locbuf)) : pkgdir;
+					qm_repo_cache(i, locbuf, sizeof(locbuf)) : pkgdir;
 			char       *mp;
 			struct stat st;
 
@@ -4290,7 +4441,7 @@ qm_collect_repo_moves(void)
 	for (i = 0; i < nrepo; i++) {
 		char        locbuf[_Q_PATH_MAX];
 		const char *loc = qm_nbinrepos > 0 ?
-				qm_repo_loc(i, locbuf, sizeof(locbuf)) : pkgdir;
+				qm_repo_cache(i, locbuf, sizeof(locbuf)) : pkgdir;
 		char       *mp;
 		char       *mbuf = NULL;
 		size_t      mlen = 0;
@@ -4854,7 +5005,7 @@ qm_apply_news_all(void)
 	for (i = 0; i < nrepo; i++) {
 		char        locbuf[_Q_PATH_MAX];
 		const char *loc = qm_nbinrepos > 0 ?
-				qm_repo_loc(i, locbuf, sizeof(locbuf)) : pkgdir;
+				qm_repo_cache(i, locbuf, sizeof(locbuf)) : pkgdir;
 		const char *rname = qm_nbinrepos > 0 ?
 				qm_binrepos[i].name : "binhost";
 
@@ -14176,7 +14327,8 @@ resolve_again:
 			qm_plan_inst_free();
 			final_dups    = NULL;
 			final_planned = NULL;
-			if (qmerge_vdb_tree != NULL) {
+			if (qmerge_vdb_tree != NULL)
+			{
 				tree_close(qmerge_vdb_tree);
 				qmerge_vdb_tree = NULL;
 			}
@@ -28492,7 +28644,30 @@ int qmerge_main(int argc, char **argv)
 	}
 
 	if (regen_index)
+	{
+		size_t ri;
+
+		/* -i indexes PKGDIR, the @local pkgs dir. when PKGDIR is the
+		 * directory of a binhost, say where that binhost's index
+		 * really is, so nobody expects the index written here to
+		 * stand in for it.
+		 * also displaying a nice message to it in order to make sure
+		 * users are aware of this as well.  */
+		binrepos_load();
+		for (ri = 1; ri < qm_nbinrepos; ri++)
+		{
+			char cbuf[_Q_PATH_MAX];
+
+			if (!qm_binrepos[ri].loc_was_pkgdir)
+				continue;
+			warn("PKGDIR %s is the download directory of binhost %s; "
+				 "the index of that binhost is cached in %s and refreshed "
+				 "by `qmerge -f', the index written here is not used for it",
+				 pkgdir, qm_binrepos[ri].name,
+				 qm_repo_cache(ri, cbuf, sizeof(cbuf)));
+		}
 		return binpkg_index_regen();
+	}
 
 	/* -q (quiet) only reduces output; it must NOT imply the merge prompt is
 	 * skipped, use -y for non-interactive/auto-confirm.
@@ -28783,7 +28958,7 @@ int qmerge_main(int argc, char **argv)
 		for (ri = 0; ri < rcnt; ri++) {
 			char        locbuf[_Q_PATH_MAX];
 			const char *loc = qm_nbinrepos > 0 ?
-					qm_repo_loc(ri, locbuf, sizeof(locbuf)) : pkgdir;
+					qm_repo_cache(ri, locbuf, sizeof(locbuf)) : pkgdir;
 			char        idx[_Q_PATH_MAX];
 			struct stat st;
 
@@ -28841,6 +29016,11 @@ int qmerge_main(int argc, char **argv)
 		else if (argc - optind > 0)
 			warn("the given arguments expanded to no packages; "
 				 "nothing to fetch");
+		/* the @local repository (PKGDIR) should not be fetched.
+		 * its index is checked against the files on disk and rebuilt when they
+		 * disagree, ergo a catalog sync leaves the local packages
+		 * indexed too */
+		qm_local_index_populate(pkgdir);
 		ret = EXIT_SUCCESS;
 		goto cleanup;
 	}
@@ -29068,7 +29248,8 @@ int qmerge_main(int argc, char **argv)
 		hash_free(qm_plan_notices);
 		qm_plan_notices = NULL;
 	}
-	if (qmerge_vdb_tree != NULL) {
+	if (qmerge_vdb_tree != NULL)
+	{
 		tree_close(qmerge_vdb_tree);
 		qmerge_vdb_tree = NULL;
 	}

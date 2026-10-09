@@ -128,6 +128,33 @@ qm_gpkg_craft() {
 	rm -rf "${w}"
 }
 
+qm_idx_cache() {
+	local uri=$1 host="" path
+	if [[ ${uri} == *://* ]] ; then
+		host=${uri#*://}
+		path=${host#*/}
+		[[ ${path} == "${host}" ]] && path=""
+		host=${host%%/*}
+		host=${host##*@}
+		host=${host%%:*}
+	else
+		path=${uri}
+	fi
+	while [[ ${path} == /* ]] ; do path=${path#/}; done
+	while [[ ${path} == */ ]] ; do path=${path%/}; done
+	echo "${ROOT}/var/cache/edb/binhost${host:+/${host}}${path:+/${path}}"
+}
+
+qm_fake_fetch() {
+	local store=$1 uri=$2 cache
+	cache=$(qm_idx_cache "${uri}")
+	PKGDIR="/${store}" q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	mkdir -p "${cache}"
+	sed -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' \
+		"${ROOT}/${store}/Packages" > "${cache}/Packages"
+	rm -f "${ROOT}/${store}/Packages" "${ROOT}/${store}/Packages.gz"
+}
+
 # finally we can search like real professionals.
 # search: version-aware atom keys and --exact atom for precision
 
@@ -3009,10 +3036,11 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P gpg >/dev/null ; then
 		qmaint binhost -f >/dev/null 2>&1
 		cp "${mvg}" "${PWD}/mv.ref"
 
-		mkdir -p "${ROOT}/mvstore" cfg-mv/etc/portage/binrepos.conf
+		mvcache=$(qm_idx_cache http://127.0.0.1:1/)
+		mkdir -p "${ROOT}/mvstore" "${mvcache}" cfg-mv/etc/portage/binrepos.conf
 		printf '[mvrepo]\npriority = 1\nlocation = /mvstore\nsync-uri = http://127.0.0.1:1/\n' \
 			> cfg-mv/etc/portage/binrepos.conf/r.conf
-		printf 'move dev-libs/mvpkg dev-libs/mvmoved\n' > "${ROOT}/mvstore/Moves"
+		printf 'move dev-libs/mvpkg dev-libs/mvmoved\n' > "${mvcache}/Moves"
 		out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-mv" QMERGE_MOVES=binhost-only \
 			qmerge -f 2>&1)
 
@@ -3040,7 +3068,8 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P gpg >/dev/null ; then
 		echo "${WARN}SKIPPED:${NORMAL} signed-binpkg move: gpg cannot generate a test key"
 	fi
 	gpgconf --homedir "${mvhome}" --kill all >/dev/null 2>&1
-	rm -rf "${mvhome}" "${acstore}/dev-libs" "${ROOT}/mvstore" cfg-mv
+	rm -rf "${mvhome}" "${acstore}/dev-libs" "${ROOT}/mvstore" cfg-mv \
+		"$(qm_idx_cache http://127.0.0.1:1/)"
 	rm -f "${PWD}/mv.ref" "${PWD}/mv.mchk"
 	qmaint binhost -f >/dev/null 2>&1
 else
@@ -3118,8 +3147,8 @@ if [[ ${ftup} -eq 1 ]] ; then
 		"${fturl}" > cfg-ft/etc/portage/binrepos.conf/r.conf
 
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ft" qmerge -f 2>&1); rc=$?
-	[[ -s ${ROOT}/ftstore/Packages ]]
-	tend $? "qmerge-test: fetch identity: Packages index fetched over http" \
+	[[ -s $(qm_idx_cache "${fturl}/")/Packages && ! -e ${ROOT}/ftstore/Packages ]]
+	tend $? "qmerge-test: fetch identity: Packages index fetched over http into the index cache" \
 		|| die "rc=${rc}; ${out}"
 
 	out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-ft" \
@@ -3146,53 +3175,59 @@ if [[ ${ftup} -eq 1 ]] ; then
 
 	icurl="${fturl}/ic"
 	icroot="${ftroot}/ic"
-	rm -rf "${icroot}" "${ROOT}/icstore" cfg-ic
-	mkdir -p "${icroot}" "${ROOT}/icstore" cfg-ic/etc/portage/binrepos.conf
+	iccache=$(qm_idx_cache "${icurl}/")
+	rm -rf "${icroot}" "${ROOT}/icstore" "${iccache}" cfg-ic
+	mkdir -p "${icroot}" "${ROOT}/icstore" "${iccache}" cfg-ic/etc/portage/binrepos.conf
 	printf '[icrepo]\npriority = 1\nlocation = /icstore\nsync-uri = %s/\n' \
 		"${icurl}" > cfg-ic/etc/portage/binrepos.conf/r.conf
-	printf 'TIMESTAMP: 1700000000\nVERSION: 0\n\nCPV: fake/ic-1\n' \
-		> "${ROOT}/icstore/Packages"
+	printf 'DOWNLOAD_TIMESTAMP: 1700000001\nTIMESTAMP: 1700000000\nVERSION: 0\n\nCPV: fake/ic-1\n' \
+		> "${iccache}/Packages"
 
 	printf 'VERSION: 0\n\nCPV: fake/ic-2\n' > "${icroot}/Packages"
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ic" qmerge -f fake/ic 2>&1)
 	[[ ${out} == *"has no TIMESTAMP field."* ]] && \
-		grep -q 'fake/ic-1' "${ROOT}/icstore/Packages"
+		grep -q 'fake/ic-1' "${iccache}/Packages"
 	tend $? "qmerge-test: index client: remote index without TIMESTAMP refused" \
-		|| die "${out}; $(cat "${ROOT}/icstore/Packages")"
+		|| die "${out}; $(cat "${iccache}/Packages")"
 
 	printf 'TIMESTAMP: 1800000000\nVERSION: 1\n\nCPV: fake/ic-2\n' \
 		> "${icroot}/Packages"
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ic" qmerge -f fake/ic 2>&1)
 	[[ ${out} == *"version is not supported: '1'"* ]] && \
-		grep -q 'fake/ic-1' "${ROOT}/icstore/Packages"
+		grep -q 'fake/ic-1' "${iccache}/Packages"
 	tend $? "qmerge-test: index client: unsupported index VERSION refused" \
-		|| die "${out}; $(cat "${ROOT}/icstore/Packages")"
+		|| die "${out}; $(cat "${iccache}/Packages")"
 
 	printf 'TIMESTAMP: 1600000000\nVERSION: 0\n\nCPV: fake/ic-2\n' \
 		> "${icroot}/Packages"
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ic" qmerge -f fake/ic 2>&1)
-	[[ ${out} == *"did not respect If-Modified-Since"* ]] && \
-		grep -q 'fake/ic-1' "${ROOT}/icstore/Packages"
-	tend $? "qmerge-test: index client: older remote kept out, cache preserved, IMS warning" \
-		|| die "${out}; $(cat "${ROOT}/icstore/Packages")"
+	[[ ${out} == *"than the cached copy"* ]] && \
+		grep -q 'fake/ic-2' "${iccache}/Packages" && \
+		grep -q '^DOWNLOAD_TIMESTAMP: ' "${iccache}/Packages"
+	tend $? "qmerge-test: index client: older remote replaces the cache, with a notice" \
+		|| die "${out}; $(cat "${iccache}/Packages")"
 
 	icts=$(date +%s)
 	printf 'TIMESTAMP: %s\nTTL: 3600\nVERSION: 0\n\nCPV: fake/ic-2\n' \
 		"${icts}" > "${icroot}/Packages"
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ic" qmerge -f fake/ic 2>&1)
-	grep -q 'fake/ic-2' "${ROOT}/icstore/Packages" && \
-		grep -q '^DOWNLOAD_TIMESTAMP: [0-9]' "${ROOT}/icstore/Packages" && \
-		grep -q "^TIMESTAMP: ${icts}\$" "${ROOT}/icstore/Packages"
+	grep -q 'fake/ic-2' "${iccache}/Packages" && \
+		grep -q '^DOWNLOAD_TIMESTAMP: [0-9]' "${iccache}/Packages" && \
+		grep -q "^TIMESTAMP: ${icts}\$" "${iccache}/Packages"
 	tend $? "qmerge-test: index client: accepted index stored with DOWNLOAD_TIMESTAMP, server TIMESTAMP preserved" \
-		|| die "${out}; $(cat "${ROOT}/icstore/Packages")"
+		|| die "${out}; $(cat "${iccache}/Packages")"
 
-	touch -d '2001-01-01' "${ROOT}/icstore/Packages"
+	touch -d '2001-01-01' "${iccache}/Packages"
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ic" qmerge -f fake/ic 2>&1)
 	[[ ${out} == *"fresh (TTL)"* ]]
 	tend $? "qmerge-test: index client: TTL freshness keyed off DOWNLOAD_TIMESTAMP, not file mtime" \
 		|| die "${out}"
 
-	rm -rf "${icroot}" "${ROOT}/icstore" cfg-ic
+	[[ ! -e ${ROOT}/icstore/Packages ]]
+	tend $? "qmerge-test: index client: the repository location holds no index" \
+		|| die "$(ls -la "${ROOT}/icstore")"
+
+	rm -rf "${icroot}" "${ROOT}/icstore" "${iccache}" cfg-ic
 	rm -rf "${ftroot}" "${ROOT}/ftstore" cfg-ft "${acstore}/dev-libs"
 	qmaint binhost -f >/dev/null 2>&1
 elif [[ -z ${CURL_ENABLED} ]] ; then
@@ -3747,8 +3782,7 @@ mkdir -p check2 cfgpu/etc/portage/binrepos.conf "${ROOT}/puA/sys-devel"
 		"${ROOT}/puA/sys-devel/qmerge-test-1.3-r51.tbz2"
 )
 cp "${ROOT}/packages/sys-devel/qmerge-test-1.3-r50.tbz2" "${ROOT}/puA/sys-devel/"
-PKGDIR=/puA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/puA/Packages"
+qm_fake_fetch puA http://127.0.0.1:1/
 printf 'ACCEPT_KEYWORDS="**"\nUSE="check_flag"\n' > cfgpu/etc/portage/make.conf
 printf '[purepo]\npriority = 1\nlocation = /puA\nsync-uri = http://127.0.0.1:1/\n' \
 	> cfgpu/etc/portage/binrepos.conf/p.conf
@@ -3759,7 +3793,7 @@ outpu2=$(PORTAGE_CONFIGROOT=${PWD}/cfgpu qmerge -p "=qmerge-test-1.3-r50@purepo"
    ${outpu2} == *"built with check_flag (package.use disables it)"* ]]
 tend $? "qmerge-test: [S] package.use -flag beats make.conf USE in the binpkg USE check" \
 	|| die "pu1: ${outpu1} pu2: ${outpu2}"
-rm -rf check2 cfgpu "${ROOT}/puA"
+rm -rf check2 cfgpu "${ROOT}/puA" "$(qm_idx_cache http://127.0.0.1:1/)"
 
 rm -f "${ROOT}/packages/sys-devel/qmerge-test-1.3-r50.tbz2"
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
@@ -4002,15 +4036,16 @@ tend $? "qmerge-test: [W] --list-set without args fails with guidance" \
 # pure -f refreshes the Packages index even within TTL (the sync-uri
 # change contract: edit the conf, run -f, new source of truth). the
 # failed fetch keeps the previous index
-mkdir -p cfgttl/etc/portage/binrepos.conf "${ROOT}/ttlstore"
+ttlcache=$(qm_idx_cache http://127.0.0.1:1/)
+mkdir -p cfgttl/etc/portage/binrepos.conf "${ROOT}/ttlstore" "${ttlcache}"
 printf '[ttlrepo]\npriority = 1\nlocation = /ttlstore\nsync-uri = http://127.0.0.1:1/\n' \
 	> cfgttl/etc/portage/binrepos.conf/t.conf
 printf 'DOWNLOAD_TIMESTAMP: %s\nTTL: 3600\n\nCPV: fake/a-1\n' \
-	"$(date +%s)" > "${ROOT}/ttlstore/Packages"
-ttlwas=$(md5sum "${ROOT}/ttlstore/Packages" | cut -d' ' -f1)
+	"$(date +%s)" > "${ttlcache}/Packages"
+ttlwas=$(md5sum "${ttlcache}/Packages" | cut -d' ' -f1)
 outt1=$(PORTAGE_CONFIGROOT=${PWD}/cfgttl qmerge -f fake/a 2>&1)
 [[ ${outt1} == *"fresh (TTL)"* && \
-   $(md5sum "${ROOT}/ttlstore/Packages" | cut -d' ' -f1) == "${ttlwas}" ]]
+   $(md5sum "${ttlcache}/Packages" | cut -d' ' -f1) == "${ttlwas}" ]]
 tend $? "qmerge-test: [W] -f with packages honors the index TTL" \
 	|| die "${outt1}"
 outt2=$(PORTAGE_CONFIGROOT=${PWD}/cfgttl qmerge -f 2>&1)
@@ -4018,11 +4053,62 @@ outt2=$(PORTAGE_CONFIGROOT=${PWD}/cfgttl qmerge -f 2>&1)
    ${outt2} == *"keeping previous"* ]]
 tend $? "qmerge-test: [W] bare -f bypasses TTL, failed fetch keeps previous" \
 	|| die "${outt2}"
-grep -q "fake/a-1" "${ROOT}/ttlstore/Packages"
+grep -q "fake/a-1" "${ttlcache}/Packages"
 tend $? "qmerge-test: [W] previous index intact after failed forced refresh"
-rm -rf cfgttl "${ROOT}/ttlstore"
+rm -rf cfgttl "${ROOT}/ttlstore" "${ttlcache}"
 
-mkdir -p cfgfw/etc/portage/binrepos.conf "${ROOT}/fwstore" 'fw src'
+olcache=$(qm_idx_cache "${PWD}/ol src")
+mkdir -p cfgol/etc/portage/binrepos.conf "${ROOT}/olstore" "${olcache}" 'ol src'
+printf '[olrepo]\npriority = 1\nlocation = /olstore\nsync-uri = %s/ol src\n' \
+	"${PWD}" > cfgol/etc/portage/binrepos.conf/o.conf
+printf 'TIMESTAMP: 1000000\nVERSION: 0\n\nCPV: fake/c-1\n' > 'ol src/Packages'
+gzip -c 'ol src/Packages' > 'ol src/Packages.gz'
+printf 'TIMESTAMP: %s\nVERSION: 0\n\nCPV: fake/local-1\n' "$(date +%s)" \
+	> "${olcache}/Packages"
+outol=$(PORTAGE_CONFIGROOT=${PWD}/cfgol QFETCHCOMMAND='cp "${URI}" "${DISTDIR}/${FILE}"' \
+	qmerge -f 2>&1)
+grep -q 'fake/c-1' "${olcache}/Packages" && \
+	grep -q '^DOWNLOAD_TIMESTAMP: ' "${olcache}/Packages" && \
+	[[ ${outol} == *"than the cached copy"* && \
+	   ${outol} == *"using the fetched one"* ]]
+tend $? "qmerge-test: [W] -f takes the binhost index even when the cached copy is newer" \
+	|| die "${outol}; $(cat "${olcache}/Packages")"
+outol=$(PORTAGE_CONFIGROOT=${PWD}/cfgol QFETCHCOMMAND='cp "${URI}" "${DISTDIR}/${FILE}"' \
+	qmerge -f 2>&1)
+grep -q 'fake/c-1' "${olcache}/Packages" && \
+	[[ ${outol} != *"than the cached copy"* ]]
+tend $? "qmerge-test: [W] -f over a fetched copy is quiet" || die "${outol}"
+rm -f "${ROOT}/packages/Packages"
+outol=$(PORTAGE_CONFIGROOT=${PWD}/cfgol QFETCHCOMMAND='cp "${URI}" "${DISTDIR}/${FILE}"' \
+	qmerge -f 2>&1)
+[[ -s ${ROOT}/packages/Packages ]] && grep -q 'qmerge-test' "${ROOT}/packages/Packages"
+tend $? "qmerge-test: [W] bare -f rebuilds the missing @local (PKGDIR) index" \
+	|| die "${outol}; $(ls "${ROOT}/packages")"
+
+printf 'DOWNLOAD_TIMESTAMP: 1000001\nTIMESTAMP: 1000000\nVERSION: 0\n\nCPV: fake/c-1\n' \
+	> "${ROOT}/olstore/Packages"
+printf 'move fake/c fake/d\n' > "${ROOT}/olstore/Moves"
+rm -rf "${olcache}"
+outol=$(PORTAGE_CONFIGROOT=${PWD}/cfgol QMERGE_IGNORE_TTL=1 qmerge -p fake/c 2>&1)
+[[ -s ${olcache}/Packages && -s ${olcache}/Moves && \
+   ! -e ${ROOT}/olstore/Packages && ! -e ${ROOT}/olstore/Moves ]]
+tend $? "qmerge-test: [W] a fetched index left in the location by an older qmerge moves to the index cache" \
+	|| die "${outol}; $(ls -la "${ROOT}/olstore" "${olcache}" 2>&1)"
+printf 'TIMESTAMP: 2000000\nVERSION: 0\n\nCPV: fake/local-1\n' > "${ROOT}/olstore/Packages"
+rm -rf "${olcache}"
+outol=$(PORTAGE_CONFIGROOT=${PWD}/cfgol QMERGE_IGNORE_TTL=1 qmerge -p fake/local 2>&1)
+[[ ! -e ${olcache}/Packages && -e ${ROOT}/olstore/Packages ]]
+tend $? "qmerge-test: [W] a locally written index in the location stays there and is not the binhost's" \
+	|| die "${outol}; $(ls -la "${ROOT}/olstore" "${olcache}" 2>&1)"
+outol=$(PORTAGE_CONFIGROOT=${PWD}/cfgol PKGDIR=/olstore qmerge -i 2>&1)
+[[ ${outol} == *"is the download directory of binhost olrepo"* && \
+   ${outol} == *"refreshed by \`qmerge -f'"* ]]
+tend $? "qmerge-test: [W] -i over a binhost location says where that binhost's index lives" \
+	|| die "${outol}"
+rm -rf cfgol 'ol src' "${ROOT}/olstore" "${olcache}"
+
+fwcache=$(qm_idx_cache "${PWD}/fw src")
+mkdir -p cfgfw/etc/portage/binrepos.conf "${ROOT}/fwstore" "${fwcache}" 'fw src'
 printf '[fwrepo]\npriority = 1\nlocation = /fwstore\nsync-uri = %s/fw src\n' \
 	"${PWD}" > cfgfw/etc/portage/binrepos.conf/f.conf
 printf 'TIMESTAMP: %s\nVERSION: 0\n\nCPV: fake/b-1\n' "$(date +%s)" \
@@ -4038,8 +4124,8 @@ QFC='cp "${URI}" "${DISTDIR}/${FILE}"'
 outfw=$(FWLOG=${PWD}/fw.log PORTAGE_CONFIGROOT=${PWD}/cfgfw \
 	QFETCHCOMMAND="${QFC}" QFETCH_WRAPPER="${PWD}/fwwrap.sh" \
 	qmerge -f 2>&1)
-[[ -s ${ROOT}/fwstore/Packages && -s fw.log ]] && \
-	grep -q 'fake/b-1' "${ROOT}/fwstore/Packages" && \
+[[ -s ${fwcache}/Packages && -s fw.log ]] && \
+	grep -q 'fake/b-1' "${fwcache}/Packages" && \
 	! grep -qv '^1|' fw.log
 tend $? "qmerge-test: [FW] wrapper receives the fetch command as one argument" \
 	|| die "${outfw} $(cat fw.log 2>/dev/null)"
@@ -4061,29 +4147,29 @@ rm -f fw.log fw2.log
 outfw=$(FWLOG2=${PWD}/fw2.log PORTAGE_CONFIGROOT=${PWD}/cfgfw \
 	QFETCHCOMMAND="${QFC}" FETCH_WRAPPER="${PWD}/fwwrap2.sh" \
 	qmerge -f 2>&1)
-[[ -s fw2.log ]] && grep -q 'fake/b-1' "${ROOT}/fwstore/Packages"
+[[ -s fw2.log ]] && grep -q 'fake/b-1' "${fwcache}/Packages"
 tend $? "qmerge-test: [FW] FETCH_WRAPPER applies when QFETCH_WRAPPER is unset" \
 	|| die "${outfw} $(cat fw2.log 2>/dev/null)"
 
-rm -f fw.log fw2.log "${ROOT}/fwstore/Packages"
+rm -f fw.log fw2.log "${fwcache}/Packages"
 outfw=$(PORTAGE_CONFIGROOT=${PWD}/cfgfw QFETCHCOMMAND="${QFC}" \
 	qmerge -f 2>&1)
 [[ ! -e fw.log && ! -e fw2.log ]] && \
-	grep -q 'fake/b-1' "${ROOT}/fwstore/Packages"
+	grep -q 'fake/b-1' "${fwcache}/Packages"
 tend $? "qmerge-test: [FW] no wrapper set leaves the fetch path unchanged" \
 	|| die "${outfw}"
-[[ -z $(ls "${ROOT}/fwstore"/*.__download__ 2>/dev/null) && \
+[[ -z $(ls "${fwcache}"/*.__download__ 2>/dev/null) && \
    ! -e ${PORTAGE_TMPDIR}/portage/Packages && ! -e ${PORTAGE_TMPDIR}/portage/Packages.gz ]]
-tend $? "qmerge-test: [FW] index staged next to its store, nothing left in PORTAGE_TMPDIR"
+tend $? "qmerge-test: [FW] index staged in its cache directory, nothing left in PORTAGE_TMPDIR"
 echo keepme > "${PWD}/victim"
-ln -s "${PWD}/victim" "${ROOT}/fwstore/Packages.gz.__download__"
+ln -s "${PWD}/victim" "${fwcache}/Packages.gz.__download__"
 outfw=$(PORTAGE_CONFIGROOT=${PWD}/cfgfw QFETCHCOMMAND="${QFC}" qmerge -f 2>&1)
-[[ $(cat "${PWD}/victim") == keepme && ! -L ${ROOT}/fwstore/Packages.gz.__download__ && \
-   -s ${ROOT}/fwstore/Packages ]]
+[[ $(cat "${PWD}/victim") == keepme && ! -L ${fwcache}/Packages.gz.__download__ && \
+   -s ${fwcache}/Packages ]]
 tend $? "qmerge-test: [FW] planted download symlink removed, target untouched" \
 	|| die "${outfw}"
 rm -f "${PWD}/victim"
-rm -rf cfgfw 'fw src' fwwrap.sh fwwrap2.sh fw.log fw2.log "${ROOT}/fwstore"
+rm -rf cfgfw 'fw src' fwwrap.sh fwwrap2.sh fw.log fw2.log "${ROOT}/fwstore" "${fwcache}"
 
 # ||MORE TESTS||
 # undeclared USE_EXPAND groups resolve from presumed config variables (the
@@ -4223,9 +4309,8 @@ for b in 1 2; do
 			"${ROOT}/${st}/dev-libs/dvx/dvx-1.0-${b}.xpak"
 	)
 done
-PKGDIR=/dvA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-PKGDIR=/dvB q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/dvA/Packages" "${ROOT}/dvB/Packages"
+qm_fake_fetch dvA http://127.0.0.1:1/a
+qm_fake_fetch dvB http://127.0.0.1:1/b
 
 outda=$(PORTAGE_CONFIGROOT=${PWD}/cfgdv qmerge -p "dev-libs/dvx" 2>&1)
 daline=$(printf '%s\n' "${outda}" | grep "binary")
@@ -4256,7 +4341,8 @@ outi2=$(PORTAGE_CONFIGROOT=${PWD}/cfgdv qmerge --info "dvx@repob" 2>&1)
 tend $? "qmerge-test: [IN] --info pkg@repo reports the catalog entry" \
 	|| die "${outi2}"
 yes | qmerge -FU dev-libs/dvx >/dev/null 2>&1
-rm -rf cfgdv dv1 dv2 "${ROOT}/dvA" "${ROOT}/dvB"
+rm -rf cfgdv dv1 dv2 "${ROOT}/dvA" "${ROOT}/dvB" \
+	"$(qm_idx_cache http://127.0.0.1:1/a)" "$(qm_idx_cache http://127.0.0.1:1/b)"
 
 # a merge-list entry re-resolved through its ::@binrepo must be RECORDED
 mkdir -p cfgpi/etc/portage/binrepos.conf "${ROOT}/piA"
@@ -4292,8 +4378,7 @@ for b in 1 2; do
 			"${ROOT}/piA/dev-libs/ppx/ppx-1.0-${b}.xpak"
 	)
 done
-PKGDIR=/piA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/piA/Packages"
+qm_fake_fetch piA http://127.0.0.1:1/
 
 # install the newest build, like a binhost user whose profile lacks
 # the build host's unmask
@@ -4343,16 +4428,14 @@ mkdir -p pirn/xp
 	  qxpak -c ../new.xpak $(ls) )
 	qtbz2 -j b.tar.bz2 new.xpak "${ROOT}/piA/dev-libs/ppx/ppx-1.1-1.xpak"
 )
-PKGDIR=/piA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/piA/Packages"
+qm_fake_fetch piA http://127.0.0.1:1/
 outrn=$(PORTAGE_CONFIGROOT=${PWD}/cfgpi qmerge -puN dev-libs/ppx 2>&1)
 [[ ${outrn} == *"ppx-1.1"* && ${outrn} == *"use.mask disables it"* && \
    ${outrn} != *"ppx-1.0~2"* ]]
 tend $? "qmerge-test: [RN] rejected newer version surfaces in the footer" \
 	|| die "${outrn}"
 rm -f "${ROOT}/piA/dev-libs/ppx/ppx-1.1-1.xpak"
-PKGDIR=/piA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/piA/Packages"
+qm_fake_fetch piA http://127.0.0.1:1/
 
 # pkg-level unmask+force cancels the global mask,
 # the newest build passes respect-use and becomes the proposed upgrade
@@ -4399,8 +4482,7 @@ for pbn in pib pibdep; do
 			"${ROOT}/piA/dev-libs/${pbn}/${pbn}-1.0-1.xpak"
 	)
 done
-PKGDIR=/piA q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
-sed -i -e "1i DOWNLOAD_TIMESTAMP: $(date +%s)" -e '1i TTL: 3600' "${ROOT}/piA/Packages"
+qm_fake_fetch piA http://127.0.0.1:1/
 outpb=$(PORTAGE_CONFIGROOT=${PWD}/cfgpi qmerge -pv dev-libs/pib 2>&1)
 [[ ${outpb} == *"pulled in by:"* && \
    ${outpb} == *"dev-libs/pib-1.0"*"(dev-libs/pibdep)"* ]]
@@ -4408,7 +4490,7 @@ tend $? "qmerge-test: [PB] -v names the pulling dep edge" \
 	|| die "${outpb}"
 
 yes | qmerge -FU dev-libs/ppx >/dev/null 2>&1
-rm -rf cfgpi pi1 pi2 pirn pb_pib pb_pibdep "${ROOT}/piA"
+rm -rf cfgpi pi1 pi2 pirn pb_pib pb_pibdep "${ROOT}/piA" "$(qm_idx_cache http://127.0.0.1:1/)"
 
 # Holy grail before the 5 year long migration of whole portage in C.
 # FEATURES=preserve-libs tests. registry preservation, @preserved-rebuild,
@@ -6494,10 +6576,11 @@ tend $? "qmerge-test: [DC] prune: unresolved dependencies abort with the --nodep
 dc_reset
 dc_vdb dc-libs/old-1 0 "" && dc_vdb dc-libs/R-1 0 "dc-libs/new"
 dc_world dc-libs/R
-mkdir -p "${ROOT}/mvstore" "${PWD}/cfg-dcmv/etc/portage/binrepos.conf"
+dcmvcache=$(qm_idx_cache http://127.0.0.1:1/)
+mkdir -p "${ROOT}/mvstore" "${dcmvcache}" "${PWD}/cfg-dcmv/etc/portage/binrepos.conf"
 printf '[mvrepo]\npriority = 1\nlocation = /mvstore\nsync-uri = http://127.0.0.1:1/\n' \
 	> "${PWD}/cfg-dcmv/etc/portage/binrepos.conf/r.conf"
-printf 'move dc-libs/old dc-libs/new\n' > "${ROOT}/mvstore/Moves"
+printf 'move dc-libs/old dc-libs/new\n' > "${dcmvcache}/Moves"
 outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-dcmv" QMERGE_MOVES=binhost-only qmerge -pc 2>&1); rcdc=$?
 [[ ${rcdc} -eq 0 && $(echo "${outdc}" | dc_sel) == "" && \
    ${outdc} == *"applied 1 package move(s)"* && \
@@ -6509,13 +6592,13 @@ outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-dcmv" QMERGE_MOVES=binhost-only qmerg
 [[ ${rcdc} -eq 0 && ${outdc} != *"applied "*"package move"* ]]
 tend $? "qmerge-test: [DC] an already applied move is not applied twice" || die "rc=${rcdc} ${outdc}"
 dc_vdb dc-libs/old2-1 0 ""
-printf 'move dc-libs/old dc-libs/new\nmove dc-libs/old2 dc-libs/new2\n' > "${ROOT}/mvstore/Moves"
+printf 'move dc-libs/old dc-libs/new\nmove dc-libs/old2 dc-libs/new2\n' > "${dcmvcache}/Moves"
 outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-dcmv" QMERGE_MOVES=binhost-only \
 	qmerge -p sys-devel/qmerge-test 2>&1); rcdc=$?
 [[ -d ${ROOT}/var/db/pkg/dc-libs/new2-1 && ! -d ${ROOT}/var/db/pkg/dc-libs/old2-1 ]]
 tend $? "qmerge-test: [DC] a pretend merge run applies a pending move when the installed database is writable" \
 	|| die "rc=${rcdc} $(ls "${ROOT}/var/db/pkg/dc-libs" 2>&1) ${outdc}"
-rm -rf "${ROOT}/mvstore" "${PWD}/cfg-dcmv"
+rm -rf "${ROOT}/mvstore" "${PWD}/cfg-dcmv" "${dcmvcache}"
 
 # a repository's move instructions reach only the packages that came from
 # THAT repository

@@ -107,6 +107,7 @@ qarchive_read_taronly(struct archive *a)
 
 struct tree_ {
   char          *path;
+  char          *pkgs_path;    /* binpkg files, when not next to Packages */
   char          *repo;
   array         *cats;         /* list of tree_cat_ctx pointers */
   array         *srctrees;     /* in case of TREE_MERGED */
@@ -634,6 +635,43 @@ tree_ctx *tree_new
   return ret;
 }
 
+/* binpkg tree of a binhost whose package files are present in
+ * pkgs_path while the cached Packages index are present in index_path (the
+ * method like portage keeps them as files under the repository location, index
+ * under var/cache/edb/binhost). without a cached index the files in
+ * pkgs_path are scanned, as tree_new does */
+tree_ctx *tree_new_binpkg_cache
+(
+  const char *portroot,
+  const char *pkgs_path,
+  const char *index_path,
+  bool        quiet
+)
+{
+  tree_ctx *ret;
+
+  if (pkgs_path == NULL ||
+      index_path == NULL)
+    return NULL;
+
+  ret = tree_new(portroot, index_path, TREETYPE_BINPKG, true);
+  if (ret == NULL ||
+      ret->type != TREE_PACKAGES)
+  {
+    tree_close(ret);
+    return tree_new(portroot, pkgs_path, TREETYPE_BINPKG, quiet);
+  }
+
+  if (pkgs_path[0] == '/' &&
+      pkgs_path[1] == '\0')
+    ret->pkgs_path = xstrdup(".");
+  else if (pkgs_path[0] == '/')
+    ret->pkgs_path = xstrdup(pkgs_path + 1);
+  else
+    ret->pkgs_path = xstrdup(pkgs_path);
+  return ret;
+}
+
 /* produces a new tree that is the merger of the trees tree1 and tree2
  * NOTES:
  * - the trees given should not be freed for as long as the merged tree
@@ -739,6 +777,7 @@ void tree_close
   array_deepfree(tree->cats, tree_cat_close_cb);
 
   free(tree->path);
+  free(tree->pkgs_path);
   free(tree->repo);
 
   if (tree->portroot_fd >= 0)
@@ -2849,6 +2888,7 @@ int tree_foreach_pkg
       char              *v;
       char              *cpv;
       char              *nexttok;
+      const char        *fbase;
       size_t             len;
       size_t             rootlen;
       int                fd;
@@ -2886,11 +2926,20 @@ int tree_foreach_pkg
         }
       }
 
-      k = strrchr(tree->path, '/');
-      if (k != NULL)
-        rootlen = k - tree->path;
+      if (tree->pkgs_path != NULL)
+      {
+        fbase   = tree->pkgs_path;
+        rootlen = strlen(fbase);
+      }
       else
-        rootlen = strlen(tree->path);
+      {
+        fbase = tree->path;
+        k     = strrchr(tree->path, '/');
+        if (k != NULL)
+          rootlen = k - tree->path;
+        else
+          rootlen = strlen(tree->path);
+      }
 
       tree->cats = array_new();
       VAL_CLEAR(needle);
@@ -3023,7 +3072,7 @@ int tree_foreach_pkg
               /* construct full path (snprintf bounds it to pth) */
               snprintf(pth, sizeof(pth), "%.*s/%s",
                        (int)MIN(rootlen, sizeof(pth) - 2),
-                       tree->path, pkg->meta[Q_PATH]);
+                       fbase, pkg->meta[Q_PATH]);
               pkg->path = xstrdup(pth);
 
               snprintf(pth, sizeof(pth), "%.*s",
