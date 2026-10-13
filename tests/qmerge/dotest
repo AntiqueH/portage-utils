@@ -101,7 +101,7 @@ qm_gpkg_craft() {
 	local store=$1 cat=$2 pf=$3 src w kv
 	shift 3
 	src="${as}/packages-gpkg/sys-devel/qmerge-test-1.3.gpkg.tar"
-	w="${PWD}/gpkg-craft-${pf}"
+	w="${PWD}/gpkg-create-${pf}"
 	rm -rf "${w}" && mkdir -p "${w}/md" "${w}/${pf}" "${store}/${cat}" || return 1
 	tar xf "${src}" -C "${w}" || return 1
 	zstd -dqc "${w}/qmerge-test-1.3/metadata.tar.zst" | tar x -C "${w}/md" || return 1
@@ -466,7 +466,7 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	# the installed version is presented
 	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
 	[[ ${out} != *"not downgraded"* ]]
-	tend $? "qmerge-test: [downgrade notice] none while the installed version is offered" \
+	tend $? "qmerge-test: [downgrade notice] none while the installed version is available" \
 		|| die "${out}"
 	rm -f "${ROOT}/pgpkgs/sys-devel/qmerge-test-2.0.gpkg.tar"
 	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
@@ -476,7 +476,7 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	tend $? "qmerge-test: [downgrade notice] -u keeps the newer installed version and says so" \
 		|| die "${out}"
 	out=$(PKGDIR=/pgpkgs qmerge -puv sys-devel/qmerge-test 2>&1)
-	[[ ${out} == *"sys-devel/qmerge-test-2.0 (offered: 1.3 from "* && \
+	[[ ${out} == *"sys-devel/qmerge-test-2.0 (available: 1.3 from your ${ROOT}/pgpkgs/)"* && \
 	   ${out} == *"qmerge =sys-devel/qmerge-test-1.3"* && ${out} != *"[binary"* ]]
 	tend $? "qmerge-test: [downgrade notice] -v lists the package and how to downgrade" \
 		|| die "${out}"
@@ -486,8 +486,101 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	out=$(PKGDIR=/pgpkgs qmerge -p =sys-devel/qmerge-test-1.3 2>&1)
 	[[ ${out} == *"[binary"*"D"*"sys-devel/qmerge-test-1.3"* && \
 	   ${out} != *"not downgraded"* ]]
-	tend $? "qmerge-test: [downgrade notice] the named version is offered as a downgrade" \
+	tend $? "qmerge-test: [downgrade notice] the named version is available as a downgrade" \
 		|| die "${out}"
+
+	# check the new "not avaiable on any binhost" message and implementation
+	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ${out} != *"no build on any binhost"* ]]
+	tend $? "qmerge-test: [no build notice] none while an older build is available" \
+		|| die "${out}"
+	rm -f "${ROOT}/pgpkgs/sys-devel/qmerge-test-1.3.gpkg.tar"
+	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ${out} == *"1 installed package has no build on any binhost any more (use -v to list it)"* && \
+	   ${out} != *"not downgraded"* && ${out} != *"[binary"* ]]
+	tend $? "qmerge-test: [no build notice] -u keeps the installed package and says so" \
+		|| die "${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -puv sys-devel/qmerge-test 2>&1)
+	[[ ${out} == *"sys-devel/qmerge-test-2.0 (in world)"* && \
+	   ${out} == *"they stay installed"* && ${out} == *"qmerge -c"* ]]
+	tend $? "qmerge-test: [no build notice] -v lists the package as a world entry" \
+		|| die "${out}; world: $(cat "${ROOT}/var/lib/portage/world")"
+	out=$(PKGDIR=/pgpkgs qmerge -puq sys-devel/qmerge-test 2>&1)
+	[[ ${out} != *"no build on any binhost"* ]]
+	tend $? "qmerge-test: [no build notice] -q prints none" || die "${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -p sys-devel/qmerge-test 2>&1)
+	[[ ${out} != *"no build on any binhost"* ]]
+	tend $? "qmerge-test: [no build notice] only -u reports it" || die "${out}"
+
+	# check the new "unavailable list" feature
+	# it's a file where we write the list of packages that have no build available
+	# on any remote binhost anymore
+	unav="${ROOT}/var/lib/portage/unavailable"
+	rm -f "${unav}"
+	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ! -e ${unav} && ${out} != *"written to"* ]]
+	tend $? "qmerge-test: [unavailable list] a -u run on one package writes no list" \
+		|| die "${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
+	[[ $(<"${unav}") == "sys-devel/qmerge-test" && \
+	   ${out} == *"(use -v to list it; written to ${unav})"* ]]
+	tend $? "qmerge-test: [unavailable list] -u @world writes the list in world file style" \
+		|| die "${out}; $(cat "${unav}" 2>&1)"
+	out=$(PKGDIR=/pgpkgs qmerge -puv @world 2>&1)
+	[[ ${out} == *"the list is in ${unav}, for --depclean"* && \
+	   ${out} != *'$(cat'* ]]
+	tend $? "qmerge-test: [unavailable list] -v says where the list is" || die "${out}"
+	if qm_gpkg_usable ; then
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs qmerge-other-1.0 SLOT=0 'KEYWORDS=**' \
+			|| die "could not reate qmerge-other-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		echo "dev-libs/qmerge-other" >> "${ROOT}/var/lib/portage/world"
+		out=$(PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
+		[[ ${out} == *"[binary"*"dev-libs/qmerge-other-1.0"* && \
+		   ${out} == *"(use -v to list it; written to ${unav})"* && \
+		   $(<"${unav}") == "sys-devel/qmerge-test" ]]
+		tend $? "qmerge-test: [unavailable list] the notice and the list come with a merge list too" \
+			|| die "${out}; $(cat "${unav}" 2>&1)"
+		sed -i '/^dev-libs\/qmerge-other$/d' "${ROOT}/var/lib/portage/world"
+		rm -f "${ROOT}/pgpkgs/dev-libs/qmerge-other-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	else
+		echo "${WARN}SKIPPED:${NORMAL} [unavailable list] merge list case needs zstd"
+	fi
+	cp "${unav}" "${unav}.saved"
+	echo "app-misc/unrelated" >> "${ROOT}/var/lib/portage/world"
+	PKGDIR=/pgpkgs qmerge -W sys-devel/qmerge-test >/dev/null 2>&1
+	out=$(PKGDIR=/pgpkgs qmerge -pc $(cat "${unav}.saved") 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ${out} == *"sys-devel/qmerge-test"* ]]
+	tend $? "qmerge-test: [unavailable list] depclean takes the list once the entry left world" \
+		|| die "rc=${rc}; ${out}"
+	out=$(PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
+	[[ ! -e ${unav} && ${out} != *"written to"* ]]
+	tend $? "qmerge-test: [unavailable list] an empty list removes the file" \
+		|| die "${out}; $(cat "${unav}" 2>&1)"
+	rm -f "${unav}.saved"
+	sed -i '/^app-misc\/unrelated$/d' "${ROOT}/var/lib/portage/world"
+
+	if qm_gpkg_usable ; then
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs qlive-1.0 SLOT=0 'KEYWORDS=**' \
+			PROPERTIES=live || die "could not create qlive-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		out=$(PKGDIR=/pgpkgs qmerge -p =dev-libs/qlive-1.0 2>&1)
+		[[ ${out} == *"[binary"*"dev-libs/qlive-1.0"* ]]
+		tend $? "qmerge-test: [XC] a live package is taken without the live exclusion" \
+			|| die "${out}"
+		mkdir -p cfg-live/etc/portage
+		printf 'QMERGE_USEPKG_EXCLUDE_LIVE="1"\n' > cfg-live/etc/portage/make.conf
+		out=$(PORTAGE_CONFIGROOT="${PWD}/cfg-live" PKGDIR=/pgpkgs \
+			qmerge -p =dev-libs/qlive-1.0 2>&1)
+		[[ ${out} == *"cannot satisfy dependency =dev-libs/qlive-1.0"* && \
+		   ${out} == *"masked by: --usepkg-exclude"* && ${out} != *"[binary"* ]]
+		tend $? "qmerge-test: [XC] QMERGE_USEPKG_EXCLUDE_LIVE in make.conf refuses a live package" \
+			|| die "${out}"
+		rm -rf cfg-live "${ROOT}/pgpkgs/dev-libs"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	fi
 
 	yes | PKGDIR=/pgpkgs qmerge -FU qmerge-test >/dev/null 2>&1
 	rm -rf "${ROOT}/pgpkgs"
@@ -2718,7 +2811,7 @@ ur_craft() {
 	if [[ ${urext} == gpkg.tar ]] ; then
 		qm_gpkg_craft "${urstore}" dev-libs "${urname}-1.0" \
 			SLOT=0 'KEYWORDS=**' "RDEPEND=${urdep}" \
-			|| die "unclean resolve: could not craft ${urname}-1.0.${urext}"
+			|| die "unclean resolve: could not create ${urname}-1.0.${urext}"
 		return 0
 	fi
 	mkdir -p "ur-${urname}/xp"
@@ -2737,7 +2830,7 @@ ur_craft() {
 		mkdir -p "${urstore}/dev-libs" && \
 		qtbz2 -j b.tar.bz2 new.xpak "${urstore}/dev-libs/${urname}-1.0.tbz2" && \
 		[[ -s ${urstore}/dev-libs/${urname}-1.0.tbz2 ]]
-	) || die "unclean resolve: could not craft ${urname}-1.0.${urext}"
+	) || die "unclean resolve: could not create ${urname}-1.0.${urext}"
 	rm -rf "ur-${urname}"
 }
 
@@ -3243,7 +3336,7 @@ fi
 
 # getbinpkg-exclude/-include precedence tests: conf exclude blocks, CLI include
 # overrides it, same-atom conf exclude+include cancels, precise slot atoms,
-# and wildcards are refused (small divergence to portage: names/slots only)
+# the make.conf variables, and portage's wildcard patterns
 ac_craft gbpkg ""
 gbstore="${ROOT}/gbstore"
 rm -rf "${gbstore}" cfg-gb; mkdir -p "${gbstore}/dev-libs" \
@@ -3294,11 +3387,44 @@ yes | qmerge -FU gbpkg >/dev/null 2>&1
 gb_conf 'getbinpkg-exclude = dev-libs/gb*'
 out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-gb" \
 	qmerge -v "=dev-libs/gbpkg-1.0" 2>&1); rc=$?
+[[ ${rc} -ne 0 && ${out} != *"invalid atom"* && \
+   -z $(qlist -Iv 2>/dev/null) ]]
+tend $? "qmerge-test: getbinpkg precedence: a wildcard inside a name blocks" \
+	|| die "rc=${rc}; ${out}"
+
+gb_conf 'getbinpkg-exclude = dev-libs/*'
+out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-gb" \
+	qmerge -v "=dev-libs/gbpkg-1.0" 2>&1); rc=$?
+[[ ${rc} -ne 0 && -z $(qlist -Iv 2>/dev/null) ]]
+tend $? "qmerge-test: getbinpkg precedence: a wildcard for the name blocks" \
+	|| die "rc=${rc}; ${out}"
+
+gb_conf 'getbinpkg-exclude = dev-libs/'
+out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-gb" \
+	qmerge -v "=dev-libs/gbpkg-1.0" 2>&1); rc=$?
 [[ ${rc} -eq 0 && ${out} == *"invalid atom"* && \
    -n $(qlist -Iv 2>/dev/null) ]]
-tend $? "qmerge-test: getbinpkg precedence: wildcard refused, entry inert" \
+tend $? "qmerge-test: getbinpkg precedence: we refuse an entry without a name, entry inert" \
 	|| die "rc=${rc}; ${out}"
 yes | qmerge -FU gbpkg >/dev/null 2>&1
+
+gb_conf ''
+printf 'QMERGE_GETBINPKG_EXCLUDE="*/gbpkg"\n' > cfg-gb/etc/portage/make.conf
+out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-gb" \
+	qmerge -v "=dev-libs/gbpkg-1.0" 2>&1); rc=$?
+[[ ${rc} -ne 0 && -z $(qlist -Iv 2>/dev/null) ]]
+tend $? "qmerge-test: getbinpkg precedence: QMERGE_GETBINPKG_EXCLUDE in make.conf blocks" \
+	|| die "rc=${rc}; ${out}"
+
+gb_conf 'getbinpkg-exclude = dev-libs/gbpkg'
+printf 'QMERGE_GETBINPKG_INCLUDE="dev-libs/gbpkg"\n' > cfg-gb/etc/portage/make.conf
+out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-gb" \
+	qmerge -v "=dev-libs/gbpkg-1.0" 2>&1); rc=$?
+[[ ${rc} -eq 0 && -n $(qlist -Iv 2>/dev/null) ]]
+tend $? "qmerge-test: getbinpkg precedence: QMERGE_GETBINPKG_INCLUDE in make.conf overrides conf exclude" \
+	|| die "rc=${rc}; ${out}"
+yes | qmerge -FU gbpkg >/dev/null 2>&1
+rm -f cfg-gb/etc/portage/make.conf
 
 rm -rf "${gbstore}" cfg-gb "${acstore}/dev-libs"
 qmaint binhost -f >/dev/null 2>&1
@@ -3364,7 +3490,7 @@ out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" QMERGE_LENIENT_UPGRADE=0 \
 [[ ${out} == *"held back at the installed version"* ]] && \
 	qlist -Iv 2>/dev/null | grep -q 'sopdep-1.0' && \
 	! qlist -Iv 2>/dev/null | grep -q 'sopdep-2.0'
-tend $? "qmerge-test: [SO] strict holds the provider back when no rebuilt revdep exists" \
+tend $? "qmerge-test: [SO] strict holds the dependency back when no rebuilt revdep exists" \
 	|| die "rc=${rc}; $(qlist -Iv 2>&1); ${out}"
 
 out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-so" QMERGE_LENIENT_UPGRADE=0 \
@@ -3673,7 +3799,7 @@ yes | qmerge -FU qmerge-test >/dev/null 2>&1
 
 # --binpkg-respect-use=y strict checks: a binpkg built with a flag the
 # local config disables must be rejected (emerge binpkg-respect-use).
-# The base test package has empty IUSE, so we need to craft a 
+# The base test package has empty IUSE, so we need to create a
 # IUSE-carrying variant.
 mkdir -p check
 (
@@ -3963,6 +4089,34 @@ outu=$(qmerge -p --usepkg-exclude 'sys-devel/qmerge-test' \
 	"=qmerge-test-1.3" 2>&1)
 [[ ${outu} == *"cannot satisfy"* ]]
 tend $? "qmerge-test: [XC] --usepkg-exclude refuses (contrast)" || die "${outu}"
+outu=$(qmerge -p --usepkg-exclude 'sys-devel/*' "=qmerge-test-1.3" 2>&1)
+[[ ${outu} == *"cannot satisfy"* ]]
+tend $? "qmerge-test: [XC] --usepkg-exclude takes a wildcard for the name" \
+	|| die "${outu}"
+outu=$(qmerge -p --usepkg-exclude 'qmerge-te*' "=qmerge-test-1.3" 2>&1)
+[[ ${outu} == *"cannot satisfy"* ]]
+tend $? "qmerge-test: [XC] --usepkg-exclude takes a wildcard inside a name" \
+	|| die "${outu}"
+outu=$(qmerge -p --usepkg-exclude 'sys-*/*' "=qmerge-test-1.3" 2>&1)
+[[ ${outu} == *"cannot satisfy"* ]]
+tend $? "qmerge-test: [XC] --usepkg-exclude takes a wildcard inside the category" \
+	|| die "${outu}"
+outu=$(qmerge -p --usepkg-exclude 'app-*/*' "=qmerge-test-1.3" 2>&1)
+[[ ${outu} != *"cannot satisfy"* && ${outu} == *"sys-devel/qmerge-test"* ]]
+tend $? "qmerge-test: [XC] a wildcard that does not match leaves the package alone" \
+	|| die "${outu}"
+mkdir -p cfg-xc/etc/portage
+printf 'QMERGE_USEPKG_EXCLUDE="*/qmerge-test"\n' > cfg-xc/etc/portage/make.conf
+outu=$(PORTAGE_CONFIGROOT="${PWD}/cfg-xc" qmerge -p "=qmerge-test-1.3" 2>&1)
+[[ ${outu} == *"cannot satisfy"* ]]
+tend $? "qmerge-test: [XC] QMERGE_USEPKG_EXCLUDE in make.conf refuses, wildcard for the category" \
+	|| die "${outu}"
+printf 'QMERGE_EXCLUDE="sys-devel/*"\n' > cfg-xc/etc/portage/make.conf
+outxe=$(PORTAGE_CONFIGROOT="${PWD}/cfg-xc" qmerge -p "=qmerge-test-1.3" 2>&1)
+[[ ${outxe} == *"excluding sys-devel/qmerge-test"* ]]
+tend $? "qmerge-test: [XC] QMERGE_EXCLUDE in make.conf takes a wildcard for the name" \
+	|| die "${outxe}"
+rm -rf cfg-xc
 
 # --no-phases: bootstrap mode merges files + VDB without executing any
 # pkg_* phase; every would-have-run phase is announced and recorded.
@@ -5680,6 +5834,22 @@ tend $? "qmerge-test: [DC] --exclude pins the package and its deps" || die "${ou
 outdc=$(qmerge -pc --exclude dc-libs/B dc-libs/B 2>/dev/null)
 [[ $(echo "${outdc}" | dc_sel) == "" ]]
 tend $? "qmerge-test: [DC] --exclude beats the argument" || die "${outdc}"
+mkdir -p cfg-dcx/etc/portage
+printf 'QMERGE_EXCLUDE="dc-libs/A"\n' > cfg-dcx/etc/portage/make.conf
+outdc=$(PORTAGE_CONFIGROOT="${PWD}/cfg-dcx" qmerge -pc 2>/dev/null)
+[[ $(echo "${outdc}" | dc_sel) == "dc-libs/B-1" ]]
+tend $? "qmerge-test: [DC] QMERGE_EXCLUDE in make.conf pins the package and its deps" \
+	|| die "${outdc}"
+outdc=$(PORTAGE_CONFIGROOT="${PWD}/cfg-dcx" QMERGE_EXCLUDE="dc-libs/B" qmerge -pc 2>/dev/null)
+[[ $(echo "${outdc}" | dc_sel) == "" ]]
+tend $? "qmerge-test: [DC] QMERGE_EXCLUDE in the environment has prio over make.conf" \
+	|| die "${outdc}"
+printf 'QMERGE_EXCLUDE="dc-libs/*"\n' > cfg-dcx/etc/portage/make.conf
+outdc=$(PORTAGE_CONFIGROOT="${PWD}/cfg-dcx" qmerge -pc 2>/dev/null)
+[[ $(echo "${outdc}" | dc_sel) == "" ]]
+tend $? "qmerge-test: [DC] QMERGE_EXCLUDE takes a wildcard for the name" \
+	|| die "${outdc}"
+rm -rf cfg-dcx
 
 # -v names who needs a kept argument, portage's 'pulled in by' format
 outdc=$(qmerge -pcv dc-libs/A 2>/dev/null)

@@ -35,6 +35,11 @@ int twidth;
 bool nocolor;
 bool qmerge_nocolor;
 char *qmerge_jobs_conf;
+char *qmerge_exclude_conf;
+char *qmerge_usepkg_exclude_conf;
+bool qmerge_usepkg_exclude_live;
+char *qmerge_getbinpkg_exclude_conf;
+char *qmerge_getbinpkg_include_conf;
 bool qmerge_prefetch;
 char *qmerge_moves_conf;
 char *qmerge_local_priority_conf;
@@ -1390,6 +1395,11 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  KERNEL,              var_kernel,          true,  "")
 	_Q_EVB(BOOL, QMERGE_NOCOLOR,      qmerge_nocolor,      true,  NULL)
 	_Q_EVS(STR,  QMERGE_JOBS,         qmerge_jobs_conf,    true,  "")
+	_Q_EVS(STR,  QMERGE_EXCLUDE,      qmerge_exclude_conf, true,  "")
+	_Q_EVS(STR,  QMERGE_USEPKG_EXCLUDE, qmerge_usepkg_exclude_conf, true, "")
+	_Q_EVB(BOOL, QMERGE_USEPKG_EXCLUDE_LIVE, qmerge_usepkg_exclude_live, true, NULL)
+	_Q_EVS(STR,  QMERGE_GETBINPKG_EXCLUDE, qmerge_getbinpkg_exclude_conf, true, "")
+	_Q_EVS(STR,  QMERGE_GETBINPKG_INCLUDE, qmerge_getbinpkg_include_conf, true, "")
 	_Q_EVB(BOOL, QMERGE_PREFETCH,     qmerge_prefetch,     true,  (const char *)1)
 	_Q_EVS(STR,  QMERGE_MOVES,        qmerge_moves_conf,   true,  "")
 	_Q_EVB(BOOL, QNEWS_ENABLE,        qnews_enable,        true,  NULL)

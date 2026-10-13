@@ -33,5 +33,14 @@ sets such as \fB@world\fR and \fB@system\fR are understood, and
 \fB\-\-rebuilt\-binaries\fR reinstalls same\-version rebuilds advertised
 by a binhost.
 .P
+An update keeps an installed package of which no build is available on
+any binhost any more and says so after the merge list (\fB\-v\fR lists them,
+\fB\-q\fR is silent). After \fB\-u @world\fR their names are also
+written, one per line in world file style, to
+\fI/var/lib/portage/unavailable\fR, ready to be sent/used to/by
+\fB\-\-depclean\fR of \fIqmerge\fR or \fBemerge\fR(1); both keep
+whatever the world set still needs, and an entry of the world file has
+to be deselected first.
+.P
 \fIqmerge\fR maintains only the local \fIPKGDIR/Packages\fR index (see
 \fB\-\-index\fR); remote binhost indexes are fetched and cached.

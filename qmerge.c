@@ -259,7 +259,7 @@ static const char * const qmerge_opts_help[] = {
 	"Print the expanded members of the given @set(s), one atom per line, and exit",
 	"Show precisely how a package was compiled (identity, build env, dep bindings, sonames). VDB default, pkg@repo targets a binhost entry",
 	"With -s: match plain keys as whole names, not substrings",
-	"Continue past a failed package like emerge --keep-going: hide from the list, re-resolve, drop dependents that lost their provider, merge the rest (y/n, default n)",
+	"Continue past a failed package like emerge --keep-going: hide from the list, re-resolve, drop dependents whose dependency is no longer satisfied, merge the rest (y/n, default n)",
 	"Remove packages not required by @world (emerge --depclean); with atoms: only those, if nothing needs them",
 	"Remove all but the highest installed version of a package if nothing needs the others (emerge --prune); with -O ignoring dependencies",
 	"With --depclean: y/n follow DEPEND/BDEPEND of installed packages (default y)",
@@ -290,6 +290,11 @@ static bool   qm_plan_empty = false;
 static array *qm_dg_ignored = NULL;
 static set   *qm_dg_seen    = NULL;
 static char  *qm_dg_example = NULL;
+static array *qm_nb_gone    = NULL;
+static set   *qm_nb_seen    = NULL;
+static set   *qm_nb_world   = NULL;
+static set   *qm_nb_cp      = NULL;
+static bool   qm_nb_world_run = false;
 static int qm_deselect = -1;
 char oneshot = 0;
 char force_download = 0;
@@ -1204,6 +1209,67 @@ binpkg_chost_ok(tree_pkg_ctx *pkg, atom_ctx *patom, bool silent)
 	return false;
 }
 
+/* exclusion will take the same wildcard patterns from emerge: the '*'
+ * wildcard character stands for any run of characters in the category
+ * or the name, as in *-libs/gb*, a '*' name for every package of a
+ * category or a '*' category for any category; a name means any
+ * category as well. the parser keeps a '*' inside a name and turns a
+ * trailing one into its star marker. */
+static bool qm_list_atom_wild
+(
+  const depend_atom *x
+)
+{
+  return (x->CATEGORY != NULL &&
+          strchr(x->CATEGORY, '*') != NULL) ||
+         x->PN == NULL ||
+         x->PN[0] == '\0' ||
+         strchr(x->PN, '*') != NULL ||
+         (x->sfx_op == ATOM_OP_STAR &&
+          x->pfx_op == ATOM_OP_NONE);
+}
+
+static bool qm_list_atom_ok
+(
+  const depend_atom *x
+)
+{
+  return (x->PN != NULL &&
+          x->PN[0] != '\0') ||
+         x->sfx_op == ATOM_OP_STAR;
+}
+
+/* name, category and slot match of a package against one list entry,
+ * wildcards included; we don't look at versions */
+static bool qm_list_atom_match
+(
+  const depend_atom *x,
+  const depend_atom *pa
+)
+{
+  char pat[256];
+
+  if (pa->PN == NULL)
+    return false;
+  snprintf(pat, sizeof(pat), "%s%s",
+           x->PN != NULL ? x->PN : "",
+           x->sfx_op == ATOM_OP_STAR &&
+           x->pfx_op == ATOM_OP_NONE ? "*" : "");
+  if (pat[0] == '\0')
+    snprintf(pat, sizeof(pat), "*");
+  if (fnmatch(pat, pa->PN, 0) != 0)
+    return false;
+  if (x->CATEGORY != NULL &&
+      pa->CATEGORY != NULL &&
+      fnmatch(x->CATEGORY, pa->CATEGORY, 0) != 0)
+    return false;
+  if (x->SLOT != NULL &&
+      pa->SLOT != NULL &&
+      strcmp(x->SLOT, pa->SLOT) != 0)
+    return false;
+  return true;
+}
+
 /* --getbinpkg-exclude/--getbinpkg-include  */
 static array *qm_gb_excl_cli = NULL;
 static array *qm_gb_incl_cli = NULL;
@@ -1234,14 +1300,15 @@ qm_parse_gb_atoms(array **lst, const char *arg, const char *src)
 	{
 		depend_atom *a = atom_explode(tok);
 
-		if (a == NULL || a->PN == NULL ||
+		if (a == NULL ||
+				!qm_list_atom_ok(a) ||
 				a->blocker != ATOM_BL_NONE ||
 				a->pfx_op != ATOM_OP_NONE ||
-				a->sfx_op != ATOM_OP_NONE ||
 				a->PV != NULL)
 		{
 			warn("invalid atom in %s: %s "
-				 "(only package names and slot atoms allowed)", src, tok);
+				 "(only package names, slot atoms and wildcards allowed)",
+				 src, tok);
 			if (a != NULL)
 				atom_implode(a);
 			continue;
@@ -1262,7 +1329,8 @@ qm_gb_list_find(array *lst, const depend_atom *x)
 	if (lst == NULL)
 		return -1;
 	array_for_each(lst, n, a) {
-		if (strcmp(a->PN, x->PN) != 0)
+		if ((a->PN == NULL) != (x->PN == NULL) ||
+				(a->PN != NULL && strcmp(a->PN, x->PN) != 0))
 			continue;
 		if ((a->CATEGORY == NULL) != (x->CATEGORY == NULL) ||
 				(a->CATEGORY != NULL &&
@@ -1333,17 +1401,9 @@ qm_gb_list_match(array *lst, const depend_atom *pa)
 
 	if (lst == NULL || pa == NULL || pa->PN == NULL)
 		return false;
-	array_for_each(lst, n, x) {
-		if (strcmp(x->PN, pa->PN) != 0)
-			continue;
-		if (x->CATEGORY != NULL && pa->CATEGORY != NULL &&
-				strcmp(x->CATEGORY, pa->CATEGORY) != 0)
-			continue;
-		if (x->SLOT != NULL && pa->SLOT != NULL &&
-				strcmp(x->SLOT, pa->SLOT) != 0)
-			continue;
-		return true;
-	}
+	array_for_each(lst, n, x)
+		if (qm_list_atom_match(x, pa))
+			return true;
 	return false;
 }
 
@@ -3392,8 +3452,12 @@ qm_parse_exclude(const char *arg, const char *src)
 	{
 		depend_atom *a = atom_explode(tok);
 
-		if (a == NULL) {
+		if (a == NULL ||
+				!qm_list_atom_ok(a))
+		{
 			warn("invalid atom in %s: %s", src, tok);
+			if (a != NULL)
+				atom_implode(a);
 			continue;
 		}
 		if (qm_exclude == NULL)
@@ -3411,17 +3475,9 @@ qm_atom_excluded(const depend_atom *atom)
 
 	if (qm_exclude == NULL || atom == NULL || atom->PN == NULL)
 		return false;
-	array_for_each(qm_exclude, n, x) {
-		if (x->PN == NULL || strcmp(x->PN, atom->PN) != 0)
-			continue;
-		if (x->CATEGORY != NULL && atom->CATEGORY != NULL &&
-				strcmp(x->CATEGORY, atom->CATEGORY) != 0)
-			continue;
-		if (x->SLOT != NULL && atom->SLOT != NULL &&
-				strcmp(x->SLOT, atom->SLOT) != 0)
-			continue;
-		return true;
-	}
+	array_for_each(qm_exclude, n, x)
+		if (qm_list_atom_match(x, atom))
+			return true;
 	return false;
 }
 
@@ -3446,8 +3502,12 @@ qm_parse_usepkg_exclude(const char *arg, const char *src)
 	{
 		depend_atom *a = atom_explode(tok);
 
-		if (a == NULL) {
+		if (a == NULL ||
+				!qm_list_atom_ok(a))
+		{
 			warn("invalid atom in %s: %s", src, tok);
+			if (a != NULL)
+				atom_implode(a);
 			continue;
 		}
 		if (qm_usepkg_excl == NULL)
@@ -3466,7 +3526,10 @@ binpkg_excluded(tree_pkg_ctx *pkg, depend_atom *patom, bool silent)
 
 	if (qm_usepkg_excl != NULL && patom != NULL) {
 		array_for_each(qm_usepkg_excl, n, x)
-			if (atom_compare(patom, x) == EQUAL) {
+			if (qm_list_atom_wild(x)
+					? qm_list_atom_match(x, patom)
+					: atom_compare(patom, x) == EQUAL)
+			{
 				if (!silent) {
 					char exs[256];
 
@@ -9535,6 +9598,8 @@ qm_bin_newer(tree_pkg_ctx *bin, tree_pkg_ctx *inst)
 							ATOM_COMP_NOSUBSLOT | ATOM_COMP_NOREPO) == NEWER;
 }
 
+static void qm_norm_path(char *p);
+
 /* -u keeps an installed package when the best version the binhosts
  * show is older. remember that here so the user is told about it
  * after the merge list. */
@@ -9548,6 +9613,7 @@ static void qm_note_ignored_downgrade
   depend_atom *ba;
   const char  *rn;
   char        *key;
+  char        *src = NULL;
 
   if (bin == NULL ||
       inst == NULL ||
@@ -9567,16 +9633,24 @@ static void qm_note_ignored_downgrade
   add_set(key, qm_dg_seen);
 
   rn = qm_repo_name_of_pkg(bin);
-  if (rn == NULL)
-    rn = "local";
-  if (rn[0] == '@')
+  if (rn == NULL ||
+      strcmp(rn, "@local") == 0)
+  {
+    src = xasprintf("%s%s", portroot, pkgdir);
+    qm_norm_path(src);
+    rn  = src;
+  }
+  else if (rn[0] == '@')
     rn++;
   if (qm_dg_ignored == NULL)
     qm_dg_ignored = array_new();
   array_append(qm_dg_ignored,
-               xasprintf("%s (offered: %s from %s)", key, ba->PVR, rn));
+               xasprintf("%s (available: %s from %s%s%s)", key, ba->PVR,
+                         src != NULL ? "your " : "", rn,
+                         src != NULL ? "/" : ""));
   if (qm_dg_example == NULL)
     qm_dg_example = xasprintf("=%s/%s-%s", ba->CATEGORY, ba->PN, ba->PVR);
+  free(src);
   free(key);
 }
 
@@ -9626,6 +9700,204 @@ static void qm_print_ignored_downgrades
   qm_dg_seen = NULL;
   free(qm_dg_example);
   qm_dg_example = NULL;
+}
+
+static set *qm_world_load(const char *fname);
+
+/* is the installed package named by one of the world file's entries */
+static bool qm_world_has_atom
+(
+  const depend_atom *ia
+)
+{
+  array  *lines;
+  size_t  n;
+  char   *w;
+  bool    found = false;
+
+  if (qm_nb_world == NULL)
+    qm_nb_world = qm_world_load("world");
+  lines = set_keys(qm_nb_world);
+  array_for_each(lines, n, w)
+  {
+    depend_atom *wa = atom_explode(w);
+
+    if (wa != NULL)
+    {
+      if (atom_compare(ia, wa) == EQUAL)
+        found = true;
+      atom_implode(wa);
+    }
+    if (found)
+      break;
+  }
+  array_free(lines);
+  return found;
+}
+
+/* -u keeps an installed package when no binhost has any build of it
+ * left. remember it here so the user is told after the merge list. */
+static void qm_note_no_build
+(
+  tree_pkg_ctx *inst
+)
+{
+  depend_atom *ia;
+  char        *key;
+  char        *cp;
+
+  if (inst == NULL)
+    return;
+
+  ia  = tree_pkg_atom(inst, false);
+  key = xasprintf("%s/%s", ia->CATEGORY, ia->PF);
+  if (qm_nb_seen == NULL)
+    qm_nb_seen = create_set();
+  if (contains_set(key, qm_nb_seen) != NULL)
+  {
+    free(key);
+    return;
+  }
+  add_set(key, qm_nb_seen);
+
+  cp = xasprintf("%s/%s", ia->CATEGORY, ia->PN);
+  if (!qm_bin_has_cp(cp))
+  {
+    if (qm_nb_gone == NULL)
+      qm_nb_gone = array_new();
+    array_append(qm_nb_gone,
+                 xasprintf("%s (%s)", key,
+                           qm_world_has_atom(ia) ? "in world" : "dependency"));
+    qm_nb_cp = add_set_unique(cp, qm_nb_cp, NULL);
+  }
+  free(cp);
+  free(key);
+}
+
+/* pkgs we collect with qm_note_no_build, as world file lines in
+ * /var/lib/portage/unavailable, ready for `qmerge -c ' or
+ * `emerge --depclean'. rewritten after -u @world every time used,
+ * removed when nothing is left. returns the path of the file when it
+ * exists afterwards, NULL otherwise. */
+static char *qm_write_unavailable
+(
+  void
+)
+{
+  char   *wdir;
+  char   *wpath;
+  char   *tmp;
+  array  *keys;
+  size_t  n;
+  char   *cp;
+  FILE   *f;
+  bool    ok = true;
+
+  wdir  = xasprintf("%s%s/var/lib/portage", portroot, CONFIG_EPREFIX);
+  qm_norm_path(wdir);
+  wpath = xasprintf("%s/unavailable", wdir);
+  if (qm_nb_cp == NULL ||
+      cnt_set(qm_nb_cp) == 0)
+  {
+    unlink(wpath);
+    free(wpath);
+    free(wdir);
+    return NULL;
+  }
+
+  keys = set_keys(qm_nb_cp);
+  array_sort(keys, qm_strcmp_cb);
+  mkdir_p(wdir, 0755);
+  tmp = xasprintf("%s.qmerge.%d", wpath, (int)getpid());
+  f   = fopen(tmp, "w");
+  if (f == NULL)
+  {
+    ok = false;
+  }
+  else
+  {
+    array_for_each(keys, n, cp)
+      if (fprintf(f, "%s\n", cp) < 0)
+        ok = false;
+    if (fclose(f) != 0)
+      ok = false;
+    if (ok &&
+        rename(tmp, wpath) != 0)
+      ok = false;
+    if (!ok)
+      unlink(tmp);
+  }
+  if (!ok)
+  {
+    warnp("could not write %s", wpath);
+    free(wpath);
+    wpath = NULL;
+  }
+  array_free(keys);
+  free(tmp);
+  free(wdir);
+  return wpath;
+}
+
+/* the notice for what qm_note_no_build collected: one line with the
+ * count, or with -v every package and what to do about it.
+ * -q prints nothing. the entries are dropped afterwards. */
+static void qm_print_no_builds
+(
+  void
+)
+{
+  size_t  n;
+  size_t  cnt;
+  char   *line;
+  char   *wpath = NULL;
+
+  if (qm_nb_world_run)
+    wpath = qm_write_unavailable();
+  if (qm_nb_gone != NULL)
+  {
+    cnt = array_cnt(qm_nb_gone);
+    if (cnt > 0 &&
+        !qm_user_quiet)
+    {
+      if (qm_user_verbose == 0)
+      {
+        printf("\n%s!!!%s %zu installed package%s no build on any binhost "
+               "any more (use -v to list %s%s%s)\n\n",
+               RED, NORM, cnt, cnt == 1 ? " has" : "s have",
+               cnt == 1 ? "it" : "them",
+               wpath != NULL ? "; written to " : "",
+               wpath != NULL ? wpath : "");
+      }
+      else
+      {
+        printf("\n%s!!!%s The following installed packages have no build "
+               "on any binhost any more; they stay installed:\n", RED, NORM);
+        array_for_each(qm_nb_gone, n, line)
+          printf("    %s\n", line);
+        if (wpath != NULL)
+          printf("    the list is in %s, for --depclean\n", wpath);
+        else
+          printf("    `qmerge -c' removes the ones nothing needs; "
+                 "`qmerge -u @world' writes the list to "
+                 "/var/lib/portage/unavailable\n");
+        printf("    a world entry needs `qmerge -W' first\n\n");
+      }
+    }
+    array_deepfree(qm_nb_gone, free);
+    qm_nb_gone = NULL;
+  }
+  free(wpath);
+  if (qm_nb_seen != NULL)
+    free_set(qm_nb_seen);
+  qm_nb_seen = NULL;
+  if (qm_nb_world != NULL)
+    free_set(qm_nb_world);
+  qm_nb_world = NULL;
+  if (qm_nb_cp != NULL)
+    free_set(qm_nb_cp);
+  qm_nb_cp = NULL;
+  qm_nb_world_run = false;
 }
 
 /* -F forces newest binpkgs to match the atom across repos with no soft filters
@@ -9763,6 +10035,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 				if (mh[0] != '\0')
 					warn("no binpkg of %s on any binhost%s",
 						 atom_to_string(atom), mh);
+				if (update_only)
+					qm_note_no_build(inst);
 			}
 		} else {
 			const char *h  = qm_excl_hint(atom);
@@ -9795,7 +10069,11 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		provider = inst;
 		pull     = false;
 		if (update_only)
+		{
 			qm_note_ignored_downgrade(bin, inst);
+			if (bin == NULL)
+				qm_note_no_build(inst);
+		}
 	} else if (bin != NULL && atom_satisfied_by(atom, bin, parent_use)) {
 		provider = bin;
 		pull     = true;
@@ -9816,18 +10094,23 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		return;
 	}
 
-	/* anti-downgrade order: a dependency must never pull a provider OLDER than what's
-	 * already installed in that slot.
-	 * An outdated := revdep (built against foo:0/OLD) otherwise drags
-	 * foo *down* to OLD to satisfy its subslot bind.
-	 * Keep the installed provider instead and let the sweep flag the outdated
-	 * revdep for rebuild.
+	/* anti-downgrade order: a dependency must never pull a version
+	 * OLDER than installed in that slot. a outdated := revdep
+	 * (built against foo:0/OLD) otherwise drag foo down to OLD
+	 * to satisfy its subslot bind. keep the installed version instead
+	 * and let the sweep flag the outdated revdep for a rebuild.
 	 * (level 0 is the explicit target, leave it be.) */
-	if (pull && level > 0 && provider == bin && bin != NULL) {
+	if (pull &&
+			level > 0 &&
+			provider == bin &&
+			bin != NULL)
+	{
 		tree_pkg_ctx *cur;
 
 		ratom = atom;
-		if (atom->SUBSLOT != NULL && atom->SUBSLOT != atom->SLOT) {
+		if (atom->SUBSLOT != NULL &&
+				atom->SUBSLOT != atom->SLOT)
+		{
 			/* shallow copy shares all pointers */
 			neut         = *atom;
 			/* look up the installed slot occupant */
@@ -9836,7 +10119,9 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		}
 		/* invalidates inst (used) */
 		cur = best_version(ratom, BV_INSTALLED);
-		if (cur != NULL && qm_bin_newer(cur, bin)) {
+		if (cur != NULL &&
+				qm_bin_newer(cur, bin))
+		{
 			/* installed slot version is newer -> keep it */
 			provider = cur;
 			pull     = false;
@@ -10959,12 +11244,11 @@ qm_report_blocker(struct qm_scctx *sc, const char *who, const char *atomstr,
 	}
 }
 
-/* does the resolution install a package (other than exclude_cpv) that the positive
- * atom `pos` matches? fills `hit` with the offending cpv.
-* best_version here is safe, callers run it outside the vdb enumeration. */
-
-/* falling back to best_version for entries without a record
- * record (installed-provider cpvs, repos without PATH metadata). */
+/* finds the binary package file the plan holds for cpvp by its path
+ * in the binhost indexes, so the later checks see the build
+ * that is going to be merged. entry without a path / installed
+ * copy that was kept or a binhost index without a PATH field, gets
+ * the best binary package available as replacement. */
 static tree_pkg_ctx *
 qm_plan_pick(const char *cpvp, atom_ctx *ca)
 {
@@ -11283,6 +11567,10 @@ qm_verdict_memo_flush(void)
 	}
 }
 
+/* tells whether the merging output installs a package, other than exclude_cpv,
+ * that satisfies the atom pos.
+ * best_version is safe to call here, the callers run this outside the
+ * depscheck over the installed packages. */
 static bool
 qm_plan_has_match(array *merge, atom_ctx *pos, set *use,
 				  const char *exclude_cpv, char *hit, size_t hitsz)
@@ -12646,7 +12934,7 @@ qm_layer2_resolve(struct qm_plan *plan, set *todo)
 									 "acceptable rebuilt binpkg "
 									 "(lenient, backtrack round %d; "
 									 "QMERGE_LENIENT_UPGRADE=0 holds "
-									 "the provider back instead)",
+									 "the dependency back instead)",
 									 astr, iter + 1);
 							qm_notice(cpslot, msg);
 						}
@@ -13291,6 +13579,7 @@ qm_exec_round(struct qm_plan *plan)
 	qm_print_use_rejects(plan->merge);
 	qm_print_deadpins(plan->merge);
 	qm_print_ignored_downgrades();
+	qm_print_no_builds();
 	if (!pretend &&
 			!fetch_only)
 		qm_tmpdir_check(plan->merge);
@@ -14001,6 +14290,7 @@ resolve_again:
 		qm_print_use_rejects(NULL);
 		qm_print_deadpins(plan.merge);
 		qm_print_ignored_downgrades();
+		qm_print_no_builds();
 		if (!qm_kg_summary())
 			warn("nothing to merge (no candidates could be satisfied)");
 		array_deepfree(plan.merge, free);
@@ -14260,6 +14550,7 @@ resolve_again:
 		qm_print_use_rejects(plan.merge);
 		qm_print_deadpins(plan.merge);
 		qm_print_ignored_downgrades();
+		qm_print_no_builds();
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
 		/* surface subslot conflicts in the merge list too, like emerge does.
@@ -25191,44 +25482,51 @@ qm_dc_find_consumers(struct qm_dc_lmap *lm, struct qm_dc_obj *o)
 	return ret;
 }
 
-/* findProviders(consumer)[soname]: provider paths inside the consumer's
- * search path */
-static array *
-qm_dc_find_providers(struct qm_dc_lmap *lm, struct qm_dc_obj *c,
-					 const char *soname)
+/* portage's findProviders(consumer)[soname]: the paths of the files
+ * that ship this library (soname) and on the search path of the
+ * file that links against it */
+static array *qm_dc_find_providers
+(
+  struct qm_dc_lmap *lm,
+  struct qm_dc_obj  *c,
+  const char        *soname
+)
 {
-	array *ret = array_new();
-	set   *pk  = qm_dc_obj_pathkeys(lm, c);
-	char   key[1024];
-	array *provs;
-	size_t i;
-	struct qm_dc_obj *p;
+  array            *ret = array_new();
+  set              *pk  = qm_dc_obj_pathkeys(lm, c);
+  char              key[1024];
+  array            *provs;
+  size_t            i;
+  struct qm_dc_obj *p;
 
-	snprintf(key, sizeof(key), "%s\1%s", c->arch, soname);
-	provs = hash_get(lm->providers, key);
-	array_for_each(provs, i, p) {
-		size_t k;
-		char  *pp;
+  snprintf(key, sizeof(key), "%s\1%s", c->arch, soname);
+  provs = hash_get(lm->providers, key);
+  array_for_each(provs, i, p)
+  {
+    size_t  k;
+    char   *pp;
 
-		array_for_each(p->alt_paths, k, pp) {
-			char d[_Q_PATH_MAX];
+    array_for_each(p->alt_paths, k, pp)
+    {
+      char d[_Q_PATH_MAX];
 
-			qm_dc_dirname(pp, d, sizeof(d));
-			if (contains_set(qm_dc_path_key(lm, d), pk) != NULL) {
-				size_t q;
-				char  *have;
-				bool   dup = false;
+      qm_dc_dirname(pp, d, sizeof(d));
+      if (contains_set(qm_dc_path_key(lm, d), pk) != NULL)
+      {
+        size_t  q;
+        char   *have;
+        bool    dup = false;
 
-				array_for_each(ret, q, have)
-					if (strcmp(have, pp) == 0)
-						dup = true;
-				if (!dup)
-					array_append(ret, xstrdup(pp));
-			}
-		}
-	}
-	free_set(pk);
-	return ret;
+        array_for_each(ret, q, have)
+          if (strcmp(have, pp) == 0)
+            dup = true;
+        if (!dup)
+          array_append(ret, xstrdup(pp));
+      }
+    }
+  }
+  free_set(pk);
+  return ret;
 }
 
 static set *
@@ -25387,9 +25685,10 @@ qm_dc_libcheck_run(struct qm_dc *dc, array *cleanlist, set *clean_set)
 			continue;
 		}
 		had_cons = true;
-		/* consumer files whose search path really sees this soname,
-		 * then their owning packages; an alternative surviving provider
-		 * releases the consumer */
+		/* files that link against this library (soname) and really
+		 * find it on their search path, then the packages those files
+		 * belong to; when another package that remains installed has
+		 * the same library, the file shoudl be let go */
 		{
 			size_t z;
 			struct qm_dc_libc *lb;
@@ -28696,10 +28995,11 @@ int qmerge_main(int argc, char **argv)
 	qm_user_quiet   = quiet;
 	qm_user_verbose = verbose;
 
-	/* QMERGE_LENIENT_UPGRADE (default 1): when a package with a broken dependency
-	 * has no acceptable rebuilt binpkg, lenient proceeds with the provider upgrade and warns
-	 * about the dangling pin (portage behavior); strict holds the provider
-	 * back and drops planned rebuilds that pin the new version.
+	/* QMERGE_LENIENT_UPGRADE (default 1): if a package with a broken
+	 * dependency has no acceptable rebuilt binpkg, lenient proceeds with
+	 * the upgrade of that dependency and warns about the dangling pin
+	 * (portage behavior); strict holds the dep back and drops
+	 * planned rebuilds that pin the new version.
 	 * Neither mode ever installs a package built for a library version
 	 * that is not installed and cannot be installed here (the binhost
 	 * moved to qtbase 6.11 while package.mask keeps this machine on
@@ -28742,49 +29042,42 @@ int qmerge_main(int argc, char **argv)
 			qm_slot_unify = 1;
 	}
 
-	/* jobs precedence: -j (already set qmerge_jobs >= 0) beats
-	 * QMERGE_JOBS (env beats make.conf, per the config framework)
-	 * beats the built-in default */
+	/* jobs precedence: -j (already set qmerge_jobs >= 0) prio over
+	 * QMERGE_JOBS (env prio over make.conf, per the config framework)
+	 * prio over the built-in default */
 	if (qmerge_jobs < 0) {
 		qmerge_jobs = qmerge_jobs_conf != NULL && *qmerge_jobs_conf != '\0'
 				? qm_parse_jobs(qmerge_jobs_conf) : 4;
 	}
 
-	/* exclusion precedence: --usepkg-exclude beats $QMERGE_USEPKG_EXCLUDE */
-	if (qm_usepkg_excl == NULL) {
-		const char *ee = getenv("QMERGE_USEPKG_EXCLUDE");
-
-		if (ee != NULL && *ee != '\0')
-			qm_parse_usepkg_exclude(ee, "QMERGE_USEPKG_EXCLUDE");
-	}
-	/* --exclude has priority over $QMERGE_EXCLUDE (env), same as usepkg-exclude */
-	if (qm_exclude == NULL) {
-		const char *ee = getenv("QMERGE_EXCLUDE");
-
-		if (ee != NULL && *ee != '\0')
-			qm_parse_exclude(ee, "QMERGE_EXCLUDE");
-	}
-	if (!qm_excl_live) {
-		const char *el = getenv("QMERGE_USEPKG_EXCLUDE_LIVE");
-
-		if (el != NULL && *el != '\0' && strcmp(el, "0") != 0)
-			qm_excl_live = 1;
-	}
-	/* --getbinpkg-exclude/-include has priority over QMERGE_GETBINPKG_* envs */
-	if (qm_gb_excl_cli == NULL) {
-		const char *ee = getenv("QMERGE_GETBINPKG_EXCLUDE");
-
-		if (ee != NULL && *ee != '\0')
-			qm_parse_gb_atoms(&qm_gb_excl_cli, ee,
-							  "QMERGE_GETBINPKG_EXCLUDE");
-	}
-	if (qm_gb_incl_cli == NULL) {
-		const char *ee = getenv("QMERGE_GETBINPKG_INCLUDE");
-
-		if (ee != NULL && *ee != '\0')
-			qm_parse_gb_atoms(&qm_gb_incl_cli, ee,
-							  "QMERGE_GETBINPKG_INCLUDE");
-	}
+	/* exclusion precedence: --usepkg-exclude prio over QMERGE_USEPKG_EXCLUDE
+	 * (env prio over make.conf, per the config framework) */
+	if (qm_usepkg_excl == NULL &&
+			qmerge_usepkg_exclude_conf != NULL &&
+			*qmerge_usepkg_exclude_conf != '\0')
+		qm_parse_usepkg_exclude(qmerge_usepkg_exclude_conf,
+								"QMERGE_USEPKG_EXCLUDE");
+	/* --exclude has priority over QMERGE_EXCLUDE (env has prio 
+	* over make.conf, per the config framework), same as usepkg-exclude */
+	if (qm_exclude == NULL &&
+			qmerge_exclude_conf != NULL &&
+			*qmerge_exclude_conf != '\0')
+		qm_parse_exclude(qmerge_exclude_conf, "QMERGE_EXCLUDE");
+	if (!qm_excl_live &&
+			qmerge_usepkg_exclude_live)
+		qm_excl_live = 1;
+	/* --getbinpkg-exclude/-include prio over QMERGE_GETBINPKG_EXCLUDE
+	 * and QMERGE_GETBINPKG_INCLUDE (env prio over make.conf) */
+	if (qm_gb_excl_cli == NULL &&
+			qmerge_getbinpkg_exclude_conf != NULL &&
+			*qmerge_getbinpkg_exclude_conf != '\0')
+		qm_parse_gb_atoms(&qm_gb_excl_cli, qmerge_getbinpkg_exclude_conf,
+						  "QMERGE_GETBINPKG_EXCLUDE");
+	if (qm_gb_incl_cli == NULL &&
+			qmerge_getbinpkg_include_conf != NULL &&
+			*qmerge_getbinpkg_include_conf != '\0')
+		qm_parse_gb_atoms(&qm_gb_incl_cli, qmerge_getbinpkg_include_conf,
+						  "QMERGE_GETBINPKG_INCLUDE");
 
 	if (rebuilt_bins < 0) {
 		const char *rb = qmerge_rebuilt_conf;
@@ -28910,6 +29203,9 @@ int qmerge_main(int argc, char **argv)
 			else if (uninstall && argv[i][0] == '@')
 				/* for the implied world_sets deselect */
 				qm_world_capture(argv[i]);
+			if (update_only &&
+					strcmp(argv[i], "@world") == 0)
+				qm_nb_world_run = true;
 			todo = qmerge_add_set(argv[i], todo);
 		}
 
@@ -29253,6 +29549,7 @@ int qmerge_main(int argc, char **argv)
 		tree_close(qmerge_vdb_tree);
 		qmerge_vdb_tree = NULL;
 	}
+	qm_nb_world_run = false;
 
 	return ret;
 }
