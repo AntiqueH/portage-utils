@@ -3941,6 +3941,150 @@ static const char * const qm_move_depfiles[] = {
  * package itself is not installed: dependents may still name it */
 static bool qm_move_rewrite_map(const char *in, hash_t *map, char **outp);
 
+static bool qm_slotmove_rewrite_str
+(
+  const char  *in,
+  const char  *cp,
+  const char  *olds,
+  const char  *news,
+  char       **outp
+)
+{
+  size_t      cplen   = strlen(cp);
+  size_t      oslen   = strlen(olds);
+  size_t      cap     = strlen(in) + 1;
+  size_t      olen    = 0;
+  const char *p       = in;
+  char       *out;
+  bool        changed = false;
+
+  if (strstr(in, cp) == NULL)
+    return false;
+  out = xmalloc(cap);
+  while (*p != '\0')
+  {
+    const char *tok;
+    const char *end;
+    const char *m;
+    const char *colon;
+    const char *send;
+    const char *op;
+    size_t      toklen;
+    size_t      nlen = 0;
+    char        nslot[256];
+
+    while (*p != '\0' &&
+           isspace((unsigned char)*p))
+    {
+      if (olen + 2 > cap)
+      {
+        cap *= 2;
+        out  = xrealloc(out, cap);
+      }
+      out[olen++] = *p++;
+    }
+    if (*p == '\0')
+      break;
+    tok = p;
+    while (*p != '\0' &&
+           !isspace((unsigned char)*p))
+      p++;
+    end    = p;
+    toklen = (size_t)(end - tok);
+
+    m = tok;
+    while (m < end &&
+           (*m == '!' ||
+            *m == '<' ||
+            *m == '>' ||
+            *m == '=' ||
+            *m == '~'))
+      m++;
+    colon = memchr(m, ':', (size_t)(end - m));
+    op    = end;
+    if (colon != NULL &&
+        (size_t)(colon - m) >= cplen &&
+        strncmp(m, cp, cplen) == 0 &&
+        (m[cplen] == ':' ||
+         (m[cplen] == '-' &&
+          isdigit((unsigned char)m[cplen + 1]))))
+    {
+      send = colon + 1;
+      while (send < end &&
+             *send != '/' &&
+             *send != '=' &&
+             *send != '*' &&
+             *send != '[')
+        send++;
+      if ((size_t)(send - colon - 1) == oslen &&
+          strncmp(colon + 1, olds, oslen) == 0)
+      {
+        int n = snprintf(nslot, sizeof(nslot), "%s", news);
+
+        op = send;
+        if (*send == '/')
+        {
+          const char *sub = send + 1;
+
+          op = sub;
+          while (op < end &&
+                 *op != '=' &&
+                 *op != '[')
+            op++;
+          if ((size_t)(op - sub) == oslen &&
+              strncmp(sub, olds, oslen) == 0)
+            n += snprintf(nslot + n, sizeof(nslot) - (size_t)n,
+                          "/%s", news);
+          else
+            n += snprintf(nslot + n, sizeof(nslot) - (size_t)n,
+                          "/%.*s", (int)(op - sub), sub);
+        }
+        if (n > 0 &&
+            (size_t)n < sizeof(nslot))
+          nlen = (size_t)n;
+      }
+    }
+    if (nlen > 0)
+    {
+      size_t head = (size_t)(colon + 1 - tok);
+      size_t rest = (size_t)(end - op);
+
+      while (olen + head + nlen + rest + 1 > cap)
+      {
+        cap *= 2;
+        out  = xrealloc(out, cap);
+      }
+      memcpy(out + olen, tok, head);
+      olen += head;
+      memcpy(out + olen, nslot, nlen);
+      olen += nlen;
+      memcpy(out + olen, op, rest);
+      olen += rest;
+      changed = true;
+    }
+    else
+    {
+      while (olen + toklen + 1 > cap)
+      {
+        cap *= 2;
+        out  = xrealloc(out, cap);
+      }
+      memcpy(out + olen, tok, toklen);
+      olen += toklen;
+    }
+  }
+  if (olen + 1 > cap)
+    out = xrealloc(out, olen + 1);
+  out[olen] = '\0';
+  if (!changed)
+  {
+    free(out);
+    return false;
+  }
+  *outp = out;
+  return true;
+}
+
 static void
 qm_move_vdb_deps(array *mv)
 {
@@ -3950,20 +4094,32 @@ qm_move_vdb_deps(array *mv)
 	size_t         mi;
 	struct move   *m;
 	hash_t        *map = NULL;
+	array         *smv = NULL;
 
 	array_for_each(mv, mi, m) {
 		if (m->slotmove)
+		{
+			if (smv == NULL)
+				smv = array_new();
+			array_append(smv, m);
 			continue;
+		}
 		if (map == NULL)
 			map = hash_new();
 		hash_add(map, m->a1, m->a2, NULL);
 	}
-	if (map == NULL)
+	if (map == NULL &&
+			smv == NULL)
 		return;
 	vdir = xasprintf("%s%s", portroot, portvdb);
 	cd = opendir(vdir);
-	if (cd == NULL) {
+	if (cd == NULL)
+	{
 		free(vdir);
+		if (map != NULL)
+			hash_free(map);
+		if (smv != NULL)
+			array_free(smv);
 		return;
 	}
 	while ((ce = readdir(cd)) != NULL) {
@@ -4009,9 +4165,55 @@ qm_move_vdb_deps(array *mv)
 				{
 					char *nb = NULL;
 
-					if (qm_move_rewrite_map(buf, map, &nb)) {
+					if (map != NULL &&
+							qm_move_rewrite_map(buf, map, &nb))
+					{
 						cur     = nb;
 						changed = true;
+					}
+				}
+				if (smv != NULL)
+				{
+					size_t       si;
+					struct move *sm;
+
+					array_for_each(smv, si, sm)
+					{
+						depend_atom *qa = atom_explode(sm->a1);
+						char         scp[512];
+						const char  *fin;
+						char        *nb = NULL;
+						int          hops;
+
+						if (qa == NULL)
+							continue;
+						if (qa->PV != NULL ||
+								qa->CATEGORY == NULL ||
+								qa->PN == NULL)
+						{
+							atom_implode(qa);
+							continue;
+						}
+						snprintf(scp, sizeof(scp), "%s/%s",
+								 qa->CATEGORY, qa->PN);
+						atom_implode(qa);
+						fin = scp;
+						for (hops = 0; map != NULL && hops < 16; hops++)
+						{
+							const char *nx = hash_get(map, fin);
+
+							if (nx == NULL)
+								break;
+							fin = nx;
+						}
+						if (qm_slotmove_rewrite_str(cur, fin, sm->a2,
+													sm->a3, &nb))
+						{
+							if (cur != buf)
+								free(cur);
+							cur     = nb;
+							changed = true;
+						}
 					}
 				}
 				if (changed) {
@@ -4040,7 +4242,10 @@ qm_move_vdb_deps(array *mv)
 	}
 	closedir(cd);
 	free(vdir);
-	hash_free(map);
+	if (map != NULL)
+		hash_free(map);
+	if (smv != NULL)
+		array_free(smv);
 }
 
 /* 0times: I will update the docs for this one here */
@@ -5113,6 +5318,7 @@ qm_emit_moves(int dfd, const char *pdir)
 static hash_t *qm_use_rejects = NULL;
 static const char *qm_bid_shown(const char *s, char *out, size_t olen);
 static hash_t *qm_use_accepts = NULL;
+static set    *qm_kept_targets = NULL;
 
 static void
 qm_use_gate_key(atom_ctx *patom, char *key, size_t keylen)
@@ -5141,6 +5347,18 @@ qm_use_reject_add(atom_ctx *patom, const char *msg)
 		hash_add(qm_use_rejects, key, d, NULL);
 	}
 	add_set_unique(msg, d, NULL);
+}
+
+static void qm_kept_add
+(
+  tree_pkg_ctx *inst
+)
+{
+  depend_atom *ia = tree_pkg_atom(inst, false);
+  char         cpf[512];
+
+  snprintf(cpf, sizeof(cpf), "%s/%s", ia->CATEGORY ? : "", ia->PF ? : "");
+  qm_kept_targets = add_set_unique(cpf, qm_kept_targets, NULL);
 }
 
 static void
@@ -5185,6 +5403,8 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 {
 	char *iusestr = tree_pkg_meta(pkg, Q_IUSE);
 	set  *built;
+	set  *defs;
+	set  *seen;
 	char *tmp;
 	char *tok;
 	char *sp;
@@ -5209,6 +5429,8 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 	}
 
 	built = usedep_flags_to_set(tree_pkg_meta(pkg, Q_USE));
+	defs  = uc_iuse_defaults(iusestr);
+	seen  = create_set();
 	tmp   = xstrdup(iusestr);
 	for (tok = strtok_r(tmp, " \t\n", &sp);
 		 tok != NULL;
@@ -5219,11 +5441,13 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 		int  po;
 		char msg[512];
 
-		def_on = *tok == '+';
 		if (*tok == '+' || *tok == '-')
 			tok++;
-		if (*tok == '\0')
+		if (*tok == '\0' ||
+				contains_set(tok, seen) != NULL)
 			continue;
+		add_set(tok, seen);
+		def_on = contains_set(tok, defs) != NULL;
 
 		have = contains_set(tok, built) != NULL;
 
@@ -5351,6 +5575,8 @@ binpkg_use_ok_r(tree_pkg_ctx *pkg, atom_ctx *patom, const char *rname,
 	}
 	free(tmp);
 	free_set(built);
+	free_set(defs);
+	free_set(seen);
 	if (why == NULL && ok)
 		qm_use_accept_add(patom);
 	if (why == NULL)
@@ -5440,12 +5666,16 @@ qm_uc(void)
 {
 	qm_uctx.ev_use              = ev_use;
 	qm_uctx.ev_use_neg          = ev_use_neg;
+	qm_uctx.conf_use            = conf_use;
+	qm_uctx.conf_use_neg        = conf_use_neg;
 	qm_uctx.use_mask            = use_mask;
 	qm_uctx.use_force           = use_force;
 	qm_uctx.pkg_use             = pkg_use;
+	qm_uctx.prof_pkg_use        = prof_pkg_use;
 	qm_uctx.pkg_use_force       = pkg_use_force;
 	qm_uctx.pkg_use_mask        = pkg_use_mask;
 	qm_uctx.all_config_vars     = all_config_vars;
+	qm_uctx.makeconf_vars       = makeconf_vars;
 	qm_uctx.use_expand          = use_expand;
 	qm_uctx.use_expand_implicit = use_expand_implicit;
 	qm_uctx.use_expand_hidden   = use_expand_hidden;
@@ -6416,6 +6646,11 @@ qm_use_rejects_flush(void)
 		hash_free(qm_use_rejects);
 		qm_use_rejects = NULL;
 	}
+	if (qm_kept_targets != NULL)
+	{
+		free_set(qm_kept_targets);
+		qm_kept_targets = NULL;
+	}
 }
 
 static void
@@ -6451,6 +6686,42 @@ qm_print_use_rejects(array *merge)
 			}
 			atom_implode(a);
 		}
+	}
+
+	if (qm_kept_targets != NULL)
+	{
+		array *kept = set_keys(qm_kept_targets);
+		char  *cpf;
+
+		array_sort(kept, qm_strcmp_cb);
+		array_for_each(kept, n, cpf)
+		{
+			if (cpns != NULL)
+			{
+				char      ex[560];
+				atom_ctx *a;
+
+				snprintf(ex, sizeof(ex), "=%s", cpf);
+				a = atom_explode(ex);
+				if (a != NULL)
+				{
+					if (a->CATEGORY != NULL &&
+							a->PN != NULL)
+					{
+						char cpn[512];
+
+						snprintf(cpn, sizeof(cpn), "%s/%s",
+								 a->CATEGORY, a->PN);
+						add_set(cpn, cpns);
+					}
+					atom_implode(a);
+				}
+			}
+			if (!update_only)
+				printf("\n%s!!!%s %s stays installed: no acceptable build "
+					   "of it on any binhost\n", RED, NORM, cpf);
+		}
+		array_free(kept);
 	}
 
 	if (qm_use_rejects != NULL && hash_size(qm_use_rejects) > 0) {
@@ -7193,6 +7464,32 @@ qm_deadpin_satisfied(atom_ctx *A, array *merge)
 	return inst != NULL && atom_satisfied_by(A, inst, NULL);
 }
 
+static bool qm_plan_has_pf
+(
+  array      *merge,
+  const char *name,
+  size_t      nlen
+)
+{
+  size_t      i;
+  char       *cpvp;
+  const char *sep  = memchr(name, ':', nlen);
+  size_t      plen = sep != NULL ? (size_t)(sep - name) : nlen;
+
+  if (merge == NULL)
+    return false;
+  array_for_each(merge, i, cpvp)
+  {
+    const char *end  = strstr(cpvp, "::");
+    size_t      clen = end != NULL ? (size_t)(end - cpvp) : strlen(cpvp);
+
+    if (clen == plen &&
+        strncmp(cpvp, name, plen) == 0)
+      return true;
+  }
+  return false;
+}
+
 static void
 qm_print_deadpins(array *merge)
 {
@@ -7220,6 +7517,7 @@ qm_print_deadpins(array *merge)
 		char     *line;
 		bool      required = false;
 		bool      skipped  = false;
+		bool      absent   = false;
 
 		/* B and A lines mean the request cannot be completed; S lines
 		 * mean a newer build was passed over and another build used,
@@ -7236,8 +7534,22 @@ qm_print_deadpins(array *merge)
 				required = true;
 		}
 		if (A != NULL && required && qm_deadpin_satisfied(A, merge))
+		{
 			required = false;
-		if (A == NULL || (!required && (!skipped || qm_user_quiet))) {
+			array_for_each(lines, ln, line)
+			{
+				char *sep = strchr(line, '\1');
+
+				if (sep != NULL &&
+						sep[1] == 'B' &&
+						!qm_plan_has_pf(merge, line, (size_t)(sep - line)))
+					absent = true;
+			}
+		}
+		if (A == NULL ||
+				(!required &&
+				 !absent &&
+				 (!skipped || qm_user_quiet))) {
 			array_free(lines);
 			if (A != NULL)
 				atom_implode(A);
@@ -7245,6 +7557,24 @@ qm_print_deadpins(array *merge)
 		}
 		array_sort(lines, qm_strcmp_cb);
 		cands = qm_masked_candidates(A);
+
+		if (absent)
+		{
+			printf("\nqmerge: builds that need \"%s\" were skipped before "
+				   "the run could satisfy it:\n", pin);
+			array_for_each(lines, ln, line)
+			{
+				char *sep = strchr(line, '\1');
+
+				if (sep != NULL &&
+						sep[1] == 'B')
+					qm_print_parent_line(line);
+			}
+			array_deepfree(cands, qm_masked_cand_free);
+			array_free(lines);
+			atom_implode(A);
+			continue;
+		}
 
 		if (!required) {
 			char   key[2048] = "";
@@ -9077,8 +9407,9 @@ merge_tree_at(int fd_src, const char *src, int fd_dst, const char *dst,
 						if (strcmp(dmd5, srcmd5) == 0) {
 							docfg = false;
 						} else if (qm_confmem_md5_is(cpath, srcmd5)) {
-							/* the identical update was offered before:
-							 * skip it entirely (portage confmem);
+							/* the identical update was presented previously
+							 * and rejected by confmem.
+							 * so skip it entirely (portage confmem);
 							 * downgrades and NOCONFMEM ignore the
 							 * memory and offer again */
 							docfg   = qm_cfg_noconfmem;
@@ -10037,6 +10368,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 						 atom_to_string(atom), mh);
 				if (update_only)
 					qm_note_no_build(inst);
+				if (!qm_internal_pull)
+					qm_kept_add(inst);
 			}
 		} else {
 			const char *h  = qm_excl_hint(atom);

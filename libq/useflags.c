@@ -53,6 +53,31 @@ uc_flags_to_set(const char *str)
 	return s;
 }
 
+set *uc_iuse_defaults
+(
+  const char *iuse
+)
+{
+  set  *s = create_set();
+  char *tmp;
+  char *tok;
+  char *sp;
+
+  if (iuse == NULL)
+    return s;
+  tmp = xstrdup(iuse);
+  for (tok = strtok_r(tmp, " \t\n", &sp);
+       tok != NULL;
+       tok = strtok_r(NULL, " \t\n", &sp))
+  {
+    if (tok[0] == '+' &&
+        tok[1] != '\0')
+      add_set_unique(tok + 1, s, NULL);
+  }
+  free(tmp);
+  return s;
+}
+
 static void
 uc_expand_pfxs_add(array *into, const char *grps)
 {
@@ -189,141 +214,215 @@ uc_pkg_flag_override(depend_atom *pa, const char *tok, array *lst)
 	return r;
 }
 
-/* raw config variable lookup (make.globals/profiles/make.conf) */
-static const char *
-uc_config_var(struct use_ctx *uc, const char *name)
+/* raw config variable lookup (environment/make.conf/profiles/make.globals) */
+static const char *uc_config_var
+(
+  struct use_ctx *uc,
+  const char     *name
+)
 {
-	const char *v = NULL;
+  const char *v = getenv(name);
 
-	if (uc->all_config_vars != NULL)
-		v = get_set(name, uc->all_config_vars);
-	if (v == NULL)
-		v = getenv(name);
-	return v;
+  if (v == NULL &&
+      uc->all_config_vars != NULL)
+    v = get_set(name, uc->all_config_vars);
+  return v;
 }
 
-bool
-uc_use_wanted(struct use_ctx *uc, depend_atom *pa, const char *tok,
-			  bool def_on)
+static bool uc_var_resets_group
+(
+  struct use_ctx *uc,
+  const char     *name
+)
 {
-	const struct use_expand_pfx *ep;
-	const char                  *sfx  = NULL;
-	bool                         want = def_on;
-	int                          o;
-
-	ep = uc_expand_group(uc, tok, &sfx);
-	if (ep != NULL) {
-		const char *v = uc_config_var(uc, ep->var);
-
-		if (v != NULL) {
-			char *tmp = xstrdup(v);
-			char *t;
-			char *sp;
-
-			want = false;
-			for (t = strtok_r(tmp, " \t\n", &sp);
-				 t != NULL;
-				 t = strtok_r(NULL, " \t\n", &sp))
-				if (strcmp(t, sfx) == 0)
-					want = true;
-			free(tmp);
-		}
-	} else if (strchr(tok, '_') != NULL) {
-		const char *us = strrchr(tok, '_');
-
-		while (us != NULL && us > tok) {
-			char        var[128];
-			size_t      plen = (size_t)(us - tok);
-			const char *v;
-			size_t      i;
-
-			if (plen >= sizeof(var))
-				break;
-			for (i = 0; i < plen; i++)
-				var[i] = (char)toupper((unsigned char)tok[i]);
-			var[plen] = '\0';
-			v = uc_config_var(uc, var);
-			if (v != NULL) {
-				char *tmp = xstrdup(v);
-				char *t;
-				char *sp;
-
-				if (!uc_probe_warned) {
-					uc_probe_warned = true;
-					warn("USE_EXPAND does not declare a group for "
-						 "'%s': resolving it from the config "
-						 "variable %s (no profile?)", tok, var);
-				}
-				want = false;
-				for (t = strtok_r(tmp, " \t\n", &sp);
-					 t != NULL;
-					 t = strtok_r(NULL, " \t\n", &sp))
-					if (strcmp(t, us + 1) == 0)
-						want = true;
-				free(tmp);
-				break;
-			}
-			do {
-				us--;
-			} while (us > tok && *us != '_');
-			if (us <= tok || *us != '_')
-				break;
-		}
-	}
-	if (uc->ev_use_neg != NULL &&
-			(contains_set(tok, uc->ev_use_neg) != NULL ||
-			 contains_set("*", uc->ev_use_neg) != NULL))
-		want = false;
-	if (uc->ev_use != NULL && contains_set(tok, uc->ev_use) != NULL)
-		want = true;
-	o = uc_pkg_flag_override(pa, tok, uc->pkg_use);
-	if (o != -1)
-		want = o == 1;
-	o = uc_pkg_flag_override(pa, tok, uc->pkg_use_force);
-	if (o == 1 || (o == -1 && uc->use_force != NULL &&
-			contains_set(tok, uc->use_force) != NULL))
-		want = true;
-	o = uc_pkg_flag_override(pa, tok, uc->pkg_use_mask);
-	if (o == 1 || (o == -1 && uc->use_mask != NULL &&
-			contains_set(tok, uc->use_mask) != NULL))
-		want = false;
-	return want;
+  if (getenv(name) != NULL)
+    return true;
+  return uc->makeconf_vars != NULL &&
+         contains_set(name, uc->makeconf_vars) != NULL;
 }
 
-int
-uc_use_mismatch(struct use_ctx *uc, tree_pkg_ctx *pkg)
+static bool uc_expand_value_wanted
+(
+  struct use_ctx *uc,
+  const char     *var,
+  const char     *value,
+  const char     *suffix,
+  bool            want
+)
 {
-	char        *iusestr = tree_pkg_meta(pkg, Q_IUSE);
-	depend_atom *pa;
-	set         *bu;
-	char        *tmp;
-	char        *tok;
-	char        *sp;
-	int          mis = 0;
+  char *tmp = xstrdup(value);
+  char *t;
+  char *sp;
 
-	if (iusestr == NULL || *iusestr == '\0')
-		return 0;
-	pa  = tree_pkg_atom(pkg, true);
-	bu  = uc_flags_to_set(tree_pkg_meta(pkg, Q_USE));
-	tmp = xstrdup(iusestr);
-	for (tok = strtok_r(tmp, " \t\n", &sp);
-		 tok != NULL;
-		 tok = strtok_r(NULL, " \t\n", &sp))
-	{
-		bool def_on = tok[0] == '+';
-		bool on;
+  if (uc_var_resets_group(uc, var))
+    want = false;
+  for (t = strtok_r(tmp, " \t\n", &sp);
+       t != NULL;
+       t = strtok_r(NULL, " \t\n", &sp))
+  {
+    if (t[0] == '-' &&
+        strcmp(t + 1, suffix) == 0)
+      want = false;
+    else if (strcmp(t, suffix) == 0)
+      want = true;
+  }
+  free(tmp);
+  return want;
+}
 
-		if (*tok == '+' || *tok == '-')
-			tok++;
-		if (*tok == '\0')
-			continue;
-		on = contains_set(tok, bu) != NULL;
-		if (on != uc_use_wanted(uc, pa, tok, def_on))
-			mis++;
-	}
-	free(tmp);
-	free_set(bu);
-	return mis;
+bool uc_use_wanted
+(
+  struct use_ctx *uc,
+  depend_atom    *pa,
+  const char     *tok,
+  bool            def_on
+)
+{
+  const struct use_expand_pfx *ep;
+  const char                  *sfx  = NULL;
+  const char                  *v;
+  bool                         want = def_on;
+  int                          conf = -1;
+  int                          o;
+
+  ep = uc_expand_group(uc, tok, &sfx);
+  if (ep != NULL)
+  {
+    v = uc_config_var(uc, ep->var);
+    if (v != NULL)
+    {
+      want = uc_expand_value_wanted(uc, ep->var, v, sfx, want);
+      if (uc_var_resets_group(uc, ep->var))
+        conf = want ? 1 : 0;
+    }
+  }
+  else if (strchr(tok, '_') != NULL)
+  {
+    const char *us = strrchr(tok, '_');
+
+    while (us != NULL &&
+           us > tok)
+    {
+      char   var[128];
+      size_t plen = (size_t)(us - tok);
+      size_t i;
+
+      if (plen >= sizeof(var))
+        break;
+      for (i = 0; i < plen; i++)
+        var[i] = (char)toupper((unsigned char)tok[i]);
+      var[plen] = '\0';
+      v = uc_config_var(uc, var);
+      if (v != NULL)
+      {
+        if (!uc_probe_warned)
+        {
+          uc_probe_warned = true;
+          warn("USE_EXPAND does not declare a group for "
+               "'%s': resolving it from the config "
+               "variable %s (no profile?)", tok, var);
+        }
+        want = uc_expand_value_wanted(uc, var, v, us + 1, want);
+        if (uc_var_resets_group(uc, var))
+          conf = want ? 1 : 0;
+        break;
+      }
+      do
+      {
+        us--;
+      }
+      while (us > tok && *us != '_');
+      if (us <= tok ||
+          *us != '_')
+        break;
+    }
+  }
+  if (uc->ev_use_neg != NULL &&
+      (contains_set(tok, uc->ev_use_neg) != NULL ||
+       contains_set("*", uc->ev_use_neg) != NULL))
+    want = false;
+  if (uc->ev_use != NULL &&
+      contains_set(tok, uc->ev_use) != NULL)
+    want = true;
+  o = uc_pkg_flag_override(pa, tok, uc->prof_pkg_use);
+  if (o != -1)
+    want = o == 1;
+  if (conf == -1)
+  {
+    if (uc->conf_use_neg != NULL &&
+        (contains_set(tok, uc->conf_use_neg) != NULL ||
+         contains_set("*", uc->conf_use_neg) != NULL))
+      conf = 0;
+    if (uc->conf_use != NULL &&
+        contains_set(tok, uc->conf_use) != NULL)
+      conf = 1;
+  }
+  if (conf != -1)
+    want = conf == 1;
+  o = uc_pkg_flag_override(pa, tok, uc->pkg_use);
+  if (o != -1)
+    want = o == 1;
+  o = uc_pkg_flag_override(pa, tok, uc->pkg_use_force);
+  if (o == 1 ||
+      (o == -1 &&
+       uc->use_force != NULL &&
+       contains_set(tok, uc->use_force) != NULL))
+    want = true;
+  o = uc_pkg_flag_override(pa, tok, uc->pkg_use_mask);
+  if (o == 1 ||
+      (o == -1 &&
+       uc->use_mask != NULL &&
+       contains_set(tok, uc->use_mask) != NULL))
+    want = false;
+  return want;
+}
+
+int uc_use_mismatch
+(
+  struct use_ctx *uc,
+  tree_pkg_ctx   *pkg
+)
+{
+  char        *iusestr = tree_pkg_meta(pkg, Q_IUSE);
+  depend_atom *pa;
+  set         *bu;
+  set         *defs;
+  set         *seen;
+  char        *tmp;
+  char        *tok;
+  char        *sp;
+  int          mis = 0;
+
+  if (iusestr == NULL ||
+      *iusestr == '\0')
+    return 0;
+  pa   = tree_pkg_atom(pkg, true);
+  bu   = uc_flags_to_set(tree_pkg_meta(pkg, Q_USE));
+  defs = uc_iuse_defaults(iusestr);
+  seen = create_set();
+  tmp  = xstrdup(iusestr);
+  for (tok = strtok_r(tmp, " \t\n", &sp);
+       tok != NULL;
+       tok = strtok_r(NULL, " \t\n", &sp))
+  {
+    bool on;
+
+    if (*tok == '+' ||
+        *tok == '-')
+      tok++;
+    if (*tok == '\0' ||
+        contains_set(tok, seen) != NULL)
+      continue;
+    add_set(tok, seen);
+    on = contains_set(tok, bu) != NULL;
+    if (on != uc_use_wanted(uc, pa, tok, contains_set(tok, defs) != NULL))
+      mis++;
+  }
+  free(tmp);
+  free_set(bu);
+  free_set(defs);
+  free_set(seen);
+  return mis;
 }
 
 char *

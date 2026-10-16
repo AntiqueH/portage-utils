@@ -3830,6 +3830,123 @@ outa=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=n \
    ${outa} != *"ignored due to non matching USE"* ]]
 tend $? "qmerge-test: [S] check off accepts USE mismatch" || die "${outa}"
 
+# checking the behavior of a repeated IUSE flag in a binpkg.
+# portage records an inherited flag next to the ebuild's default of
+# it (IUSE "+debug ... debug").
+# default holds for the flag once
+if qm_gpkg_usable ; then
+	qm_gpkg_craft "${ROOT}/packages" dev-libs uexp-1.0 SLOT=0 'KEYWORDS=**' \
+		'IUSE=+check_flag other check_flag' 'USE=check_flag' \
+		|| die "could not create uexp-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	outp=$(QMERGE_BINPKG_RESPECT_USE=y qmerge -p "=dev-libs/uexp-1.0" 2>&1)
+	[[ ${outp} == *"would be merged"* && \
+	   ${outp} != *"non matching USE"* ]]
+	tend $? "qmerge-test: [S] a repeated IUSE flag keeps its default" || die "${outp}"
+	outp=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+		qmerge -p "=dev-libs/uexp-1.0" 2>&1)
+	[[ ${outp} == *"built with check_flag (config disables it)"* ]]
+	tend $? "qmerge-test: [S] USE=-flag has prio over a repeated IUSE default" \
+		|| die "${outp}"
+	rm -f "${ROOT}/packages/dev-libs/uexp-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+fi
+
+# we have to check if the USE precedence fits portage behavior.
+# up until now we had a bit of chaos on profile's package.use vs make.conf USE,
+# so now we actually check this sequantially, and make sure the user's package.use
+# has proio over make.conf USE.
+if qm_gpkg_usable ; then
+	qm_gpkg_craft "${ROOT}/packages" dev-libs uexq-1.0 SLOT=0 'KEYWORDS=**' \
+		'IUSE=check_flag' 'USE=check_flag' \
+		|| die "could not create uexq-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	mkdir -p cfguq/etc/portage/make.profile
+	echo 'dev-libs/uexq -check_flag' > cfguq/etc/portage/make.profile/package.use
+	printf 'ACCEPT_KEYWORDS="**"\nUSE="check_flag"\n' > cfguq/etc/portage/make.conf
+	outq=$(PORTAGE_CONFIGROOT=${PWD}/cfguq qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexq-1.0" 2>&1)
+	[[ ${outq} == *"would be merged"* && ${outq} != *"non matching USE"* ]]
+	tend $? "qmerge-test: [S] make.conf USE has prio over a profile package.use entry" \
+		|| die "${outq}"
+	echo 'dev-libs/uexq check_flag' > cfguq/etc/portage/make.profile/package.use
+	printf 'ACCEPT_KEYWORDS="**"\nUSE="-check_flag"\n' > cfguq/etc/portage/make.conf
+	outq=$(PORTAGE_CONFIGROOT=${PWD}/cfguq qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexq-1.0" 2>&1)
+	[[ ${outq} == *"built with check_flag (config disables it)"* ]]
+	tend $? "qmerge-test: [S] make.conf -flag has prio over a profile package.use entry" \
+		|| die "${outq}"
+	echo 'dev-libs/uexq check_flag' > cfguq/etc/portage/package.use
+	outq=$(PORTAGE_CONFIGROOT=${PWD}/cfguq qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexq-1.0" 2>&1)
+	[[ ${outq} == *"would be merged"* && ${outq} != *"non matching USE"* ]]
+	tend $? "qmerge-test: [S] the user's package.use has prio over make.conf USE" \
+		|| die "${outq}"
+	rm -f cfguq/etc/portage/package.use
+	printf 'ACCEPT_KEYWORDS="**"\nUSE="-*"\n' > cfguq/etc/portage/make.conf
+	outq=$(PORTAGE_CONFIGROOT=${PWD}/cfguq qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexq-1.0" 2>&1)
+	[[ ${outq} == *"built with check_flag (config disables it)"* ]]
+	tend $? "qmerge-test: [S] USE=-* in make.conf wipes a profile package.use entry too" \
+		|| die "${outq}"
+	rm -rf cfguq "${ROOT}/packages/dev-libs/uexq-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+fi
+
+# doing some tests with targets whose builds fail the USE flag checks and
+# are keep their installed copies.
+# the checkrun should say that we keep the installed copy, and all the while
+# list the ignored builds, and also next to a merge list that does not
+# contain the package.
+# first series of fixes to upgrade parity with portage. this one is regarding
+# BINPKG_RESPECT_USE="y".
+if qm_gpkg_usable ; then
+	qm_gpkg_craft "${ROOT}/packages" dev-libs uexk-1.0 SLOT=0 'KEYWORDS=**' \
+		'IUSE=check_flag' 'USE=check_flag' \
+		|| die "could not create uexk-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	kvdb="${ROOT}/var/db/pkg/dev-libs/uexk-1.0"
+	mkdir -p "${kvdb}"
+	echo dev-libs > "${kvdb}/CATEGORY"
+	echo uexk-1.0 > "${kvdb}/PF"
+	echo 0 > "${kvdb}/SLOT"
+	echo 8 > "${kvdb}/EAPI"
+	echo 1 > "${kvdb}/COUNTER"
+	echo '**' > "${kvdb}/KEYWORDS"
+	echo check_flag > "${kvdb}/IUSE"
+	: > "${kvdb}/USE"
+	: > "${kvdb}/RDEPEND"
+	: > "${kvdb}/CONTENTS"
+	outk=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+		qmerge -p dev-libs/uexk "=qmerge-test-1.3" 2>&1)
+	[[ ${outk} == *"would be merged"* && \
+	   ${outk} == *"sys-devel/qmerge-test-1.3"* && \
+	   ${outk} == *"dev-libs/uexk-1.0 stays installed"* && \
+	   ${outk} == *"=dev-libs/uexk-1.0"*"built with check_flag (config disables it)"* ]]
+	tend $? "qmerge-test: [S] a kept target lists its ignored builds next to the merge list" \
+		|| die "${outk}"
+	outk=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+		qmerge -p dev-libs/uexk 2>&1)
+	[[ ${outk} == *"dev-libs/uexk-1.0 stays installed"* && \
+	   ${outk} == *"built with check_flag (config disables it)"* ]]
+	tend $? "qmerge-test: [S] a kept target lists its ignored builds with nothing to merge" \
+		|| die "${outk}"
+	outk=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+		qmerge -pq dev-libs/uexk 2>&1)
+	[[ ${outk} != *"stays installed"* && ${outk} != *"non matching USE"* ]]
+	tend $? "qmerge-test: [S] -q keeps the kept target quiet" || die "${outk}"
+	outk=$(USE="-check_flag" QMERGE_BINPKG_RESPECT_USE=y \
+		qmerge -pu dev-libs/uexk 2>&1)
+	[[ ${outk} != *"stays installed"* && \
+	   ${outk} == *"built with check_flag (config disables it)"* ]]
+	tend $? "qmerge-test: [S] -u lists the ignored builds without the kept line" \
+		|| die "${outk}"
+	rm -rf "${kvdb}" "${ROOT}/packages/dev-libs/uexk-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+else
+	echo "${WARN}SKIPPED:${NORMAL} [S] kept target cases need zstd"
+fi
+
 # an old mismatched build of a dependency must not show up in the USE
 # block of a `qmerge <pkg>` run when the dependency is not in the qmerge run
 mkdir -p check-dep
@@ -4381,7 +4498,49 @@ outue2=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -p -N -v "=dev-libs/uex-1.0" 2>&
 tend $? "qmerge-test: [UE] declared USE_EXPAND: same pick, no warning" \
 	|| die "${outue2}"
 
-# the build the resolution displays is the build that actually merges 
+# normally USE_EXPAND values from the profile add to a IUSE default
+# we check same value from make.conf or the environment if it replaces the whole group
+if qm_gpkg_usable ; then
+	qm_gpkg_craft "${ROOT}/packages" dev-libs uexd-1.0 SLOT=0 'KEYWORDS=**' \
+		'IUSE=+foo_target_b' 'USE=foo_target_b' \
+		|| die "could not create uexd-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	mkdir -p cfgux/etc/portage/make.profile
+	printf 'ACCEPT_KEYWORDS="**"\n' > cfgux/etc/portage/make.conf
+	printf 'USE_EXPAND="FOO_TARGET"\nFOO_TARGET="a"\n' \
+		> cfgux/etc/portage/make.profile/make.defaults
+	outux=$(PORTAGE_CONFIGROOT=${PWD}/cfgux qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexd-1.0" 2>&1)
+	[[ ${outux} == *"would be merged"* && \
+	   ${outux} != *"non matching USE"* ]]
+	tend $? "qmerge-test: [UE] profile USE_EXPAND value keeps the IUSE default" \
+		|| die "${outux}"
+	printf 'ACCEPT_KEYWORDS="**"\nFOO_TARGET="a"\n' > cfgux/etc/portage/make.conf
+	outux=$(PORTAGE_CONFIGROOT=${PWD}/cfgux qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexd-1.0" 2>&1)
+	[[ ${outux} == *"built with foo_target_b (config disables it)"* ]]
+	tend $? "qmerge-test: [UE] make.conf USE_EXPAND value has prio over the IUSE default" \
+		|| die "${outux}"
+	printf 'ACCEPT_KEYWORDS="**"\n' > cfgux/etc/portage/make.conf
+	outux=$(FOO_TARGET=a PORTAGE_CONFIGROOT=${PWD}/cfgux qmerge -p \
+		--binpkg-respect-use=y "=dev-libs/uexd-1.0" 2>&1)
+	[[ ${outux} == *"built with foo_target_b (config disables it)"* ]]
+	tend $? "qmerge-test: [UE] environment USE_EXPAND value has prio over the IUSE default" \
+		|| die "${outux}"
+	printf 'USE_EXPAND="FOO_TARGET"\nFOO_TARGET="a -b"\n' \
+		> cfgux/etc/portage/make.profile/make.defaults
+	outux=$(PORTAGE_CONFIGROOT=${PWD}/cfgux qmerge -p --binpkg-respect-use=y \
+		"=dev-libs/uexd-1.0" 2>&1)
+	[[ ${outux} == *"built with foo_target_b (config disables it)"* ]]
+	tend $? "qmerge-test: [UE] a -value in the profile disables the IUSE default" \
+		|| die "${outux}"
+	rm -rf cfgux "${ROOT}/packages/dev-libs/uexd-1.0.gpkg.tar"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+else
+	echo "${WARN}SKIPPED:${NORMAL} [UE] profile USE_EXPAND cases need zstd"
+fi
+
+# the build the resolution displays is the build that actually merges
 # (both resolve through the walkthrough's instance map)
 outmi=$(yes | PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -N "=dev-libs/uex-1.0" 2>&1)
 rcmi=$?
@@ -6813,6 +6972,39 @@ tend $? "qmerge-test: [DC] world entries follow the move of the package they nam
 tend $? "qmerge-test: [DC] every repository keeps its own applied-moves marker" \
 	|| die "$(ls -a "${ROOT}/var/cache/edb" 2>&1)"
 rm -rf "${ROOT}/mra" "${ROOT}/mrb" "${PWD}/cfg-mvr" "${ROOT}"/var/cache/edb/.qmerge-moves-applied.*
+
+# adding new test for slotmoves. it should rewrite the SLOT of the installed
+# package in the old slot (other slots are left alone).
+# the slotmove is applied once.
+dc_reset
+dc_vdb dc-libs/X-1 0 ""
+dc_vdb dc-libs/X-2 2 ""
+dc_vdb dc-libs/Y-1 0 ">=dc-libs/X-1:0/0= dc-libs/X:2 !dc-libs/X:0 dc-libs/X:= dc-libs/Xy:0"
+dc_vdb dc-libs/Xy-1 0 ""
+dc_world dc-libs/X dc-libs/Y dc-libs/Xy
+mkdir -p "${PWD}/cfg-mvs/etc/portage" "${ROOT}/mrs/profiles/updates"
+printf '[DEFAULT]\nmain-repo = mrs\n[mrs]\nlocation = /mrs\n' \
+	> "${PWD}/cfg-mvs/etc/portage/repos.conf"
+printf 'slotmove dc-libs/X 0 1\n' > "${ROOT}/mrs/profiles/updates/1Q-2026"
+outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-mvs" QMERGE_MOVES=repo-only qmerge -pc 2>&1); rcdc=$?
+[[ $(cat "${ROOT}/var/db/pkg/dc-libs/X-1/SLOT") == "1" && \
+   ${outdc} == *"slotmove: dc-libs/X-1 :0 -> :1"* ]]
+tend $? "qmerge-test: [DC] a slotmove rewrites the SLOT of the installed package in the old slot" \
+	|| die "rc=${rcdc} SLOT=$(cat "${ROOT}/var/db/pkg/dc-libs/X-1/SLOT") ${outdc}"
+[[ $(cat "${ROOT}/var/db/pkg/dc-libs/X-2/SLOT") == "2" && \
+   ${outdc} != *"dc-libs/X-2 :"* ]]
+tend $? "qmerge-test: [DC] a slotmove leaves the other slots alone" \
+	|| die "rc=${rcdc} SLOT=$(cat "${ROOT}/var/db/pkg/dc-libs/X-2/SLOT") ${outdc}"
+[[ $(cat "${ROOT}/var/db/pkg/dc-libs/Y-1/RDEPEND") == \
+   ">=dc-libs/X-1:1/1= dc-libs/X:2 !dc-libs/X:1 dc-libs/X:= dc-libs/Xy:0" ]]
+tend $? "qmerge-test: [DC] a slotmove rewrites the slot pins of the dependent packages" \
+	|| die "rc=${rcdc} RDEPEND=$(cat "${ROOT}/var/db/pkg/dc-libs/Y-1/RDEPEND") ${outdc}"
+outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-mvs" QMERGE_MOVES=repo-only qmerge -pc 2>&1); rcdc=$?
+[[ $(cat "${ROOT}/var/db/pkg/dc-libs/X-1/SLOT") == "1" && \
+   ${outdc} != *"slotmove:"* ]]
+tend $? "qmerge-test: [DC] an applied slotmove is not applied twice" \
+	|| die "rc=${rcdc} ${outdc}"
+rm -rf "${ROOT}/mrs" "${PWD}/cfg-mvs" "${ROOT}"/var/cache/edb/.qmerge-moves-applied.*
 
 # vardbapi._excluded_dirs: an interrupted merge leaves <cat>/-MERGING-<pf>
 # behind, so we need to mimic this out

@@ -225,12 +225,14 @@ extern char *use_expand_unprefixed;
 extern char *var_elibc;
 extern char *var_kernel;
 extern set  *all_config_vars;
+extern set  *makeconf_vars;
 extern set  *use_mask;
 extern set  *use_force;
 
 extern array *pkg_accept_keywords;
 extern array *pkg_license;
 extern array *pkg_use;
+extern array *prof_pkg_use;
 extern array *pkg_use_force;
 extern array *pkg_use_mask;
 extern hash_t *package_masks;   /* cat/pn -> array of package.mask atoms */
@@ -241,6 +243,8 @@ extern char *port_tmpdir;
 extern set  *features;
 extern set  *ev_use;
 extern set  *ev_use_neg;
+extern set  *conf_use;
+extern set  *conf_use_neg;
 extern char *install_mask;
 extern char *binpkg_format;
 extern char *binpkg_compress;

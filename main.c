@@ -95,6 +95,8 @@ char *var_kernel;
 /* every VAR=value seen in make.globals/profiles/make.conf, raw,
  * last-wins; used e.g. to resolve USE_EXPAND member variables */
 set *all_config_vars = NULL;
+set *makeconf_vars   = NULL;
+static bool reading_makeconf = false;
 /* profile-stacked use.mask/use.force (incl. stable variants) */
 set *use_mask  = NULL;
 set *use_force = NULL;
@@ -102,6 +104,7 @@ set *use_force = NULL;
 array *pkg_accept_keywords = NULL;
 array *pkg_license = NULL;
 array *pkg_use = NULL;
+array *prof_pkg_use = NULL;
 array *pkg_use_force = NULL;
 array *pkg_use_mask = NULL;
 /* license group name -> space-joined members (GLEP 23), merged across
@@ -112,6 +115,8 @@ char *port_tmpdir;
 set  *features;
 set  *ev_use;
 set  *ev_use_neg;
+set  *conf_use;
+set  *conf_use_neg;
 char *install_mask;
 char *binpkg_format;
 char *binpkg_compress;
@@ -510,8 +515,13 @@ set_portage_env_var(env_vars *var, const char *value, const char *src)
 		if (var->type == _Q_ISTR)
 			strincr_var(var->name, value, var->value.s, &var->value_len);
 		else
+		{
 			setincr_var(value, var->value.t,
 						var->value.t == &ev_use ? &ev_use_neg : NULL);
+			if (var->value.t == &ev_use &&
+					reading_makeconf)
+				setincr_var(value, &conf_use, &conf_use_neg);
+		}
 		break;
 	}
 }
@@ -614,10 +624,16 @@ read_package_use_global_file(const char *file)
 			if (neg) {
 				del_set(flag, ev_use, &ignore);
 				ev_use_neg = add_set_unique(flag, ev_use_neg, &ignore);
+				if (conf_use != NULL)
+					del_set(flag, conf_use, &ignore);
+				conf_use_neg = add_set_unique(flag, conf_use_neg, &ignore);
 			} else {
 				ev_use = add_set_unique(flag, ev_use, &ignore);
 				if (ev_use_neg != NULL)
 					del_set(flag, ev_use_neg, &ignore);
+				conf_use = add_set_unique(flag, conf_use, &ignore);
+				if (conf_use_neg != NULL)
+					del_set(flag, conf_use_neg, &ignore);
 			}
 		}
 	}
@@ -1036,6 +1052,12 @@ read_portage_file(const char *file, enum portage_file_type type, void *data)
 					add_set_value(vname, xstrdup(s), &prev,
 								  all_config_vars);
 					free(prev);
+					if (reading_makeconf)
+					{
+						if (makeconf_vars == NULL)
+							makeconf_vars = create_set();
+						add_set(vname, makeconf_vars);
+					}
 				}
 
 				for (i = 0; vars[i].name; i++) {
@@ -1312,7 +1334,7 @@ read_portage_profile_r(const char *profile, env_vars vars[], hash_t *masks,
 	memcpy(profile_file + profile_len, "use.stable.force", sizeof("use.stable.force"));
 	read_use_flag_file(profile_file, &use_force);
 	memcpy(profile_file + profile_len, "package.use", sizeof("package.use"));
-	read_pkgcfg_file(profile_file, &pkg_use);
+	read_pkgcfg_file(profile_file, &prof_pkg_use);
 	memcpy(profile_file + profile_len, "package.use.force", sizeof("package.use.force"));
 	read_pkgcfg_file(profile_file, &pkg_use_force);
 	memcpy(profile_file + profile_len, "package.use.stable.force", sizeof("package.use.stable.force"));
@@ -1687,12 +1709,14 @@ initialize_portage_env(void)
 			vars_to_read, package_masks);
 
 	/* now read all Portage's config files */
+	reading_makeconf = true;
 	snprintf(pathbuf, sizeof(pathbuf), "%s/etc/make.conf",
 			 configroot);
 	read_portage_file(pathbuf, ENV_FILE, vars_to_read);
 	snprintf(pathbuf, sizeof(pathbuf), "%s/etc/portage/make.conf",
 			 configroot);
 	read_portage_file(pathbuf, ENV_FILE, vars_to_read);
+	reading_makeconf = false;
 
 	/* user package.mask (/etc/portage; read_portage_file recurses the dir
 	 * form).  Profile/repo masks were already loaded above; these stack. */
@@ -1722,6 +1746,7 @@ initialize_portage_env(void)
 		set_portage_env_var(&vars_to_read[0], conf_root, conf_root_src);
 
 	/* finally, check the env */
+	reading_makeconf = true;
 	for (i = 0; vars_to_read[i].name; i++)
 	{
 		if (!vars_to_read[i].fromenv)
@@ -1734,6 +1759,7 @@ initialize_portage_env(void)
 		if (s != NULL)
 			set_portage_env_var(var, s, var->name);
 	}
+	reading_makeconf = false;
 	if (cli_root != NULL)
 	{
 		set_portage_env_var(&vars_to_read[0], cli_root, "command line");
