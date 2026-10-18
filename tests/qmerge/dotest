@@ -488,6 +488,19 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	   ${out} != *"not downgraded"* ]]
 	tend $? "qmerge-test: [downgrade notice] the named version is available as a downgrade" \
 		|| die "${out}"
+	mkdir -p cfgdm/etc/portage
+	echo '>sys-devel/qmerge-test-1.3' > cfgdm/etc/portage/package.mask
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdm PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ${out} == *"[binary"*"D"*"sys-devel/qmerge-test-1.3"* && \
+	   ${out} != *"not downgraded"* ]]
+	tend $? "qmerge-test: [downgrade notice] a masked installed version is downgraded like portage does" \
+		|| die "${out}"
+	echo '>sys-devel/qmerge-test-1.3' > cfgdm/etc/portage/package.unmask
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdm PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
+	[[ ${out} == *"not downgraded"* && ${out} != *"[binary"* ]]
+	tend $? "qmerge-test: [downgrade notice] package.unmask has prio over the mask and keeps the installed version" \
+		|| die "${out}"
+	rm -rf cfgdm
 
 	# check the new "not avaiable on any binhost" message and implementation
 	out=$(PKGDIR=/pgpkgs qmerge -pu sys-devel/qmerge-test 2>&1)
@@ -556,11 +569,107 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	tend $? "qmerge-test: [unavailable list] depclean takes the list once the entry left world" \
 		|| die "rc=${rc}; ${out}"
 	out=$(PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
+	[[ $(<"${unav}") == "sys-devel/qmerge-test" ]]
+	tend $? "qmerge-test: [unavailable list] a package nothing needs stays listed" \
+		|| die "${out}; $(cat "${unav}" 2>&1)"
+	cp "${as}/packages-gpkg/sys-devel/qmerge-test-1.3.gpkg.tar" "${ROOT}/pgpkgs/sys-devel/"
+	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	out=$(PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
 	[[ ! -e ${unav} && ${out} != *"written to"* ]]
 	tend $? "qmerge-test: [unavailable list] an empty list removes the file" \
 		|| die "${out}; $(cat "${unav}" 2>&1)"
 	rm -f "${unav}.saved"
 	sed -i '/^app-misc\/unrelated$/d' "${ROOT}/var/lib/portage/world"
+	if qm_gpkg_usable ; then
+		for p in uexmid uexmid2 uexdeep ; do
+			d="${ROOT}/var/db/pkg/dev-libs/${p}-1.0"
+			mkdir -p "${d}"
+			echo dev-libs > "${d}/CATEGORY"
+			echo "${p}-1.0" > "${d}/PF"
+			echo 0 > "${d}/SLOT"
+			echo 8 > "${d}/EAPI"
+			echo 1 > "${d}/COUNTER"
+			echo '**' > "${d}/KEYWORDS"
+			: > "${d}/USE"
+			: > "${d}/IUSE"
+			: > "${d}/RDEPEND"
+			: > "${d}/CONTENTS"
+		done
+		echo dev-libs/uexmid2 > "${ROOT}/var/db/pkg/dev-libs/uexmid-1.0/RDEPEND"
+		echo dev-libs/uexdeep > "${ROOT}/var/db/pkg/dev-libs/uexmid2-1.0/RDEPEND"
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexmid-1.0 SLOT=0 'KEYWORDS=**' \
+			'RDEPEND=dev-libs/uexmid2' || die "could not create uexmid-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		echo "dev-libs/uexmid" >> "${ROOT}/var/lib/portage/world"
+		out=$(PKGDIR=/pgpkgs qmerge -puv @world 2>&1)
+		grep -qx "dev-libs/uexdeep" "${unav}" && grep -qx "dev-libs/uexmid2" "${unav}" && \
+			[[ ${out} == *"dev-libs/uexdeep-1.0 (dependency)"* ]]
+		tend $? "qmerge-test: [unavailable list] a package two levels below world is listed without -D" \
+			|| die "${out}; $(cat "${unav}" 2>&1)"
+		sed -i '/^dev-libs\/uexmid$/d' "${ROOT}/var/lib/portage/world"
+		rm -rf "${ROOT}/var/db/pkg/dev-libs/uexmid-1.0" \
+			"${ROOT}/var/db/pkg/dev-libs/uexmid2-1.0" \
+			"${ROOT}/var/db/pkg/dev-libs/uexdeep-1.0" \
+			"${ROOT}/pgpkgs/dev-libs/uexmid-1.0.gpkg.tar" "${unav}"
+	fi
+	rm -f "${ROOT}/pgpkgs/sys-devel/qmerge-test-1.3.gpkg.tar"
+	PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+
+	# probably one of the hardest features yet to test. this one will have a big impact.
+	# if we have a package masked in /etc/portage/package.mask/ with no
+	# longer acceptable build and nothing needs it, it should be
+	# removed from world file and unmerged.
+	mr_vdb() {
+		local d="${ROOT}/var/db/pkg/dev-libs/$1-1.0"
+		mkdir -p "${d}"
+		echo dev-libs > "${d}/CATEGORY"
+		echo "$1-1.0" > "${d}/PF"
+		echo 0 > "${d}/SLOT"
+		echo 8 > "${d}/EAPI"
+		echo 1 > "${d}/COUNTER"
+		echo '**' > "${d}/KEYWORDS"
+		: > "${d}/USE"
+		: > "${d}/IUSE"
+		printf '%s\n' "${2:-}" > "${d}/RDEPEND"
+		: > "${d}/CONTENTS"
+	}
+	mr_vdb uexmk
+	mr_vdb uexmn
+	mr_vdb uexmo dev-libs/uexmn
+	mr_vdb uexmp
+	printf 'dev-libs/uexmk\ndev-libs/uexmo\ndev-libs/uexmp\n' >> "${ROOT}/var/lib/portage/world"
+	mkdir -p cfgmr/etc/portage/make.profile
+	printf 'dev-libs/uexmk\ndev-libs/uexmn\n' > cfgmr/etc/portage/package.mask
+	echo 'dev-libs/uexmp' > cfgmr/etc/portage/make.profile/package.mask
+	out=$(QMERGE_MASKED_REMOVE=n PORTAGE_CONFIGROOT=${PWD}/cfgmr PKGDIR=/pgpkgs \
+		qmerge -pu @world 2>&1)
+	[[ ${out} != *"unmerge"*"dev-libs/uexmk"* && -d ${ROOT}/var/db/pkg/dev-libs/uexmk-1.0 ]]
+	tend $? "qmerge-test: [masked remove] QMERGE_MASKED_REMOVE=n keeps a masked package" \
+		|| die "${out}"
+	echo 'dev-libs/uexmk' > cfgmr/etc/portage/package.unmask
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgmr PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
+	[[ ${out} != *"unmerge"*"dev-libs/uexmk"* ]]
+	tend $? "qmerge-test: [masked remove] package.unmask has prio over the mask" \
+		|| die "${out}"
+	rm -f cfgmr/etc/portage/package.unmask
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgmr PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
+	[[ $(grep -c '^\[unmerge' <<< "${out}") -eq 1 && \
+	   ${out} == *"[unmerge  ] dev-libs/uexmk-1.0  masked in "*"package.mask, nothing needs it anymore, it will be obliterated from world file as well"* && \
+	   ${out} == *"dev-libs/uexmn-1.0 is masked in"*"dev-libs/uexmo-1.0 needs it"* && \
+	   ${out} != *"uexmp-1.0 is masked"* && ${out} != *"cannot satisfy dependency dev-libs/uexmk"* && \
+	   -d ${ROOT}/var/db/pkg/dev-libs/uexmk-1.0 ]]
+	tend $? "qmerge-test: [masked remove] pretend lists the removable one, keeps the needed and the profile-masked ones" \
+		|| die "${out}"
+	out=$(yes | PORTAGE_CONFIGROOT=${PWD}/cfgmr PKGDIR=/pgpkgs qmerge -u @world 2>&1); rc=$?
+	[[ ! -d ${ROOT}/var/db/pkg/dev-libs/uexmk-1.0 && -d ${ROOT}/var/db/pkg/dev-libs/uexmn-1.0 && \
+	   -d ${ROOT}/var/db/pkg/dev-libs/uexmp-1.0 ]] && \
+		! grep -qx "dev-libs/uexmk" "${ROOT}/var/lib/portage/world" && \
+		grep -qx "dev-libs/uexmo" "${ROOT}/var/lib/portage/world"
+	tend $? "qmerge-test: [masked remove] the world update unmerges it and drops its world entry" \
+		|| die "rc=${rc} $(ls "${ROOT}/var/db/pkg/dev-libs" 2>&1) world: $(cat "${ROOT}/var/lib/portage/world") ${out}"
+	rm -rf cfgmr "${ROOT}/var/db/pkg/dev-libs/uexmn-1.0" "${ROOT}/var/db/pkg/dev-libs/uexmo-1.0" \
+		"${ROOT}/var/db/pkg/dev-libs/uexmp-1.0"
+	sed -i '/^dev-libs\/uexm[kop]$/d' "${ROOT}/var/lib/portage/world"
 
 	if qm_gpkg_usable ; then
 		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs qlive-1.0 SLOT=0 'KEYWORDS=**' \

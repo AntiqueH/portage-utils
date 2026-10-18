@@ -45,6 +45,7 @@ char *qmerge_moves_conf;
 char *qmerge_local_priority_conf;
 char *qmerge_lenient_conf;
 char *qmerge_keep_going_conf;
+char *qmerge_masked_remove_conf;
 char *qmerge_respect_use_conf;
 char *qmerge_rebuilt_conf;
 bool qnews_enable;
@@ -1325,6 +1326,8 @@ read_portage_profile_r(const char *profile, env_vars vars[], hash_t *masks,
 	read_portage_file(profile_file, ENV_FILE, vars);
 	memcpy(profile_file + profile_len, "package.mask", sizeof("package.mask"));
 	read_portage_file(profile_file, PMASK_FILE, masks);
+	memcpy(profile_file + profile_len, "package.unmask", sizeof("package.unmask"));
+	read_portage_file(profile_file, PMASK_FILE, package_unmasks);
 	memcpy(profile_file + profile_len, "use.mask", sizeof("use.mask"));
 	read_use_flag_file(profile_file, &use_mask);
 	memcpy(profile_file + profile_len, "use.stable.mask", sizeof("use.stable.mask"));
@@ -1437,6 +1440,7 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  QMERGE_LOCAL_PRIORITY, qmerge_local_priority_conf, true, "")
 	_Q_EVS(STR,  QMERGE_LENIENT_UPGRADE, qmerge_lenient_conf, true, "")
 	_Q_EVS(STR,  QMERGE_KEEP_GOING,    qmerge_keep_going_conf, true, "")
+	_Q_EVS(STR,  QMERGE_MASKED_REMOVE, qmerge_masked_remove_conf, true, "")
 	_Q_EVS(STR,  QMERGE_BINPKG_RESPECT_USE, qmerge_respect_use_conf, true, "")
 	_Q_EVS(STR,  QMERGE_REBUILT_BINARIES, qmerge_rebuilt_conf, true, "")
 	_Q_EVS(STR,  BINPKG_GPG_VERIFY_GPG_HOME, binpkg_gpg_verify_gpg_home, true,
@@ -1691,6 +1695,9 @@ initialize_portage_env(void)
 				snprintf(pathbuf, sizeof(pathbuf), "%s/profiles/package.mask",
 						(char *)array_get(overlays, n));
 				read_portage_file(pathbuf, PMASK_FILE, package_masks);
+				snprintf(pathbuf, sizeof(pathbuf), "%s/profiles/package.unmask",
+						(char *)array_get(overlays, n));
+				read_portage_file(pathbuf, PMASK_FILE, package_unmasks);
 				break;
 			}
 		}

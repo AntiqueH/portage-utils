@@ -188,6 +188,7 @@ extern char *collision_ignore;
 extern char *qmerge_local_priority_conf;
 extern char *qmerge_lenient_conf;
 extern char *qmerge_keep_going_conf;
+extern char *qmerge_masked_remove_conf;
 extern char *qmerge_respect_use_conf;
 extern char *qmerge_rebuilt_conf;
 extern char *binpkg_gpg_verify_gpg_home;

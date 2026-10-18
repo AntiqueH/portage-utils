@@ -5319,6 +5319,45 @@ static hash_t *qm_use_rejects = NULL;
 static const char *qm_bid_shown(const char *s, char *out, size_t olen);
 static hash_t *qm_use_accepts = NULL;
 static set    *qm_kept_targets = NULL;
+static set    *qm_mr_gone  = NULL;
+static array  *qm_mr_lines = NULL;
+static array  *qm_mr_kept  = NULL;
+static int     qm_masked_remove = -1;
+
+static bool qm_mr_hidden
+(
+  tree_pkg_ctx *pkg
+)
+{
+  atom_ctx *a;
+  char      cpv[512];
+
+  if (qm_mr_gone == NULL ||
+      pkg == NULL)
+    return false;
+  a = tree_pkg_atom(pkg, false);
+  if (a == NULL ||
+      a->CATEGORY == NULL ||
+      a->PF == NULL)
+    return false;
+  snprintf(cpv, sizeof(cpv), "%s/%s", a->CATEGORY, a->PF);
+  return contains_set(cpv, qm_mr_gone) != NULL;
+}
+
+static bool qm_mr_pending
+(
+  void
+)
+{
+  return qm_mr_gone != NULL &&
+         cnt_set(qm_mr_gone) > 0;
+}
+
+static void qm_masked_remove_select(set *todo);
+static void qm_mr_print_plan(void);
+static void qm_mr_print_notice(void);
+static void qm_masked_remove_run(void);
+static void qm_mr_reset(void);
 
 static void
 qm_use_gate_key(atom_ctx *patom, char *key, size_t keylen)
@@ -5759,6 +5798,8 @@ qm_linkage_cb(tree_pkg_ctx *pkg, void *priv)
 	size_t       len = 0;
 
 	if (a == NULL || a->CATEGORY == NULL || a->PF == NULL)
+		return 0;
+	if (qm_mr_hidden(pkg))
 		return 0;
 	snprintf(cpv, sizeof(cpv), "%s/%s", a->CATEGORY, a->PF);
 	snprintf(path, sizeof(path), "%s%s/%s/%s/NEEDED.ELF.2",
@@ -7725,6 +7766,25 @@ best_version(const depend_atom *atom, int mode)
 				TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
 		if (array_cnt(t) > 0)
 			tmv = array_get(t, 0);
+		if (tmv != NULL &&
+				qm_mr_hidden(tmv))
+		{
+			size_t        ti;
+			tree_pkg_ctx *tp;
+
+			array_free(t);
+			t   = tree_match_atom(vdb, atom,
+					TREE_MATCH_LATEST  |
+					TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
+			tmv = NULL;
+			array_for_each(t, ti, tp)
+			{
+				if (qm_mr_hidden(tp))
+					continue;
+				tmv = tp;
+				break;
+			}
+		}
 		array_free(t);
 	}
 
@@ -10020,7 +10080,8 @@ static void qm_print_ignored_downgrades
       array_for_each(qm_dg_ignored, n, line)
         printf("    %s\n", line);
       printf("    to downgrade one of them, install the version: "
-             "qmerge %s\n\n", qm_dg_example);
+             "qmerge %s\n    or mask the installed version in "
+             "package.mask\n\n", qm_dg_example);
     }
   }
 
@@ -10173,6 +10234,18 @@ static char *qm_write_unavailable
 /* the notice for what qm_note_no_build collected: one line with the
  * count, or with -v every package and what to do about it.
  * -q prints nothing. the entries are dropped afterwards. */
+static int qm_nb_scan_cb
+(
+  tree_pkg_ctx *pkg,
+  void         *priv
+)
+{
+  (void)priv;
+  if (!qm_mr_hidden(pkg))
+    qm_note_no_build(pkg);
+  return 0;
+}
+
 static void qm_print_no_builds
 (
   void
@@ -10184,7 +10257,16 @@ static void qm_print_no_builds
   char   *wpath = NULL;
 
   if (qm_nb_world_run)
+  {
+    tree_ctx *vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+
+    if (vdb != NULL)
+    {
+      tree_foreach_pkg_fast(vdb, qm_nb_scan_cb, NULL, NULL);
+      tree_close(vdb);
+    }
     wpath = qm_write_unavailable();
+  }
   if (qm_nb_gone != NULL)
   {
     cnt = array_cnt(qm_nb_gone);
@@ -10345,6 +10427,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 			 * hold the installed copy instead. */
 			if (update_only && inst != NULL &&
 					atom_satisfied_by(atom, inst, parent_use) &&
+					!binpkg_masked(tree_pkg_atom(inst, true)) &&
 					!qm_bin_newer(bin, inst) &&
 					!(newuse && qm_use_changed(bin, inst) &&
 					  !qm_bin_newer(inst, bin)) &&
@@ -10386,6 +10469,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		}
 	} else if (deep && bin != NULL && atom_satisfied_by(atom, bin, parent_use) &&
 			   (qm_bin_newer(bin, inst) ||
+				(inst != NULL &&
+				 binpkg_masked(tree_pkg_atom(inst, true))) ||
 				(newuse && inst != NULL && qm_use_changed(bin, inst) &&
 				 !qm_bin_newer(inst, bin)) ||
 				(rebuilt_bins && inst != NULL &&
@@ -10453,7 +10538,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		/* invalidates inst (used) */
 		cur = best_version(ratom, BV_INSTALLED);
 		if (cur != NULL &&
-				qm_bin_newer(cur, bin))
+				qm_bin_newer(cur, bin) &&
+				!binpkg_masked(tree_pkg_atom(cur, true)))
 		{
 			/* installed slot version is newer -> keep it */
 			provider = cur;
@@ -12096,6 +12182,8 @@ qm_vdb_freeze_cb(tree_pkg_ctx *pkg, void *priv)
 	atom_ctx        *A;
 	struct qm_vpkg  *vp;
 
+	if (qm_mr_hidden(pkg))
+		return 0;
 	d = tree_pkg_meta(pkg, Q_RDEPEND);
 	if (d == NULL || *d == '\0')
 		return 0;
@@ -13913,6 +14001,8 @@ qm_exec_round(struct qm_plan *plan)
 	qm_print_deadpins(plan->merge);
 	qm_print_ignored_downgrades();
 	qm_print_no_builds();
+	qm_mr_print_plan();
+	qm_mr_print_notice();
 	if (!pretend &&
 			!fetch_only)
 		qm_tmpdir_check(plan->merge);
@@ -13933,6 +14023,7 @@ qm_exec_round(struct qm_plan *plan)
 		array_free(bk);
 		unmerge_packages(qm_soft_unmerge);
 	}
+	qm_masked_remove_run();
 	/* yank everything down concurrently first. */
 	if (qmerge_prefetch)
 		qm_prefetch(plan->merge, qmerge_jobs);
@@ -14388,6 +14479,384 @@ qm_kg_summary(void)
 	return true;
 }
 
+static void *qmerge_add_set_system(void *data, char *buf);
+
+struct qm_mr_cand {
+  char     *cpv;
+  char     *cp;
+  char     *file;
+  atom_ctx *atom;
+  bool      world;
+};
+
+struct qm_mr_need {
+  array  *cands;
+  set    *gone;
+  hash_t *who;
+  bool    changed;
+};
+
+static void qm_mr_cand_free
+(
+  void *p
+)
+{
+  struct qm_mr_cand *c = p;
+
+  free(c->cpv);
+  free(c->cp);
+  free(c->file);
+  atom_implode(c->atom);
+  free(c);
+}
+
+static int qm_mr_collect_cb
+(
+  tree_pkg_ctx *pkg,
+  void         *priv
+)
+{
+  array             *cands = priv;
+  atom_ctx          *a     = tree_pkg_atom(pkg, true);
+  struct qm_mr_cand *c;
+  atom_ctx          *q;
+  char               file[_Q_PATH_MAX];
+  char               cps[600];
+  size_t             lno;
+  size_t             cb;
+  size_t             ce;
+
+  if (a == NULL ||
+      a->CATEGORY == NULL ||
+      a->PN == NULL ||
+      a->PF == NULL)
+    return 0;
+  if (!binpkg_masked(a))
+    return 0;
+  if (!qm_mask_source(a, file, sizeof(file), &lno, &cb, &ce) ||
+      strstr(file, "/etc/portage/package.mask") == NULL)
+    return 0;
+  snprintf(cps, sizeof(cps), "%s/%s%s%s", a->CATEGORY, a->PN,
+           a->SLOT != NULL ? ":" : "", a->SLOT != NULL ? a->SLOT : "");
+  q = atom_explode(cps);
+  if (q != NULL)
+  {
+    tree_pkg_ctx *bin = best_version(q, BV_BINPKG);
+
+    atom_implode(q);
+    if (bin != NULL)
+      return 0;
+  }
+  c        = xzalloc(sizeof(*c));
+  c->cpv   = xasprintf("%s/%s", a->CATEGORY, a->PF);
+  c->cp    = xasprintf("%s/%s", a->CATEGORY, a->PN);
+  c->file  = xstrdup(file);
+  c->atom  = atom_clone(a);
+  c->world = qm_world_has_atom(tree_pkg_atom(pkg, false));
+  array_append(cands, c);
+  return 0;
+}
+
+static int qm_mr_need_cb
+(
+  tree_pkg_ctx *pkg,
+  void         *priv
+)
+{
+  static const enum tree_pkg_meta_keys keys[] = {
+    Q_RDEPEND, Q_PDEPEND, Q_IDEPEND, Q_DEPEND, Q_BDEPEND
+  };
+  struct qm_mr_need *nd = priv;
+  atom_ctx          *pa = tree_pkg_atom(pkg, false);
+  char               pcpv[512];
+  set               *use;
+  size_t             di;
+
+  if (pa == NULL ||
+      pa->CATEGORY == NULL ||
+      pa->PF == NULL)
+    return 0;
+  snprintf(pcpv, sizeof(pcpv), "%s/%s", pa->CATEGORY, pa->PF);
+  if (contains_set(pcpv, nd->gone) != NULL)
+    return 0;
+  use = usedep_flags_to_set(tree_pkg_meta(pkg, Q_USE) ? : "");
+  for (di = 0; di < ARRAY_SIZE(keys); di++)
+  {
+    char       *d = tree_pkg_meta(pkg, keys[di]);
+    dep_node_t *t;
+    array      *flat;
+    size_t      i;
+    atom_ctx   *A;
+
+    if (d == NULL ||
+        *d == '\0' ||
+        strchr(d, '/') == NULL)
+      continue;
+    t = dep_grow_tree(d);
+    if (t == NULL)
+      continue;
+    dep_prune_use(t, use);
+    flat = dep_flatten_tree(t);
+    array_for_each(flat, i, A)
+    {
+      size_t             ci;
+      struct qm_mr_cand *c;
+
+      if (A == NULL ||
+          A->blocker != ATOM_BL_NONE ||
+          A->CATEGORY == NULL ||
+          A->PN == NULL)
+        continue;
+      array_for_each(nd->cands, ci, c)
+      {
+        if (contains_set(c->cpv, nd->gone) == NULL)
+          continue;
+        if (strcmp(A->CATEGORY, c->atom->CATEGORY) != 0 ||
+            strcmp(A->PN, c->atom->PN) != 0)
+          continue;
+        if (atom_compare(c->atom, A) != EQUAL)
+          continue;
+        del_set(c->cpv, nd->gone, &nd->changed);
+        nd->who     = hash_add(nd->who, c->cpv, xstrdup(pcpv), NULL);
+        nd->changed = true;
+      }
+    }
+    array_free(flat);
+    dep_burn_tree(t);
+  }
+  free_set(use);
+  return 0;
+}
+
+static bool qm_mr_in_system
+(
+  const atom_ctx *a,
+  set            *sys
+)
+{
+  array  *keys = set_keys(sys);
+  size_t  i;
+  char   *k;
+  bool    in = false;
+
+  array_for_each(keys, i, k)
+  {
+    atom_ctx *sa = atom_explode(k);
+
+    if (sa == NULL)
+      continue;
+    if (atom_compare(a, sa) == EQUAL)
+      in = true;
+    atom_implode(sa);
+    if (in)
+      break;
+  }
+  array_free(keys);
+  return in;
+}
+
+static void qm_masked_remove_select
+(
+  set *todo
+)
+{
+  tree_ctx          *vdb;
+  array             *cands = array_new();
+  struct qm_mr_need  nd;
+  set               *sys;
+  size_t             i;
+  struct qm_mr_cand *c;
+
+  if (qm_masked_remove != 1 ||
+      !update_only ||
+      !qm_nb_world_run ||
+      qm_mr_gone != NULL ||
+      todo == NULL)
+  {
+    array_free(cands);
+    return;
+  }
+  vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+  if (vdb == NULL)
+  {
+    array_free(cands);
+    return;
+  }
+  tree_foreach_pkg_fast(vdb, qm_mr_collect_cb, cands, NULL);
+  if (array_cnt(cands) == 0)
+  {
+    tree_close(vdb);
+    array_free(cands);
+    return;
+  }
+  nd.cands   = cands;
+  nd.gone    = create_set();
+  nd.who     = hash_new();
+  nd.changed = false;
+  sys        = q_profile_follow(configroot, "packages",
+                                qmerge_add_set_system, create_set());
+  array_for_each(cands, i, c)
+  {
+    if (qm_mr_in_system(c->atom, sys))
+      nd.who = hash_add(nd.who, c->cpv, xstrdup("@system"), NULL);
+    else
+      add_set(c->cpv, nd.gone);
+  }
+  free_set(sys);
+  do
+  {
+    nd.changed = false;
+    tree_foreach_pkg_fast(vdb, qm_mr_need_cb, &nd, NULL);
+  }
+  while (nd.changed);
+  tree_close(vdb);
+
+  array_for_each(cands, i, c)
+  {
+    const char *w = hash_get(nd.who, c->cpv);
+
+    if (w != NULL)
+    {
+      if (qm_mr_kept == NULL)
+        qm_mr_kept = array_new();
+      array_append(qm_mr_kept,
+                   xasprintf("%s is masked in %s but %s needs it: kept",
+                             c->cpv, c->file, w));
+    }
+    else if (contains_set(c->cpv, nd.gone) != NULL)
+    {
+      if (qm_mr_gone == NULL)
+        qm_mr_gone = create_set();
+      add_set(c->cpv, qm_mr_gone);
+      if (qm_mr_lines == NULL)
+        qm_mr_lines = array_new();
+      array_append(qm_mr_lines,
+                   xasprintf("%s  masked in %s, nothing needs it anymore%s",
+                             c->cpv, c->file,
+                             c->world ? ", it will be obliterated from "
+                                        "world file as well" : ""));
+    }
+  }
+  if (qm_mr_gone != NULL)
+  {
+    array  *tk = set_keys(todo);
+    size_t  ti;
+    char   *k;
+
+    array_for_each(tk, ti, k)
+    {
+      atom_ctx *ka = atom_explode(k);
+      bool      ok;
+
+      if (ka == NULL)
+        continue;
+      array_for_each(cands, i, c)
+      {
+        if (contains_set(c->cpv, qm_mr_gone) != NULL &&
+            atom_compare(c->atom, ka) == EQUAL)
+        {
+          del_set(k, todo, &ok);
+          break;
+        }
+      }
+      atom_implode(ka);
+    }
+    array_free(tk);
+  }
+  {
+    array *wv = hash_values(nd.who);
+
+    array_deepfree(wv, free);
+    hash_free(nd.who);
+  }
+  free_set(nd.gone);
+  array_deepfree(cands, qm_mr_cand_free);
+}
+
+static void qm_mr_print_plan
+(
+  void
+)
+{
+  size_t  i;
+  char   *l;
+
+  if (qm_mr_lines == NULL)
+    return;
+  printf("\n");
+  array_for_each(qm_mr_lines, i, l)
+    printf("[%sunmerge%s  ] %s\n", RED, NORM, l);
+  printf("           to keep one of them, unmask it in "
+         "/etc/portage/package.unmask\n");
+}
+
+static void qm_mr_print_notice
+(
+  void
+)
+{
+  size_t  i;
+  char   *l;
+
+  if (qm_mr_kept == NULL ||
+      qm_user_quiet)
+    return;
+  printf("\n%s!!!%s The following masked installed packages stay, "
+         "something still needs them:\n", RED, NORM);
+  array_for_each(qm_mr_kept, i, l)
+    printf("    %s\n", l);
+  printf("\n");
+}
+
+static void qm_masked_remove_run
+(
+  void
+)
+{
+  set    *todo;
+  array  *keys;
+  size_t  i;
+  char   *cpv;
+
+  if (qm_mr_gone == NULL ||
+      cnt_set(qm_mr_gone) == 0 ||
+      pretend)
+    return;
+  todo = create_set();
+  keys = set_keys(qm_mr_gone);
+  array_sort(keys, qm_strcmp_cb);
+  array_for_each(keys, i, cpv)
+  {
+    char ex[560];
+
+    snprintf(ex, sizeof(ex), "=%s", cpv);
+    add_set(ex, todo);
+    qprintf("%s<<<%s %s (masked, nothing needs it)\n", RED, NORM, cpv);
+  }
+  array_free(keys);
+  unmerge_packages(todo);
+  qm_world_clean_unmerged();
+  free_set(todo);
+  free_set(qm_mr_gone);
+  qm_mr_gone = NULL;
+}
+
+static void qm_mr_reset
+(
+  void
+)
+{
+  if (qm_mr_gone != NULL)
+    free_set(qm_mr_gone);
+  qm_mr_gone = NULL;
+  if (qm_mr_lines != NULL)
+    array_deepfree(qm_mr_lines, free);
+  qm_mr_lines = NULL;
+  if (qm_mr_kept != NULL)
+    array_deepfree(qm_mr_kept, free);
+  qm_mr_kept = NULL;
+}
+
 static int
 qm_resolve_and_merge(set *todo)
 {
@@ -14420,6 +14889,7 @@ qm_resolve_and_merge(set *todo)
 		uni_budget = QM_MAX_FIXPOINT;
 	qm_unify_round = 0;
 
+	qm_masked_remove_select(todo);
 	keys = set_keys(todo);
 
 resolve_again:
@@ -14601,7 +15071,8 @@ resolve_again:
 	qm_keypkg_promote(&plan);
 
 	if (array_cnt(plan.merge) == 0 && qm_l0_targets > 0 &&
-			qm_l0_held == qm_l0_targets && qm_unsat_cnt == 0) {
+			qm_l0_held == qm_l0_targets && qm_unsat_cnt == 0 &&
+			!qm_mr_pending()) {
 		if (pretend)
 			printf("These are the packages that would be merged, "
 				   "in order:\n\n");
@@ -14624,6 +15095,20 @@ resolve_again:
 		qm_print_deadpins(plan.merge);
 		qm_print_ignored_downgrades();
 		qm_print_no_builds();
+		qm_mr_print_notice();
+		if (qm_mr_pending())
+		{
+			if (pretend)
+				printf("These are the packages that would be merged, "
+					   "in order:\n");
+			qm_mr_print_plan();
+			qm_masked_remove_run();
+			array_deepfree(plan.merge, free);
+			free_set(plan.in_merge);
+			free_set(plan.examined);
+			qm_plan_inst_free();
+			return EXIT_SUCCESS;
+		}
 		if (!qm_kg_summary())
 			warn("nothing to merge (no candidates could be satisfied)");
 		array_deepfree(plan.merge, free);
@@ -14884,6 +15369,8 @@ resolve_again:
 		qm_print_deadpins(plan.merge);
 		qm_print_ignored_downgrades();
 		qm_print_no_builds();
+		qm_mr_print_plan();
+		qm_mr_print_notice();
 		if (!qm_soname_sweep(plan.merge))
 			rc = EXIT_FAILURE;
 		/* surface subslot conflicts in the merge list too, like emerge does.
@@ -29361,6 +29848,17 @@ int qmerge_main(int argc, char **argv)
 		else
 			qm_keep_going = 0;
 	}
+	if (qm_masked_remove < 0)
+	{
+		const char *mv = qmerge_masked_remove_conf;
+
+		if (mv != NULL &&
+				*mv != '\0')
+			qm_masked_remove = (*mv == 'n' || *mv == 'N' || *mv == '0' ||
+								*mv == 'f' || *mv == 'F') ? 0 : 1;
+		else
+			qm_masked_remove = 1;
+	}
 
 	/* QMERGE_SLOT_UNIFY (default 1, env prio over make.conf) */
 	if (qm_slot_unify < 0) {
@@ -29883,6 +30381,7 @@ int qmerge_main(int argc, char **argv)
 		qmerge_vdb_tree = NULL;
 	}
 	qm_nb_world_run = false;
+	qm_mr_reset();
 
 	return ret;
 }
