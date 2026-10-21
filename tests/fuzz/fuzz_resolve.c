@@ -256,6 +256,7 @@ int LLVMFuzzerTestOneInput
     { "qmerge", "-puDN", "@world", NULL },
     { "qmerge", "-pv", "dc-libs/N", "dc-libs/M", NULL },
     { "qmerge", "-s", "dc", NULL },
+    { "qmerge", "-svv", "dc", NULL },
     { "qmerge", "-pn", "dc-libs/N", "dc-libs/D", NULL },
     { "qmerge", "-puDNv", "@system", "dc-libs/N", NULL },
     { "qmerge", "-pO", "=dc-libs/M-2", NULL },

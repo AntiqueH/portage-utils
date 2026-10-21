@@ -115,7 +115,12 @@ qm_gpkg_craft() {
 	done
 	( cd "${w}/md" && tar --format=ustar -cf md.tar metadata && \
 	  zstd -q -f md.tar -o "../${pf}/metadata.tar.zst" ) || return 1
-	cp "${w}/qmerge-test-1.3/image.tar.zst" "${w}/${pf}/" || return 1
+	if [[ -n ${QM_GPKG_IMAGE} ]] ; then
+		( cd "${QM_GPKG_IMAGE}" && tar --format=ustar -cf "${w}/img.tar" image && \
+		  zstd -q -f "${w}/img.tar" -o "${w}/${pf}/image.tar.zst" ) || return 1
+	else
+		cp "${w}/qmerge-test-1.3/image.tar.zst" "${w}/${pf}/" || return 1
+	fi
 	: > "${w}/${pf}/gpkg-1" || return 1
 	( cd "${w}/${pf}" && for kv in gpkg-1 metadata.tar.zst image.tar.zst ; do
 		printf 'DATA %s %s SHA512 %s\n' "${kv}" "$(stat -c %s "${kv}")" \
@@ -646,6 +651,11 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	[[ ${out} != *"unmerge"*"dev-libs/uexmk"* && -d ${ROOT}/var/db/pkg/dev-libs/uexmk-1.0 ]]
 	tend $? "qmerge-test: [masked remove] QMERGE_MASKED_REMOVE=n keeps a masked package" \
 		|| die "${out}"
+	out=$(QMERGE_MASKED_REMOVE=n PORTAGE_CONFIGROOT=${PWD}/cfgmr PKGDIR=/pgpkgs \
+		qmerge -pu --masked-remove @world 2>&1)
+	[[ $(grep -c '^\[unmerge' <<< "${out}") -eq 1 && ${out} == *"[unmerge  ] dev-libs/uexmk-1.0"* ]]
+	tend $? "qmerge-test: [masked remove] --masked-remove has priority over QMERGE_MASKED_REMOVE=n" \
+		|| die "${out}"
 	echo 'dev-libs/uexmk' > cfgmr/etc/portage/package.unmask
 	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgmr PKGDIR=/pgpkgs qmerge -pu @world 2>&1)
 	[[ ${out} != *"unmerge"*"dev-libs/uexmk"* ]]
@@ -670,6 +680,169 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	rm -rf cfgmr "${ROOT}/var/db/pkg/dev-libs/uexmn-1.0" "${ROOT}/var/db/pkg/dev-libs/uexmo-1.0" \
 		"${ROOT}/var/db/pkg/dev-libs/uexmp-1.0"
 	sed -i '/^dev-libs\/uexm[kop]$/d' "${ROOT}/var/lib/portage/world"
+
+	# test search -s on a slotted package: one line per slot, obj elem compared with the
+	# installed member of its slot, while unslotted package should stay on one line
+	if qm_gpkg_usable ; then
+		sl_vdb() {
+			local d="${ROOT}/var/db/pkg/dev-libs/uexs-$1"
+			mkdir -p "${d}"
+			echo dev-libs > "${d}/CATEGORY"
+			echo "uexs-$1" > "${d}/PF"
+			echo "$2" > "${d}/SLOT"
+			echo 8 > "${d}/EAPI"
+			echo 1 > "${d}/COUNTER"
+			echo '**' > "${d}/KEYWORDS"
+			: > "${d}/USE"
+			: > "${d}/IUSE"
+			: > "${d}/RDEPEND"
+			: > "${d}/CONTENTS"
+		}
+		sl_vdb 1.0 1
+		sl_vdb 2.0 2
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexs-1.0 SLOT=1 'KEYWORDS=**' \
+			|| die "could not create uexs-1.0.gpkg.tar"
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexs-1.1 SLOT=1 'KEYWORDS=**' \
+			|| die "could not create uexs-1.1.gpkg.tar"
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexs-2.0 SLOT=2 'KEYWORDS=**' \
+			|| die "could not create uexs-2.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		out=$(PKGDIR=/pgpkgs qmerge -s dev-libs/uexs 2>&1)
+		[[ $(grep -c '^\[binary' <<< "${out}") -eq 2 && \
+		   ${out} == *"U  ] dev-libs/uexs-1.1"*":1"*"[1.0:1]"* && \
+		   ${out} == *"R    ] dev-libs/uexs-2.0"*":2"* && ${out} != *"?    ]"* ]]
+		tend $? "qmerge-test: [SR] a slotted package lists one line per slot, compared within the slot" \
+			|| die "${out}"
+		out=$(PKGDIR=/pgpkgs qmerge -svv dev-libs/uexs 2>&1)
+		[[ $(grep -c '^\[binary' <<< "${out}") -eq 3 && \
+		   ${out} == *"R    ] dev-libs/uexs-1.0"*":1"* && \
+		   ${out} == *"U  ] dev-libs/uexs-1.1"*":1"* && \
+		   ${out} == *"R    ] dev-libs/uexs-2.0"*":2"* && ${out} != *"?    ]"* ]]
+		tend $? "qmerge-test: [SR] -vv compares every instance with the installed member of its slot" \
+			|| die "${out}"
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexu-1.0 SLOT=0 'KEYWORDS=**' \
+			|| die "could not create uexu-1.0.gpkg.tar"
+		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexu-1.1 SLOT=0 'KEYWORDS=**' \
+			|| die "could not create uexu-1.1.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		out=$(PKGDIR=/pgpkgs qmerge -s dev-libs/uexu 2>&1)
+		[[ $(grep -c '^\[binary' <<< "${out}") -eq 1 && ${out} == *"N     ] dev-libs/uexu-1.1"* ]]
+		tend $? "qmerge-test: [SR] unslotted package with two versions gets one line" \
+			|| die "${out}"
+		mkdir -p "${ROOT}/srstore/dev-libs" cfgsr/etc/portage/binrepos.conf
+		cp "${ROOT}/pgpkgs/dev-libs/uexs-2.0.gpkg.tar" "${ROOT}/srstore/dev-libs/"
+		printf '[srrepo]\npriority = 1\nlocation = /srstore\nsync-uri = http://sr.test:1/\n' \
+			> cfgsr/etc/portage/binrepos.conf/sr.conf
+		qm_fake_fetch srstore "http://sr.test:1/"
+		out=$(PORTAGE_CONFIGROOT=${PWD}/cfgsr PKGDIR=/pgpkgs qmerge -sv dev-libs/uexs 2>&1)
+		[[ $(grep -c '^\[binary' <<< "${out}") -eq 3 && ${out} != *"?    ]"* && \
+		   ${out} == *"R    ] dev-libs/uexs-2.0"*"[srrepo]"* && \
+		   ${out} == *"R    ] dev-libs/uexs-2.0"*"[@local]"*"(not selected: lower priority)"* && \
+		   ${out} == *"U  ] dev-libs/uexs-1.1"*"[1.0:1]"* ]]
+		tend $? "qmerge-test: [SR] -v with two repos: other-repo lines stay in the pick's slot, the other slot once" \
+			|| die "${out}"
+		rm -rf cfgsr "${ROOT}/srstore" "${ROOT}/var/cache/edb/binhost/sr.test"
+		rm -rf "${ROOT}/var/db/pkg/dev-libs/uexs-1.0" "${ROOT}/var/db/pkg/dev-libs/uexs-2.0" \
+			"${ROOT}/pgpkgs/dev-libs/uexs-1.0.gpkg.tar" "${ROOT}/pgpkgs/dev-libs/uexs-1.1.gpkg.tar" \
+			"${ROOT}/pgpkgs/dev-libs/uexs-2.0.gpkg.tar" "${ROOT}/pgpkgs/dev-libs/uexu-1.0.gpkg.tar" \
+			"${ROOT}/pgpkgs/dev-libs/uexu-1.1.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	fi
+
+	# checking a thorough dependency resolve ordering.
+	# we have to do extensive checks even after 1 year at least for the same
+	# exact mechanism. we did not finish the original work of reimplementing
+	# portage dependency resolution up to the last point yet.
+	if qm_gpkg_usable ; then
+		bk_img() {
+			local d=$1
+			shift
+			rm -rf "${d}"
+			mkdir -p "${d}/image/usr/share/uexb"
+			for f in "$@" ; do
+				echo "${f}" > "${d}/image/usr/share/uexb/${f}"
+			done
+		}
+		bk_img imgba1 own-a.txt moved.txt
+		bk_img imgba2 own-a.txt
+		bk_img imgbb1 own-b.txt
+		bk_img imgbb2 own-b.txt moved.txt
+		bk_img imgbc1 moved.txt
+		bk_img imgbd1 own-d.txt shared.txt
+		bk_img imgbd2 own-d.txt
+		bk_img imgbe1 own-e.txt shared.txt
+		bk_img imgpa1 own-pa.txt
+		bk_img imgpb1 own-pb.txt
+		QM_GPKG_IMAGE=${PWD}/imgba1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexba-1.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= || die "could not create uexba-1.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgba2 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexba-2.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= || die "could not create uexba-2.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgbb1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexbb-1.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= || die "could not create uexbb-1.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgbb2 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexbb-2.0 \
+			SLOT=0 'KEYWORDS=**' 'RDEPEND=!<dev-libs/uexba-2.0' \
+			|| die "could not create uexbb-2.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgbc1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexbc-1.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= || die "could not create uexbc-1.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgbd1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexbd-1.0 \
+			SLOT=0 'KEYWORDS=**' 'RDEPEND=!dev-libs/uexbe' \
+			|| die "could not create uexbd-1.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgbd2 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexbd-2.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= || die "could not create uexbd-2.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgbe1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexbe-1.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= || die "could not create uexbe-1.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgpa1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexpa-1.0 \
+			SLOT=0 'KEYWORDS=**' 'RDEPEND=dev-libs/uexpb' \
+			|| die "could not create uexpa-1.0.gpkg.tar"
+		QM_GPKG_IMAGE=${PWD}/imgpb1 qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexpb-1.0 \
+			SLOT=0 'KEYWORDS=**' RDEPEND= 'PDEPEND=dev-libs/uexpa' \
+			|| die "could not create uexpb-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		bkd=${ROOT}/usr/share/uexb
+		out=$(yes | PKGDIR=/pgpkgs qmerge =dev-libs/uexba-1.0 =dev-libs/uexbb-1.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -f ${bkd}/own-a.txt && -f ${bkd}/moved.txt && -f ${bkd}/own-b.txt && \
+		   -d ${ROOT}/var/db/pkg/dev-libs/uexba-1.0 && -d ${ROOT}/var/db/pkg/dev-libs/uexbb-1.0 ]]
+		tend $? "qmerge-test: [BK] the two former owners install" || die "rc=${rc} ${out}"
+		out=$(yes | FEATURES=protect-owned PKGDIR=/pgpkgs qmerge =dev-libs/uexbc-1.0 2>&1); rc=$?
+		[[ ${rc} -ne 0 && ${out} == *"NOT merged due to file collisions"* && \
+		   ! -d ${ROOT}/var/db/pkg/dev-libs/uexbc-1.0 ]]
+		tend $? "qmerge-test: [BK] without a blocker protect-owned still refuses the file" \
+			|| die "rc=${rc} ${out}"
+		out=$(yes | FEATURES=protect-owned PKGDIR=/pgpkgs qmerge =dev-libs/uexbb-2.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -f ${bkd}/moved.txt && -d ${ROOT}/var/db/pkg/dev-libs/uexbb-2.0 ]] && \
+			grep -q 'uexb/moved.txt' "${ROOT}/var/db/pkg/dev-libs/uexbb-2.0/CONTENTS" && \
+			! grep -q 'uexb/moved.txt' "${ROOT}/var/db/pkg/dev-libs/uexba-1.0/CONTENTS" && \
+			grep -q 'uexb/own-a.txt' "${ROOT}/var/db/pkg/dev-libs/uexba-1.0/CONTENTS"
+		tend $? "qmerge-test: [BK] the blocking package takes the file over and the blocked CONTENTS drops it" \
+			|| die "rc=${rc} $(cat "${ROOT}/var/db/pkg/dev-libs/uexba-1.0/CONTENTS" 2>&1) ${out}"
+		out=$(yes | PKGDIR=/pgpkgs qmerge =dev-libs/uexba-2.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -f ${bkd}/moved.txt && -f ${bkd}/own-a.txt && \
+		   -d ${ROOT}/var/db/pkg/dev-libs/uexba-2.0 ]] && \
+			! grep -q 'uexb/moved.txt' "${ROOT}/var/db/pkg/dev-libs/uexba-2.0/CONTENTS"
+		tend $? "qmerge-test: [BK] upgrading the former owner leaves the moved file in place" \
+			|| die "rc=${rc} ${out}"
+		out=$(yes | PKGDIR=/pgpkgs qmerge =dev-libs/uexbd-1.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -f ${bkd}/shared.txt && -d ${ROOT}/var/db/pkg/dev-libs/uexbd-1.0 ]]
+		tend $? "qmerge-test: [BK] an installed package with a blocker installs" || die "rc=${rc} ${out}"
+		out=$(yes | FEATURES=protect-owned PKGDIR=/pgpkgs \
+			qmerge =dev-libs/uexbe-1.0 =dev-libs/uexbd-2.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -f ${bkd}/shared.txt && -f ${bkd}/own-d.txt && -f ${bkd}/own-e.txt && \
+		   -d ${ROOT}/var/db/pkg/dev-libs/uexbd-2.0 && -d ${ROOT}/var/db/pkg/dev-libs/uexbe-1.0 ]] && \
+			grep -q 'uexb/shared.txt' "${ROOT}/var/db/pkg/dev-libs/uexbe-1.0/CONTENTS" && \
+			! grep -q 'uexb/shared.txt' "${ROOT}/var/db/pkg/dev-libs/uexbd-2.0/CONTENTS"
+		tend $? "qmerge-test: [BK] an installed blocker of the incoming package gives its file up the same way" \
+			|| die "rc=${rc} ${out}"
+		out=$(PKGDIR=/pgpkgs qmerge -p =dev-libs/uexpa-1.0 2>&1)
+		[[ $(grep -n '^\[binary' <<< "${out}" | grep 'uexpb-1.0' | cut -d: -f1) -lt \
+		   $(grep -n '^\[binary' <<< "${out}" | grep 'uexpa-1.0' | cut -d: -f1) ]]
+		tend $? "qmerge-test: [BK] a PDEPEND cycle merges the dependency before the package that needs it" \
+			|| die "${out}"
+		yes | PKGDIR=/pgpkgs qmerge -U =dev-libs/uexba-2.0 =dev-libs/uexbb-2.0 =dev-libs/uexbd-2.0 \
+			=dev-libs/uexbe-1.0 >/dev/null 2>&1
+		rm -rf imgba1 imgba2 imgbb1 imgbb2 imgbc1 imgbd1 imgbd2 imgbe1 imgpa1 imgpb1 "${bkd}" \
+			"${ROOT}"/pgpkgs/dev-libs/uexb[abcde]-*.gpkg.tar "${ROOT}"/pgpkgs/dev-libs/uexp[ab]-*.gpkg.tar
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	fi
 
 	if qm_gpkg_usable ; then
 		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs qlive-1.0 SLOT=0 'KEYWORDS=**' \
@@ -6560,6 +6733,21 @@ outdc=$(qmerge -pcv 2>&1)
    ${outdc} == *"  dc-libs/N-1 pulled in by:"*"    @____qmerge_imasurvivor____ requires =dc-libs/N-1"* ]]
 tend $? "qmerge-test: [DC] the library /bin/sh links against survives with it" \
 	|| die "${outdc}"
+dc_vdb dc-libs/N-2 1 ""
+mkdir -p "${ROOT}/lib"
+echo lib > "${ROOT}/lib/libdcsh.so.1"
+dcmd=$(md5sum "${ROOT}/lib/libdcsh.so.1" | cut -d' ' -f1)
+echo "obj /lib/libdcsh.so.1 ${dcmd} 1" >> "${ROOT}/var/db/pkg/dc-libs/N-2/CONTENTS"
+printf 'X86_64;/lib/libdcsh.so.1;libdcsh.so.1;;;x86_64\n' > "${ROOT}/var/db/pkg/dc-libs/N-2/NEEDED.ELF.2"
+echo "dc-libs/N" > "${ROOT}/var/db/pkg/dc-libs/S-1/RDEPEND"
+outdc=$(qmerge -pcv 2>&1)
+[[ $(echo "${outdc}" | dc_sel) == "dc-libs/C-1 dc-libs/D-1 dc-libs/N-1" && \
+   ${outdc} == *"  dc-libs/N-2 pulled in by:"*"dc-libs/S-1 requires dc-libs/N"* && \
+   ${outdc} != *"@____qmerge_imasurvivor____ requires =dc-libs/N-"* ]]
+tend $? "qmerge-test: [DC] two slots providing the shell's library: the old slot is not pinned and goes" \
+	|| die "${outdc}"
+rm -f "${ROOT}/lib/libdcsh.so.1"
+rm -rf "${ROOT}/var/db/pkg/dc-libs/N-2"
 rm -f "${ROOT}/usr/lib/libdcsh.so.1"
 rm -rf "${ROOT}/usr/bin/q" "${ROOT}/bin/sh"
 

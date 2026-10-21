@@ -42452,67 +42452,142 @@ else case e in #(
 esac
 fi
 
-       if test "x${enable_curl}" != "xno" && test "x${pt_internal_curl}" != "xyes"
+       pt_objdump=`command -v ${OBJDUMP:-${ac_tool_prefix}objdump} 2>/dev/null || command -v objdump 2>/dev/null || command -v llvm-objdump 2>/dev/null || echo :`
+       pt_strings=`command -v ${STRINGS:-${ac_tool_prefix}strings} 2>/dev/null || command -v strings 2>/dev/null || command -v llvm-strings 2>/dev/null || echo :`
+       pt_qfile=`command -v qfile 2>/dev/null || echo :`
+       pt_static_libs="$LIBARCHIVE_LIBS $LIBZ_LIBS"
+       pt_static_cflags="$LIBARCHIVE_CFLAGS $LIBZ_CFLAGS"
+       pt_static_inc='#include <archive.h>
+#include <zlib.h>'
+       pt_static_body='struct archive *ar = archive_read_new(); archive_read_support_format_all(ar); archive_read_support_filter_all(ar); zlibVersion();'
+       pt_static_hint=
+       if test "x${GPGME}" = "xyes"
 then :
-  { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking whether the system libcurl links statically" >&5
-printf %s "checking whether the system libcurl links statically... " >&6; }
-         pt_save_CFLAGS=$CFLAGS
-         pt_save_LIBS=$LIBS
-         CFLAGS="$CFLAGS $LIBCURL_CFLAGS"
-         LIBS="$LIBCURL_LIBS $LIBS"
-         cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-#include <curl/curl.h>
-int
-main (void)
-{
-curl_version();
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"
+  pt_static_libs="$pt_static_libs $GPGME_LIBS"
+         pt_static_cflags="$pt_static_cflags $GPGME_CFLAGS"
+         pt_static_inc="$pt_static_inc
+#include <gpgme.h>"
+         pt_static_body="$pt_static_body gpgme_ctx_t gctx; gpgme_check_version(NULL); gpgme_new(&gctx);"
+fi
+       if test "x${LIBBL2}" = "xyes"
 then :
-  { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-printf '%s\n' "yes" >&6; }
-else case e in #(
-  e) { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
-printf '%s\n' "no" >&6; }
-           pt_missing_static=
-           for pt_l in $LIBCURL_LIBS; do
-             case $pt_l in #(
+  pt_static_libs="$pt_static_libs $LIBBL2_LIBS"
+         pt_static_cflags="$pt_static_cflags $LIBBL2_CFLAGS"
+         pt_static_inc="$pt_static_inc
+#include <blake2.h>"
+         pt_static_body="$pt_static_body blake2b_state bs; blake2b_init(&bs, 64);"
+fi
+       if test "x${do_curl}" = "xyes" && test "x${pt_internal_curl}" != "xyes"
+then :
+  pt_static_libs="$pt_static_libs $LIBCURL_LIBS"
+         pt_static_cflags="$pt_static_cflags $LIBCURL_CFLAGS"
+         pt_static_inc="$pt_static_inc
+#include <curl/curl.h>"
+         pt_static_body="$pt_static_body CURL *cu = curl_easy_init(); curl_version(); curl_easy_cleanup(cu);"
+         pt_static_hint='
+  or use --enable-internal-libs with a curl source tree in src/curl'
+fi
+
+       pt_cc_name=`set dummy $CC; echo "$2"`
+       pt_cc_major=`$CC -dumpversion 2>/dev/null | sed 's/\..*//'`
+       pt_static_seen=
+       pt_static_missing=
+       pt_static_stale=
+       { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for the static archives of the dependency closure" >&5
+printf %s "checking for the static archives of the dependency closure... " >&6; }
+       for pt_l in $pt_static_libs; do
+         case $pt_l in #(
   -l*) :
     pt_n=`echo "$pt_l" | sed 's/^-l//'`
-               pt_p=`$CC $LDFLAGS -print-file-name=lib$pt_n.a 2>/dev/null`
-               case $pt_p in #(
-  /*) :
-     ;; #(
-  *) :
-    case " $pt_missing_static " in #(
+           case " $pt_static_seen " in #(
   *" $pt_n "*) :
-     ;; #(
+    continue ;; #(
   *) :
-    pt_missing_static="$pt_missing_static $pt_n" ;;
-esac ;;
+     ;;
+esac
+           pt_static_seen="$pt_static_seen $pt_n"
+           pt_p=`$CC $LDFLAGS -print-file-name=lib$pt_n.a 2>/dev/null`
+           case $pt_p in #(
+  /*) :
+    if $pt_objdump -h "$pt_p" 2>/dev/null | grep '\.gnu\.lto_' >/dev/null 2>&1
+then :
+  pt_v=`$pt_strings "$pt_p" 2>/dev/null | sed -n 's/^GCC: (.*) \([0-9]*\)\..*/\1/p' | sort -u | grep -v "^$pt_cc_major\$" | head -n 1`
+               if test -n "$pt_v"
+then :
+  pt_o=`$pt_qfile -q "$pt_p" 2>/dev/null | head -n 1`
+                 pt_static_stale="$pt_static_stale
+    lib$pt_n.a (gcc $pt_v${pt_o:+, $pt_o})"
+fi
+fi ;; #(
+  *) :
+    pt_static_missing="$pt_static_missing lib$pt_n.a" ;;
 esac ;; #(
   *) :
      ;;
 esac
-           done
-           if test -n "$pt_missing_static"
+       done
+       if test -n "$pt_static_missing"
 then :
-  as_fn_error $? "--enable-static: the system libcurl cannot be linked statically, no static archive for:$pt_missing_static (build them with USE=static-libs), or use --enable-internal-libs with a curl source tree in src/curl" "$LINENO" 5
+  { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+         as_fn_error $? "--enable-static: no static archive for:$pt_static_missing
+  build them with USE=static-libs$pt_static_hint" "$LINENO" 5
+fi
+       { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf '%s\n' "yes" >&6; }
+
+       { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking whether the static dependency closure links" >&5
+printf %s "checking whether the static dependency closure links... " >&6; }
+       pt_save_CFLAGS=$CFLAGS
+       pt_save_LIBS=$LIBS
+       CFLAGS="$CFLAGS $pt_static_cflags"
+       LIBS="$pt_static_libs $LIBS"
+       cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$pt_static_inc
+int
+main (void)
+{
+$pt_static_body
+  ;
+  return 0;
+}
+_ACEOF
+       if (eval "$ac_link") 2>conftest.lto && test -x conftest$ac_exeext
+then :
+  { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf '%s\n' "yes" >&6; }
+         if test -n "$pt_static_stale"
+then :
+  { printf '%s\n' "$as_me:${as_lineno-$LINENO}: WARNING: static archives hold LTO bytecode of another compiler than $pt_cc_name $pt_cc_major, the link of q may fail on them:$pt_static_stale" >&5
+printf '%s\n' "$as_me: WARNING: static archives hold LTO bytecode of another compiler than $pt_cc_name $pt_cc_major, the link of q may fail on them:$pt_static_stale" >&2;}
+fi
 else case e in #(
-  e) as_fn_error $? "--enable-static: the system libcurl cannot be linked statically (see config.log), or use --enable-internal-libs with a curl source tree in src/curl" "$LINENO" 5 ;;
+  e) { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+         cat conftest.lto >&5
+         pt_lto=`sed -n "s/.*bytecode stream in file \(.*\) generated with LTO version \(.*\) instead of the expected \(.*\)\$/    \1 holds LTO \2, $pt_cc_name reads LTO \3/p" conftest.lto | sort -u`
+         pt_err=`grep -E 'undefined reference|cannot find|error' conftest.lto | head -n 5`
+         rm -f conftest.lto conftest.$ac_ext conftest$ac_exeext conftest.$ac_objext
+         if test -n "$pt_lto"
+then :
+  pt_static_stale="
+$pt_lto$pt_static_stale"
+fi
+         if test -n "$pt_static_stale"
+then :
+  as_fn_error $? "--enable-static: the dependency closure cannot be linked statically, static archives hold LTO bytecode of another compiler than $pt_cc_name $pt_cc_major:$pt_static_stale
+  rebuild them with the compiler in use; a gcc major bump breaks every archive built with -flto, fat ones too" "$LINENO" 5
+else case e in #(
+  e) as_fn_error $? "--enable-static: the dependency closure cannot be linked statically (see config.log):
+$pt_err$pt_static_hint" "$LINENO" 5 ;;
 esac
 fi ;;
 esac
 fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam \
-    conftest$ac_exeext conftest.$ac_ext
-         CFLAGS=$pt_save_CFLAGS
-         LIBS=$pt_save_LIBS
-fi
+       rm -f conftest.lto conftest.$ac_ext conftest$ac_exeext conftest.$ac_objext
+       CFLAGS=$pt_save_CFLAGS
+       LIBS=$pt_save_LIBS
 fi
 
 ac_config_files="$ac_config_files Makefile libq/Makefile autotools/gnulib/Makefile tests/init.sh tests/Makefile tests/atom_compare/Makefile tests/atom_explode/Makefile tests/copy_file/Makefile tests/fuzz/Makefile tests/install/Makefile tests/mkdir/Makefile tests/profile/Makefile tests/qatom/Makefile tests/qcheck/Makefile tests/qdepends/Makefile tests/qetc-update/Makefile tests/qetuto/Makefile tests/qfile/Makefile tests/qgrep/Makefile tests/qkeyword/Makefile tests/qlist/Makefile tests/qlop/Makefile tests/qmaint/Makefile tests/qmanifest/Makefile tests/qmerge/Makefile tests/qnews/Makefile tests/qsearch/Makefile tests/qsize/Makefile tests/qtbz2/Makefile tests/qtegrity/Makefile tests/quse/Makefile tests/qwhich/Makefile tests/qxpak/Makefile tests/rmspace/Makefile tests/source/Makefile tests/usedep/Makefile tests/preserved/Makefile"

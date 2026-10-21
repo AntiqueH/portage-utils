@@ -308,29 +308,89 @@ AS_IF([test "x${enable_static}" = "xyes"],
        AX_CHECK_LINK_FLAG([-static],
         [AS_VAR_APPEND([LDFLAGS], [" -static"])],
         [AC_MSG_ERROR([--enable-static requested but the toolchain cannot link "-static"; install a static libc])])
-       AS_IF([test "x${enable_curl}" != "xno" && test "x${pt_internal_curl}" != "xyes"],
-        [AC_MSG_CHECKING([whether the system libcurl links statically])
-         pt_save_CFLAGS=$CFLAGS
-         pt_save_LIBS=$LIBS
-         CFLAGS="$CFLAGS $LIBCURL_CFLAGS"
-         LIBS="$LIBCURL_LIBS $LIBS"
-         AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <curl/curl.h>]], [[curl_version();]])],
-          [AC_MSG_RESULT([yes])],
-          [AC_MSG_RESULT([no])
-           pt_missing_static=
-           for pt_l in $LIBCURL_LIBS; do
-             AS_CASE([$pt_l], [-l*],
-              [pt_n=`echo "$pt_l" | sed 's/^-l//'`
-               pt_p=`$CC $LDFLAGS -print-file-name=lib$pt_n.a 2>/dev/null`
-               AS_CASE([$pt_p], [/*], [],
-                [AS_CASE([" $pt_missing_static "], [*" $pt_n "*], [],
-                  [pt_missing_static="$pt_missing_static $pt_n"])])])
-           done
-           AS_IF([test -n "$pt_missing_static"],
-            [AC_MSG_ERROR([--enable-static: the system libcurl cannot be linked statically, no static archive for:$pt_missing_static (build them with USE=static-libs), or use --enable-internal-libs with a curl source tree in src/curl])],
-            [AC_MSG_ERROR([--enable-static: the system libcurl cannot be linked statically (see config.log), or use --enable-internal-libs with a curl source tree in src/curl])])])
-         CFLAGS=$pt_save_CFLAGS
-         LIBS=$pt_save_LIBS])])
+       pt_objdump=`command -v ${OBJDUMP:-${ac_tool_prefix}objdump} 2>/dev/null || command -v objdump 2>/dev/null || command -v llvm-objdump 2>/dev/null || echo :`
+       pt_strings=`command -v ${STRINGS:-${ac_tool_prefix}strings} 2>/dev/null || command -v strings 2>/dev/null || command -v llvm-strings 2>/dev/null || echo :`
+       pt_qfile=`command -v qfile 2>/dev/null || echo :`
+       pt_static_libs="$LIBARCHIVE_LIBS $LIBZ_LIBS"
+       pt_static_cflags="$LIBARCHIVE_CFLAGS $LIBZ_CFLAGS"
+       pt_static_inc='#include <archive.h>
+#include <zlib.h>'
+       pt_static_body='struct archive *ar = archive_read_new(); archive_read_support_format_all(ar); archive_read_support_filter_all(ar); zlibVersion();'
+       pt_static_hint=
+       AS_IF([test "x${GPGME}" = "xyes"],
+        [pt_static_libs="$pt_static_libs $GPGME_LIBS"
+         pt_static_cflags="$pt_static_cflags $GPGME_CFLAGS"
+         pt_static_inc="$pt_static_inc
+#include <gpgme.h>"
+         pt_static_body="$pt_static_body gpgme_ctx_t gctx; gpgme_check_version(NULL); gpgme_new(&gctx);"])
+       AS_IF([test "x${LIBBL2}" = "xyes"],
+        [pt_static_libs="$pt_static_libs $LIBBL2_LIBS"
+         pt_static_cflags="$pt_static_cflags $LIBBL2_CFLAGS"
+         pt_static_inc="$pt_static_inc
+#include <blake2.h>"
+         pt_static_body="$pt_static_body blake2b_state bs; blake2b_init(&bs, 64);"])
+       AS_IF([test "x${do_curl}" = "xyes" && test "x${pt_internal_curl}" != "xyes"],
+        [pt_static_libs="$pt_static_libs $LIBCURL_LIBS"
+         pt_static_cflags="$pt_static_cflags $LIBCURL_CFLAGS"
+         pt_static_inc="$pt_static_inc
+#include <curl/curl.h>"
+         pt_static_body="$pt_static_body CURL *cu = curl_easy_init(); curl_version(); curl_easy_cleanup(cu);"
+         pt_static_hint='
+  or use --enable-internal-libs with a curl source tree in src/curl'])
+
+       pt_cc_name=`set dummy $CC; echo "$2"`
+       pt_cc_major=`$CC -dumpversion 2>/dev/null | sed 's/\..*//'`
+       pt_static_seen=
+       pt_static_missing=
+       pt_static_stale=
+       AC_MSG_CHECKING([for the static archives of the dependency closure])
+       for pt_l in $pt_static_libs; do
+         AS_CASE([$pt_l], [-l*],
+          [pt_n=`echo "$pt_l" | sed 's/^-l//'`
+           AS_CASE([" $pt_static_seen "], [*" $pt_n "*], [continue])
+           pt_static_seen="$pt_static_seen $pt_n"
+           pt_p=`$CC $LDFLAGS -print-file-name=lib$pt_n.a 2>/dev/null`
+           AS_CASE([$pt_p], [/*],
+            [AS_IF([$pt_objdump -h "$pt_p" 2>/dev/null | grep '\.gnu\.lto_' >/dev/null 2>&1],
+              [pt_v=`$pt_strings "$pt_p" 2>/dev/null | sed -n 's/^GCC: (.*) \(@<:@0-9@:>@*\)\..*/\1/p' | sort -u | grep -v "^$pt_cc_major\$" | head -n 1`
+               AS_IF([test -n "$pt_v"],
+                [pt_o=`$pt_qfile -q "$pt_p" 2>/dev/null | head -n 1`
+                 pt_static_stale="$pt_static_stale
+    lib$pt_n.a (gcc $pt_v${pt_o:+, $pt_o})"])])],
+            [pt_static_missing="$pt_static_missing lib$pt_n.a"])])
+       done
+       AS_IF([test -n "$pt_static_missing"],
+        [AC_MSG_RESULT([no])
+         AC_MSG_ERROR([--enable-static: no static archive for:$pt_static_missing
+  build them with USE=static-libs$pt_static_hint])])
+       AC_MSG_RESULT([yes])
+
+       AC_MSG_CHECKING([whether the static dependency closure links])
+       pt_save_CFLAGS=$CFLAGS
+       pt_save_LIBS=$LIBS
+       CFLAGS="$CFLAGS $pt_static_cflags"
+       LIBS="$pt_static_libs $LIBS"
+       AC_LANG_CONFTEST([AC_LANG_PROGRAM([[$pt_static_inc]], [[$pt_static_body]])])
+       AS_IF([(eval "$ac_link") 2>conftest.lto && test -x conftest$ac_exeext],
+        [AC_MSG_RESULT([yes])
+         AS_IF([test -n "$pt_static_stale"],
+          [AC_MSG_WARN([static archives hold LTO bytecode of another compiler than $pt_cc_name $pt_cc_major, the link of q may fail on them:$pt_static_stale])])],
+        [AC_MSG_RESULT([no])
+         cat conftest.lto >&AS_MESSAGE_LOG_FD
+         pt_lto=`sed -n "s/.*bytecode stream in file \(.*\) generated with LTO version \(.*\) instead of the expected \(.*\)\$/    \1 holds LTO \2, $pt_cc_name reads LTO \3/p" conftest.lto | sort -u`
+         pt_err=`grep -E 'undefined reference|cannot find|error' conftest.lto | head -n 5`
+         rm -f conftest.lto conftest.$ac_ext conftest$ac_exeext conftest.$ac_objext
+         AS_IF([test -n "$pt_lto"],
+          [pt_static_stale="
+$pt_lto$pt_static_stale"])
+         AS_IF([test -n "$pt_static_stale"],
+          [AC_MSG_ERROR([--enable-static: the dependency closure cannot be linked statically, static archives hold LTO bytecode of another compiler than $pt_cc_name $pt_cc_major:$pt_static_stale
+  rebuild them with the compiler in use; a gcc major bump breaks every archive built with -flto, fat ones too])],
+          [AC_MSG_ERROR([--enable-static: the dependency closure cannot be linked statically (see config.log):
+$pt_err$pt_static_hint])])])
+       rm -f conftest.lto conftest.$ac_ext conftest$ac_exeext conftest.$ac_objext
+       CFLAGS=$pt_save_CFLAGS
+       LIBS=$pt_save_LIBS])
 
 AC_CONFIG_FILES([
 	Makefile

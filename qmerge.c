@@ -216,6 +216,7 @@ static struct option const qmerge_long_opts[] = {
 	{"info",    no_argument, NULL, 145},
 	{"exact",   no_argument, NULL, 146},
 	{"keep-going", opt_argument, NULL, 147},
+	{"masked-remove", opt_argument, NULL, 151},
 	{"depclean", no_argument, NULL, 'c'},
 	{"prune",   no_argument, NULL, 'P'},
 	{"with-bdeps", a_argument, NULL, 148},
@@ -260,6 +261,7 @@ static const char * const qmerge_opts_help[] = {
 	"Show precisely how a package was compiled (identity, build env, dep bindings, sonames). VDB default, pkg@repo targets a binhost entry",
 	"With -s: match plain keys as whole names, not substrings",
 	"Continue past a failed package like emerge --keep-going: hide from the list, re-resolve, drop dependents whose dependency is no longer satisfied, merge the rest (y/n, default n)",
+	"With -u @world: unmerge an installed package masked in /etc/portage/package.mask that has no acceptable build and that no installed package needs, and drop its world entry (y/n, default y)",
 	"Remove packages not required by @world (emerge --depclean); with atoms: only those, if nothing needs them",
 	"Remove all but the highest installed version of a package if nothing needs the others (emerge --prune); with -O ignoring dependencies",
 	"With --depclean: y/n follow DEPEND/BDEPEND of installed packages (default y)",
@@ -9931,6 +9933,9 @@ qm_unsat_note(const char *atomstr)
 static void qm_resolve(atom_ctx *atom, set *parent_use,
 					   struct qm_plan *plan, int level);
 
+static set *qm_in_progress = NULL;
+static int  qm_pdep_edge   = -1;
+
 static void
 qm_plan_add(struct qm_plan *plan, const char *cpv)
 {
@@ -10633,7 +10638,10 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	/* provider ctx must not be used past this point */
 
 	if (contains_set(cpv, plan->examined) != NULL) {
-		if (pull)
+		if (pull &&
+				!(level == qm_pdep_edge &&
+				  qm_in_progress != NULL &&
+				  contains_set(cpv, qm_in_progress) != NULL))
 			qm_plan_add(plan, cpv);
 		free(usestr);
 		free(rdep);
@@ -10642,6 +10650,9 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		return;
 	}
 	add_set(cpv, plan->examined);
+	if (qm_in_progress == NULL)
+		qm_in_progress = create_set();
+	add_set(cpv, qm_in_progress);
 
 	/* descend into dependencies for packages that will be merged (pull) or
 	 * the requested atom (level 0).
@@ -10675,6 +10686,7 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		deps[2] = pdep;
 		for (di = 0; di < 3; di++) {
 			dep_node_t *t;
+			int         pe_save = qm_pdep_edge;
 
 			if (deps[di][0] == '\0')
 				continue;
@@ -10682,7 +10694,9 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 			if (t == NULL)
 				continue;
 			dep_prune_use(t, use);
+			qm_pdep_edge = di == 2 ? level + 1 : -1;
 			qm_resolve_node(t, use, plan, level + 1);
+			qm_pdep_edge = pe_save;
 			dep_burn_tree(t);
 		}
 		free_set(use);
@@ -10692,6 +10706,8 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 	}
 
 	/* post-order: append after deps so merge order is deps-first */
+	if (qm_in_progress != NULL)
+		del_set(cpv, qm_in_progress, NULL);
 	if (pull)
 		qm_plan_add(plan, cpv);
 
@@ -16553,9 +16569,311 @@ qm_backup_instance(tree_pkg_ctx *pkg)
 	return 0;
 }
 
+struct qm_blocked
+{
+  char *cpv;
+  char *dir;
+  char *contents;
+};
+
+struct qm_blocked_cache
+{
+  char  *stamp;
+  array *atoms;
+};
+
+struct qm_blocked_scan
+{
+  tree_pkg_ctx *mpkg;
+  const char   *cat;
+  const char   *pn;
+  const char   *slot;
+  array        *blk;
+  array        *out;
+};
+
+static hash_t *qm_blocked_cache = NULL;
+
+static void qm_runtime_blockers
+(
+  const char *rdep,
+  const char *pdep,
+  const char *idep,
+  const char *usestr,
+  array      *out
+)
+{
+  const char *deps[3];
+  size_t      di;
+  set        *use = usedep_flags_to_set(usestr != NULL ? usestr : "");
+
+  deps[0] = rdep;
+  deps[1] = pdep;
+  deps[2] = idep;
+  for (di = 0; di < 3; di++)
+  {
+    dep_node_t *t;
+    array      *atoms;
+    size_t      i;
+    atom_ctx   *A;
+
+    if (deps[di] == NULL ||
+        deps[di][0] == '\0')
+      continue;
+    t = dep_grow_tree(deps[di]);
+    if (t == NULL)
+      continue;
+    dep_prune_use(t, use);
+    atoms = array_new();
+    qm_collect_required_atoms(t, atoms);
+    array_for_each(atoms, i, A)
+    {
+      atom_blocker save = A->blocker;
+
+      if (save != ATOM_BL_BLOCK &&
+          save != ATOM_BL_BLOCK_HARD)
+        continue;
+      A->blocker = ATOM_BL_NONE;
+      array_append(out, xstrdup(atom_to_string(A)));
+      A->blocker = save;
+    }
+    array_free(atoms);
+    dep_burn_tree(t);
+  }
+  free_set(use);
+}
+
+static array *qm_installed_blockers
+(
+  tree_pkg_ctx *pkg,
+  const char   *cpv
+)
+{
+  struct qm_blocked_cache *c     = hash_get(qm_blocked_cache, cpv);
+  char                    *stamp = tree_pkg_meta(pkg, Q_BUILD_TIME);
+  void                    *prev  = NULL;
+
+  if (stamp == NULL)
+    stamp = q_deconst("");
+  if (c != NULL &&
+      strcmp(c->stamp, stamp) == 0)
+    return c->atoms;
+  if (c != NULL)
+  {
+    free(c->stamp);
+    array_deepfree(c->atoms, free);
+    free(c);
+  }
+  c        = xzalloc(sizeof(*c));
+  c->stamp = xstrdup(stamp);
+  c->atoms = array_new();
+  qm_runtime_blockers(tree_pkg_meta(pkg, Q_RDEPEND),
+                      tree_pkg_meta(pkg, Q_PDEPEND),
+                      tree_pkg_meta(pkg, Q_IDEPEND),
+                      tree_pkg_meta(pkg, Q_USE), c->atoms);
+  hash_add(qm_blocked_cache, cpv, c, &prev);
+  return c->atoms;
+}
+
+static int qm_blocked_cb
+(
+  tree_pkg_ctx *pkg,
+  void         *priv
+)
+{
+  struct qm_blocked_scan *bs  = priv;
+  atom_ctx               *pa  = tree_pkg_atom(pkg, true);
+  struct qm_blocked      *b;
+  array                  *ib;
+  char                   *s;
+  char                   *cts;
+  size_t                  i;
+  bool                    hit = false;
+
+  if (pa == NULL ||
+      pa->CATEGORY == NULL ||
+      pa->PN == NULL)
+    return 0;
+  if (strcmp(pa->CATEGORY, bs->cat) == 0 &&
+      strcmp(pa->PN, bs->pn) == 0 &&
+      strcmp(pa->SLOT != NULL ? pa->SLOT : "0", bs->slot) == 0)
+    return 0;
+  array_for_each(bs->blk, i, s)
+  {
+    atom_ctx *A = atom_explode(s);
+
+    if (A == NULL)
+      continue;
+    hit = atom_satisfied_by(A, pkg, NULL);
+    atom_implode(A);
+    if (hit)
+      break;
+  }
+  if (!hit)
+  {
+    ib = qm_installed_blockers(pkg, atom_format("%[CAT]%[PF]", pa));
+    array_for_each(ib, i, s)
+    {
+      atom_ctx *A = atom_explode(s);
+
+      if (A == NULL)
+        continue;
+      hit = atom_satisfied_by(A, bs->mpkg, NULL);
+      atom_implode(A);
+      if (hit)
+        break;
+    }
+  }
+  if (!hit)
+    return 0;
+  cts         = tree_pkg_meta(pkg, Q_CONTENTS);
+  b           = xzalloc(sizeof(*b));
+  b->cpv      = xstrdup(atom_format("%[CAT]%[PF]", pa));
+  b->dir      = xasprintf("%s%s/%s", portroot, portvdb, b->cpv);
+  b->contents = xstrdup(cts != NULL ? cts : "");
+  array_append(bs->out, b);
+  return 0;
+}
+
+static array *qm_blocked_collect
+(
+  tree_pkg_ctx *mpkg,
+  atom_ctx     *matom
+)
+{
+  struct qm_blocked_scan bs;
+  tree_ctx              *vdb;
+
+  if (qm_blocked_cache == NULL)
+    qm_blocked_cache = hash_new();
+  bs.mpkg = mpkg;
+  bs.cat  = matom->CATEGORY != NULL ? matom->CATEGORY : "";
+  bs.pn   = matom->PN != NULL ? matom->PN : "";
+  bs.slot = matom->SLOT != NULL ? matom->SLOT : "0";
+  bs.blk  = array_new();
+  bs.out  = array_new();
+  qm_runtime_blockers(tree_pkg_meta(mpkg, Q_RDEPEND),
+                      tree_pkg_meta(mpkg, Q_PDEPEND),
+                      tree_pkg_meta(mpkg, Q_IDEPEND),
+                      tree_pkg_meta(mpkg, Q_USE), bs.blk);
+  vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+  if (vdb != NULL)
+  {
+    tree_foreach_pkg_fast(vdb, qm_blocked_cb, &bs, NULL);
+    tree_close(vdb);
+  }
+  array_deepfree(bs.blk, free);
+  return bs.out;
+}
+
+static void qm_blocked_release
+(
+  array *blocked,
+  set   *objs
+)
+{
+  size_t             i;
+  struct qm_blocked *b;
+
+  if (objs == NULL)
+    return;
+  array_for_each(blocked, i, b)
+  {
+    char *cts  = xstrdup(b->contents);
+    char *line;
+    char *savep;
+    char *path;
+    char *tmp;
+    char *mp;
+    FILE *f;
+    bool  drop = false;
+
+    for (line = strtok_r(cts, "\n", &savep);
+         line != NULL;
+         line = strtok_r(NULL, "\n", &savep))
+    {
+      char           *copy = xstrdup(line);
+      contents_entry *e    = contents_parse_line(copy);
+
+      if (e != NULL &&
+          contains_set(e->name, objs) != NULL)
+        drop = true;
+      free(copy);
+      if (drop)
+        break;
+    }
+    free(cts);
+    if (!drop)
+      continue;
+    path = xasprintf("%s/CONTENTS", b->dir);
+    tmp  = xasprintf("%s/CONTENTS.__qmerge__", b->dir);
+    f    = fopen(tmp, "w");
+    if (f == NULL)
+    {
+      warnp("cannot rewrite %s", path);
+      free(path);
+      free(tmp);
+      continue;
+    }
+    cts = xstrdup(b->contents);
+    for (line = strtok_r(cts, "\n", &savep);
+         line != NULL;
+         line = strtok_r(NULL, "\n", &savep))
+    {
+      char           *copy = xstrdup(line);
+      contents_entry *e    = contents_parse_line(copy);
+      bool            keep = e == NULL ||
+                             contains_set(e->name, objs) == NULL;
+
+      free(copy);
+      if (keep)
+      {
+        fputs(line, f);
+        fputc('\n', f);
+      }
+    }
+    free(cts);
+    if (fclose(f) != 0 ||
+        rename(tmp, path) != 0)
+    {
+      warnp("cannot rewrite %s", path);
+      unlink(tmp);
+    }
+    else
+    {
+      mp = xasprintf("%s/metadata", b->dir);
+      if (access(mp, F_OK) == 0)
+        (void)tree_vdbmeta_consolidate(b->dir, false, true);
+      free(mp);
+    }
+    free(path);
+    free(tmp);
+  }
+}
+
+static void qm_blocked_free
+(
+  array *blocked
+)
+{
+  size_t             i;
+  struct qm_blocked *b;
+
+  if (blocked == NULL)
+    return;
+  array_for_each(blocked, i, b)
+  {
+    free(b->cpv);
+    free(b->dir);
+    free(b->contents);
+    free(b);
+  }
+  array_free(blocked);
+}
+
 /* returns only when the merge may proceed, aborts via err() otherwise */
 static void
-qm_collision_protect(atom_ctx *matom, array *slotmembers,
+qm_collision_protect(atom_ctx *matom, array *slotmembers, array *blocked,
                      size_t eprefix_len,
                      int cp_argc, char **cp_argv,
                      int cpm_argc, char **cpm_argv)
@@ -16586,6 +16904,28 @@ qm_collision_protect(atom_ctx *matom, array *slotmembers,
 			if (cts == NULL)
 				continue;
 			cts = xstrdup(cts);
+			for (line = strtok_r(cts, "\n", &savep);
+					line != NULL;
+					line = strtok_r(NULL, "\n", &savep))
+			{
+				contents_entry *e = contents_parse_line(line);
+
+				if (e != NULL)
+					add_set(e->name, qm_cols.self);
+			}
+			free(cts);
+		}
+	}
+	if (blocked != NULL)
+	{
+		struct qm_blocked *b;
+
+		array_for_each(blocked, n, b)
+		{
+			char *cts = xstrdup(b->contents);
+			char *line;
+			char *savep;
+
 			for (line = strtok_r(cts, "\n", &savep);
 					line != NULL;
 					line = strtok_r(NULL, "\n", &savep))
@@ -16774,6 +17114,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	tree_pkg_ctx   *previnst;
 	array          *slotmembers = NULL;
 	array          *pres_paths  = NULL;
+	array          *blocked     = NULL;
 	atom_ctx       *matom;
 	FILE           *fp;
 	FILE           *contents;
@@ -17381,8 +17722,11 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	/* refuse before prerm/unmerge/merge run: an abort here leaves the
 	 * installed system completely untouched */
 	if (!pretend)
-		qm_collision_protect(matom, slotmembers, eprefix_len,
+	{
+		blocked = qm_blocked_collect(mpkg, matom);
+		qm_collision_protect(matom, slotmembers, blocked, eprefix_len,
 				cp_argc, cp_argv, cpm_argc, cpm_argv);
+	}
 
 	/* call pkg_prerm right before we merge the replacement version such
 	 * that any logic it defines, can use stuff installed by the package */
@@ -17436,6 +17780,8 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 
 		qm_confmem_write();
 	}
+	if (blocked != NULL)
+		qm_blocked_release(blocked, objs);
 
 	/* Unmerge any stray pieces from the versions we replaced.
 	 * A slot holds one package, so remove EVERY installed member of the slot
@@ -17490,6 +17836,7 @@ pkg_merge(int level, const depend_atom *qatom, tree_pkg_ctx *mpkg)
 	/* Clean up the package state */
 	if (objs != NULL)
 		free_set(objs);
+	qm_blocked_free(blocked);
 	free(D);
 	free(T);
 
@@ -22356,6 +22703,111 @@ qm_search_why(const char *cpn, tree_pkg_ctx *newest, char *out, size_t olen)
 	qm_mask_reasons(newest, tree_pkg_atom(newest, true), out, olen);
 }
 
+static tree_pkg_ctx *qm_search_inst_slot
+(
+  const depend_atom *a,
+  tree_pkg_ctx      *cand
+)
+{
+  depend_atom  *ca = cand != NULL ? tree_pkg_atom(cand, true) : NULL;
+  depend_atom  *sa;
+  tree_pkg_ctx *inst;
+  char          buf[600];
+
+  if (a == NULL ||
+      a->CATEGORY == NULL ||
+      a->PN == NULL ||
+      ca == NULL ||
+      ca->SLOT == NULL)
+    return best_version(a, BV_VDB);
+  snprintf(buf, sizeof(buf), "%s/%s:%s", a->CATEGORY, a->PN, ca->SLOT);
+  sa = atom_explode(buf);
+  if (sa == NULL)
+    return best_version(a, BV_VDB);
+  inst = best_version(sa, BV_VDB);
+  atom_implode(sa);
+  return inst;
+}
+
+static void qm_search_print_line(const char *cpn, tree_pkg_ctx *bv,
+                                 tree_pkg_ctx *iv, const char *note);
+
+static void qm_search_print_slots
+(
+  const char        *cpn,
+  const depend_atom *a,
+  const depend_atom *ma,
+  const char        *pick_slot
+)
+{
+  set    *slots = create_set();
+  array  *keys;
+  size_t  rcnt  = qm_bintree_cnt();
+  size_t  ri;
+  size_t  i;
+  char   *slot;
+
+  if (ma->SLOT != NULL ||
+      ma->PVR != NULL ||
+      pick_slot[0] == '\0')
+  {
+    free_set(slots);
+    return;
+  }
+  for (ri = 0; ri < rcnt; ri++)
+  {
+    tree_ctx     *bt = qm_bintree(ri);
+    array        *t;
+    size_t        cn;
+    tree_pkg_ctx *cand;
+    size_t        rj;
+    bool          seen = false;
+
+    if (bt == NULL)
+      continue;
+    if (qm_nbinrepos > 0 &&
+        qm_binrepos[ri].priority == 0)
+      continue;
+    for (rj = 0; rj < ri; rj++)
+      if (qm_bintrees[rj] == bt)
+        seen = true;
+    if (seen)
+      continue;
+    t = tree_match_atom(bt, ma,
+                        TREE_MATCH_SORT | TREE_MATCH_VIRTUAL | TREE_MATCH_ACCT);
+    array_for_each(t, cn, cand)
+    {
+      depend_atom *ca = tree_pkg_atom(cand, true);
+
+      if (ca != NULL &&
+          ca->SLOT != NULL &&
+          strcmp(ca->SLOT, pick_slot) != 0)
+        add_set_unique(ca->SLOT, slots, NULL);
+    }
+    array_free(t);
+  }
+  keys = set_keys(slots);
+  array_sort(keys, qm_strcmp_cb);
+  array_for_each(keys, i, slot)
+  {
+    depend_atom  *sa;
+    tree_pkg_ctx *sbv;
+    char          buf[600];
+
+    snprintf(buf, sizeof(buf), "%s/%s:%s", a->CATEGORY ? : "", a->PN ? : "",
+             slot);
+    sa = atom_explode(buf);
+    if (sa == NULL)
+      continue;
+    sbv = best_version(sa, BV_BINPKG);
+    if (sbv != NULL)
+      qm_search_print_line(cpn, sbv, qm_search_inst_slot(a, sbv), NULL);
+    atom_implode(sa);
+  }
+  array_free(keys);
+  free_set(slots);
+}
+
 /* one emerge -pvK style search result line for candidate bv (installed
  * comparison against iv); note, when set, is appended as annotation */
 static void
@@ -22839,6 +23291,7 @@ qm_search_binpkgs(int npat, char **pats)
 			depend_atom  *ma = a;
 			tree_pkg_ctx *bv;
 			tree_pkg_ctx *iv;
+			char          pick_slot[64] = "";
 
 			if (a == NULL)
 				continue;
@@ -22873,7 +23326,6 @@ qm_search_binpkgs(int npat, char **pats)
 				size_t vrcnt = qm_bintree_cnt();
 				size_t vri;
 
-				iv = best_version(a, BV_VDB);
 				for (vri = 0; vri < vrcnt; vri++) {
 					tree_ctx     *bt = qm_bintree(vri);
 					array        *t;
@@ -22896,7 +23348,8 @@ qm_search_binpkgs(int npat, char **pats)
 							TREE_MATCH_SORT | TREE_MATCH_VIRTUAL |
 							TREE_MATCH_ACCT);
 					array_for_each(t, cn, cand) {
-						qm_search_print_line(cpn, cand, iv, NULL);
+						qm_search_print_line(cpn, cand,
+											 qm_search_inst_slot(a, cand), NULL);
 						insts++;
 					}
 					array_free(t);
@@ -22912,7 +23365,16 @@ qm_search_binpkgs(int npat, char **pats)
 			 * the resolver uses, so results == what qmerge could merge;
 			 * -v also lists names with no currently installable binpkg */
 			bv = best_version(ma, BV_BINPKG);
-			iv = best_version(a, BV_VDB);
+			if (bv != NULL)
+			{
+				depend_atom *pa = tree_pkg_atom(bv, true);
+
+				if (pa != NULL &&
+						pa->SLOT != NULL)
+					snprintf(pick_slot, sizeof(pick_slot), "%s", pa->SLOT);
+			}
+			iv = bv != NULL ? qm_search_inst_slot(a, bv)
+							: best_version(a, BV_VDB);
 
 			/* emerge -pvK line format:
 			 * [binary   R    ] cat/pn-PVR-BID:SLOT/SUB::repo [old] SIZE KiB
@@ -22932,7 +23394,8 @@ qm_search_binpkgs(int npat, char **pats)
 				}
 				qm_str_add(note, sizeof(note), ")");
 				if (newest != NULL)
-					qm_search_print_line(cpn, newest, iv, note);
+					qm_search_print_line(cpn, newest,
+										 qm_search_inst_slot(a, newest), note);
 				else
 					printf("[%sbinary%s        ] %s%s%s  %s\n",
 						   MAGENTA, NORM, MAGENTA, cpn, NORM, note);
@@ -23010,6 +23473,10 @@ qm_search_binpkgs(int npat, char **pats)
 						array_for_each(t, cn, cand) {
 							depend_atom *pa = tree_pkg_atom(cand, true);
 
+							if (pick_slot[0] != '\0' &&
+									pa->SLOT != NULL &&
+									strcmp(pa->SLOT, pick_slot) != 0)
+								continue;
 							if (binpkg_masked(pa) ||
 									!binpkg_keywords_ok(cand, pa, true) ||
 							!binpkg_chost_ok(cand, pa, true) ||
@@ -23034,7 +23501,8 @@ qm_search_binpkgs(int npat, char **pats)
 
 						if (rbest == NULL)
 							continue;
-						qm_search_print_line(cpn, rbest, iv,
+						qm_search_print_line(cpn, rbest,
+								qm_search_inst_slot(a, rbest),
 								usebad ? "(USE mismatch)" :
 								w >= 0 && qm_repo_pos(vri) >
 										qm_repo_pos((size_t)w) ?
@@ -23043,6 +23511,8 @@ qm_search_binpkgs(int npat, char **pats)
 					}
 				}
 			}
+			if (bv != NULL)
+				qm_search_print_slots(cpn, a, ma, pick_slot);
 			found++;
 			if (ma != a)
 				atom_implode(ma);
@@ -27546,6 +28016,7 @@ qm_dc_survivors(struct qm_dc *dc, struct qm_dc_setarg *sv, char *desc,
 
 			array_for_each(o->needed, q, nd) {
 				array *provs = qm_dc_find_providers(lm, o, nd);
+				set   *pown  = create_set();
 				size_t w;
 				char  *pp;
 
@@ -27556,12 +28027,20 @@ qm_dc_survivors(struct qm_dc *dc, struct qm_dc_setarg *sv, char *desc,
 						continue;
 					if (po->owner != NULL &&
 							hash_get(dc->by_cpv, po->owner) != NULL)
-						add_set_unique(po->owner, owners, NULL);
+						add_set_unique(po->owner, pown, NULL);
 					if (contains_set(po->key, seen) == NULL) {
 						add_set(po->key, seen);
 						array_append(work, po);
 					}
 				}
+				if (cnt_set(pown) == 1)
+				{
+					array *one = set_keys(pown);
+
+					add_set_unique(array_get(one, 0), owners, NULL);
+					array_free(one);
+				}
+				free_set(pown);
 				array_deepfree(provs, free);
 			}
 		}
@@ -29716,6 +30195,11 @@ int qmerge_main(int argc, char **argv)
 									   *optarg == 'y' || *optarg == '1' ||
 									   *optarg == 't' || *optarg == 'T')
 									   ? 1 : 0;
+					  break;
+			case 151: qm_masked_remove = (optarg == NULL ||
+										  *optarg == 'y' || *optarg == '1' ||
+										  *optarg == 't' || *optarg == 'T')
+										  ? 1 : 0;
 					  break;
 			case 'c': qm_depclean = 1;     break;
 			case 'P': qm_depclean = 1;
