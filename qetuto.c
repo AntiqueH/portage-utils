@@ -32,11 +32,13 @@
 #include "xvasprintf.h"
 #include "xmkdir.h"
 
-#define QETUTO_FLAGS "" COMMON_FLAGS
+#define QETUTO_FLAGS "F" COMMON_FLAGS
 static struct option const qetuto_long_opts[] = {
+  {"force-replace", no_argument, NULL, 'F'},
   COMMON_LONG_OPTS
 };
 static const char * const qetuto_opts_help[] = {
+  "Rebuild the keyring in the staging directory and replace the existing one",
   COMMON_OPTS_HELP
 };
 #define qetuto_usage(ret) usage(ret, QETUTO_FLAGS, qetuto_long_opts, \
@@ -55,6 +57,7 @@ static const char * const qet_keyservers_default[] = {
 
 static bool  qet_quiet = true;
 static bool  qet_external;
+static bool  qet_replace;
 static char  qet_home[_Q_PATH_MAX];
 static char *qet_root;
 
@@ -259,6 +262,8 @@ static int qet_spawn
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+#define QET_ARGV_END ((const char *)NULL)
+
 /* assemble a gpg argv: "gpg" [--quiet --no-permission-warning] extra...
  * extra is a NULL-terminated list; result is NULL-terminated */
 static void qet_gpg_argv
@@ -349,7 +354,7 @@ static void qet_wkd_locate(void)
   char **loc;
   size_t nloc;
 
-  qet_gpg_argv(av, 8, "--batch", "--with-colons", "--list-keys", NULL);
+  qet_gpg_argv(av, 8, "--batch", "--with-colons", "--list-keys", QET_ARGV_END);
   if (qet_spawn(av, NULL, &keys) != 0 ||
       keys == NULL)
   {
@@ -429,9 +434,10 @@ static set *qet_fingerprints
   char *line;
   char *sp;
   set  *fps = create_set();
+  bool  primary = false;
 
   qet_gpg_argv(av, 8, "--batch", secret ? "--list-secret-keys" : "--list-keys",
-               "--keyid-format=long", "--with-colons", NULL);
+               "--keyid-format=long", "--with-colons", QET_ARGV_END);
   if (qet_spawn(av, NULL, &out) != 0 ||
       out == NULL)
   {
@@ -445,8 +451,16 @@ static set *qet_fingerprints
     char *fields[16];
     int   nf;
 
-    if (strncmp(line, "fpr:", 4) != 0)
+    if (strncmp(line, "pub:", 4) == 0 ||
+        strncmp(line, "sec:", 4) == 0)
+    {
+      primary = true;
       continue;
+    }
+    if (!primary ||
+        strncmp(line, "fpr:", 4) != 0)
+      continue;
+    primary = false;
     nf = qet_colon_fields(line, fields, 16);
     if (nf < 10 ||
         fields[9][0] == '\0')
@@ -557,13 +571,13 @@ static int qet_refresh
   {
     if (!qet_keyfile_secure(qet_keyfiles[k]))
       return 1;
-    qet_gpg_argv(av, 16, "--batch", "--import", qet_keyfiles[k], NULL);
+    qet_gpg_argv(av, 16, "--batch", "--import", qet_keyfiles[k], QET_ARGV_END);
     rc = qet_spawn(av, NULL, NULL);
     if (rc != 0)
     {
       warn("gpg --import %s failed", qet_keyfiles[k]);
       if (stat(qet_keyfiles[k], &st) == 0)
-        warn("remove %s and run qetuto again", qet_home);
+        warn("run qetuto --force-replace to rebuild %s", qet_home);
       return rc > 0 ? rc : 1;
     }
   }
@@ -713,7 +727,7 @@ static int qet_verify
   ultimate = false;
 
   qet_gpg_argv(av, 16, "--no-permission-warning", "--batch", "--with-colons",
-               "--list-keys", NULL);
+               "--list-keys", QET_ARGV_END);
   if (qet_spawn(av, NULL, &out) != 0 ||
       out == NULL)
   {
@@ -721,7 +735,8 @@ static int qet_verify
     free_set(valid);
     free_set(present);
     warn("gpg cannot read the keyring in %s", qet_home);
-    warn("remove %s and run qetuto again", qet_home);
+    if (!qet_replace)
+      warn("run qetuto --force-replace to rebuild %s", qet_home);
     return 1;
   }
   for (line = strtok_r(out, "\n", &sp);
@@ -769,7 +784,7 @@ static int qet_verify
       continue;
     }
     qet_gpg_argv(av, 16, "--no-permission-warning", "--batch", "--with-colons",
-                 "--show-keys", qet_keyfiles[k], NULL);
+                 "--show-keys", qet_keyfiles[k], QET_ARGV_END);
     if (qet_spawn(av, NULL, &out) != 0 ||
         out == NULL)
     {
@@ -803,7 +818,8 @@ static int qet_verify
 
             if (!qet_quiet)
               printf("Importing release keys from %s\n", qet_keyfiles[k]);
-            qet_gpg_argv(iav, 16, "--batch", "--import", qet_keyfiles[k], NULL);
+            qet_gpg_argv(iav, 16, "--batch", "--import", qet_keyfiles[k],
+                         QET_ARGV_END);
             (void)qet_spawn(iav, NULL, NULL);
             tried = true;
           }
@@ -832,7 +848,7 @@ static int qet_verify
   if (lsigned > 0)
   {
     qet_gpg_argv(av, 16, "--no-permission-warning", "--batch",
-                 "--check-trustdb", NULL);
+                 "--check-trustdb", QET_ARGV_END);
     (void)qet_spawn(av, NULL, NULL);
   }
   if (imported > 0)
@@ -842,7 +858,8 @@ static int qet_verify
 
   if (bad > 0)
   {
-    warn("remove %s and run qetuto again", qet_home);
+    if (!qet_replace)
+      warn("run qetuto --force-replace to rebuild %s", qet_home);
     return 1;
   }
   return 0;
@@ -854,6 +871,7 @@ static int qet_bootstrap
 )
 {
   char        staging[_Q_PATH_MAX + 16];
+  char        old[_Q_PATH_MAX + 16];
   char        orig[_Q_PATH_MAX];
   char        path[_Q_PATH_MAX + 32];
   char       *rmav[4];
@@ -869,11 +887,14 @@ static int qet_bootstrap
 
   snprintf(orig, sizeof(orig), "%s", qet_home);
   snprintf(staging, sizeof(staging), "%s.getuto.tmp", qet_home);
+  snprintf(old, sizeof(old), "%s.getuto.old", qet_home);
 
   rmav[0] = q_deconst("rm");
   rmav[1] = q_deconst("-rf");
   rmav[2] = staging;
   rmav[3] = NULL;
+  (void)qet_spawn(rmav, NULL, NULL);
+  rmav[2] = old;
   (void)qet_spawn(rmav, NULL, NULL);
 
   if (mkdir_p(staging, 0755) != 0)
@@ -952,7 +973,7 @@ static int qet_bootstrap
     close(fd);
     free(cfgbuf);
 
-    qet_gpg_argv(av, 24, "--batch", "--generate-key", keycfg, NULL);
+    qet_gpg_argv(av, 24, "--batch", "--generate-key", keycfg, QET_ARGV_END);
     if (qet_spawn(av, NULL, NULL) != 0)
     {
       unlink(keycfg);
@@ -1007,7 +1028,8 @@ static int qet_bootstrap
         continue;
       if (!qet_keyfile_secure(qet_keyfiles[kf]))
         goto fail;
-      qet_gpg_argv(av, 24, "--batch", "--import", qet_keyfiles[kf], NULL);
+      qet_gpg_argv(av, 24, "--batch", "--import", qet_keyfiles[kf],
+                   QET_ARGV_END);
       if (qet_spawn(av, NULL, NULL) == 0)
         imported++;
     }
@@ -1109,7 +1131,7 @@ static int qet_bootstrap
   array_free(relarr);
   free_set(relkeys);
 
-  qet_gpg_argv(av, 24, "--batch", "--check-trustdb", NULL);
+  qet_gpg_argv(av, 24, "--batch", "--check-trustdb", QET_ARGV_END);
   (void)qet_spawn(av, NULL, NULL);
 
   strcpy(path, staging);
@@ -1118,7 +1140,34 @@ static int qet_bootstrap
 
   qet_gpgconf_kill();
 
-  if (rename(staging, orig) != 0)
+  if (stat(orig, &st) == 0)
+  {
+    if (qet_verify(2) != 0)
+    {
+      warn("the rebuilt keyring did not pass the keyring check, "
+           "keeping %s", orig);
+      goto fail;
+    }
+    qet_gpgconf_kill();
+    setenv("GNUPGHOME", orig, 1);
+    qet_gpgconf_kill();
+    setenv("GNUPGHOME", staging, 1);
+    if (rename(orig, old) != 0)
+    {
+      warnp("cannot move %s aside", orig);
+      goto fail;
+    }
+    if (rename(staging, orig) != 0)
+    {
+      warnp("cannot move %s into place", staging);
+      if (rename(old, orig) != 0)
+        warnp("cannot move %s back into place", old);
+      goto fail;
+    }
+    rmav[2] = old;
+    (void)qet_spawn(rmav, NULL, NULL);
+  }
+  else if (rename(staging, orig) != 0)
   {
     warnp("cannot move %s into place", staging);
     goto fail;
@@ -1148,18 +1197,32 @@ static int qet_work(void)
   int         ret;
   char        lastrun[_Q_PATH_MAX + 16];
   char        trustdb[_Q_PATH_MAX + 16];
+  char        old[_Q_PATH_MAX + 16];
   struct stat st;
 
   snprintf(lastrun, sizeof(lastrun), "%s/.getuto.last", qet_home);
+  snprintf(old, sizeof(old), "%s.getuto.old", qet_home);
 
   qet_build_lists();
 
   qet_gpgconf_kill();
 
+  if (stat(qet_home, &st) != 0 &&
+      stat(old, &st) == 0 &&
+      rename(old, qet_home) == 0 &&
+      !qet_quiet)
+    printf("Recovered %s from an interrupted replacement\n", qet_home);
+
   if (stat(qet_home, &st) != 0)
   {
     if (!qet_quiet)
       printf("Initializing %s\n", qet_home);
+    ret = qet_bootstrap(lastrun);
+  }
+  else if (qet_replace)
+  {
+    if (!qet_quiet)
+      printf("Replacing %s\n", qet_home);
     ret = qet_bootstrap(lastrun);
   }
   else
@@ -1343,16 +1406,23 @@ int qetuto_main
   char **argv
 )
 {
-  int    ret;
-  size_t rl;
+  int              ret;
+  size_t           rl;
+  struct sigaction sa;
 
   while ((ret = GETOPT_LONG(QETUTO, qetuto, "")) != -1)
   {
     switch (ret)
     {
+      case 'F': qet_replace = true; break;
       COMMON_GETOPTS_CASES(qetuto)
     }
   }
+
+  VAL_CLEAR(sa);
+  sa.sa_handler = SIG_IGN;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGPIPE, &sa, NULL);
 
   qet_quiet    = verbose == 0;
   qet_external = qetuto_external_refresh_conf !=

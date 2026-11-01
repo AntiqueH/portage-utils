@@ -51,29 +51,35 @@ usedep_ok(const atom_usedep *ud, set_t *cuse, set_t *ciuse, set_t *puse)
 	const char *f       = ud->use;
 	bool        in_use  = contains_set(f, cuse) != NULL;
 	bool        in_iuse = contains_set(f, ciuse) != NULL;
+	bool        known   = true;
 	bool        eff;
+
+	if (in_use)
+		eff = true;
+	else if (in_iuse)
+		eff = false;
+	else if (ud->dflt == ATOM_UC_PREV_ENABLED)
+		eff = true;
+	else if (ud->dflt == ATOM_UC_PREV_DISABLED)
+		eff = false;
+	else
+	{
+		known = false;
+		eff   = false;
+	}
 
 	if (ud->sfx_cond == ATOM_UC_COND || ud->sfx_cond == ATOM_UC_EQUAL) {
 		bool pon = puse != NULL && contains_set(f, puse) != NULL;
 		bool neg = ud->pfx_cond == ATOM_UC_NOT;
 
 		if (ud->sfx_cond == ATOM_UC_EQUAL)
-			return neg ? (in_use != pon) : (in_use == pon);
+			return known && (neg ? (eff != pon) : (eff == pon));
 		if (neg)
-			return pon ? true : in_use;
-		return pon ? in_use : true;
+			return pon ? true : (known && eff);
+		return pon ? (known && eff) : true;
 	}
 
-	if (in_use)
-		eff = true;
-	else if (in_iuse)
-		eff = false;
-	else if (ud->sfx_cond == ATOM_UC_PREV_ENABLED)
-		eff = true;
-	else if (ud->sfx_cond == ATOM_UC_PREV_DISABLED)
-		eff = false;
-	else
+	if (!known)
 		return false;
-
 	return ud->pfx_cond == ATOM_UC_NEG ? !eff : eff;
 }

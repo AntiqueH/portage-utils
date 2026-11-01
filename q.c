@@ -1195,7 +1195,7 @@ int q_main
         *lastp != '\0' ||
         njobs < 0)
     {
-      warn("invalid argument to --jobserver: '%s'", jobs);
+      warn("invalid argument to --jobserver: '%s'", jobs != NULL ? jobs : "");
       return 1;
     }
     if (njobs == 1)

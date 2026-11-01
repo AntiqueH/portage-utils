@@ -217,6 +217,7 @@ static struct option const qmerge_long_opts[] = {
 	{"exact",   no_argument, NULL, 146},
 	{"keep-going", opt_argument, NULL, 147},
 	{"masked-remove", opt_argument, NULL, 151},
+	{"dynamic-deps", a_argument, NULL, 152},
 	{"depclean", no_argument, NULL, 'c'},
 	{"prune",   no_argument, NULL, 'P'},
 	{"with-bdeps", a_argument, NULL, 148},
@@ -262,6 +263,7 @@ static const char * const qmerge_opts_help[] = {
 	"With -s: match plain keys as whole names, not substrings",
 	"Continue past a failed package like emerge --keep-going: hide from the list, re-resolve, drop dependents whose dependency is no longer satisfied, merge the rest (y/n, default n)",
 	"With -u @world: unmerge an installed package masked in /etc/portage/package.mask that has no acceptable build and that no installed package needs, and drop its world entry (y/n, default y)",
+	"Substitute the dependencies of installed packages with the dependencies of unbuilt ebuilds, like emerge --dynamic-deps (y/n, default y)",
 	"Remove packages not required by @world (emerge --depclean); with atoms: only those, if nothing needs them",
 	"Remove all but the highest installed version of a package if nothing needs the others (emerge --prune); with -O ignoring dependencies",
 	"With --depclean: y/n follow DEPEND/BDEPEND of installed packages (default y)",
@@ -384,6 +386,7 @@ qm_kg_record(const char *cpv, const char *reason)
 static void pkg_merge(int, const depend_atom *, tree_pkg_ctx *);
 static bool pkg_download(tree_pkg_ctx *);
 static const char *qm_config_var(const char *name);
+static char *qm_inst_dep(tree_pkg_ctx *pkg, enum tree_pkg_meta_keys key);
 static void qm_env_update_hook(array *touched);
 static void qm_apply_moves_all(void);
 static void qm_apply_news_all(void);
@@ -8347,14 +8350,14 @@ install_mask_pwd(int iargc, char **iargv, const struct stat * const st, int fd)
 		p = iargv[i];
 		/* set include bit */
 		if (*p == '-') {
-			masks[((i - 1) * maxdirs) + cnt + 1] = (char *)1;
+			masks[((i - 1) * maxdirs) + cnt + 1] = (char *)(intptr_t)1;
 			p++;
 		} else {
 			masks[((i - 1) * maxdirs) + cnt + 1] = (char *)0;
 		}
 		/* set count */
 		masks[((i - 1) * maxdirs) + 0] =
-			(char *)((*p == '/' ? 1 : -1) * cnt);
+			(char *)(intptr_t)((*p == '/' ? 1 : -1) * (intptr_t)cnt);
 	}
 
 #if EBUG
@@ -8457,7 +8460,8 @@ qprint_tree_node(
 					atom_format("%[CAT]%[PF]%[SLOT]%[SUBSLOT]%[REPO]",
 						tree_pkg_atom(mpkg, true)),
 					install_ver, use != NULL ? "(" : "",
-					RED, use, NORM, use != NULL ? ")" : "", rsuf);
+					RED, use != NULL ? use : "", NORM,
+					use != NULL ? ")" : "", rsuf);
 		} else {
 			printf("%s%s\n",
 					atom_format("%[CAT]%[PF]%[SLOT]%[SUBSLOT]%[REPO]",
@@ -8589,6 +8593,109 @@ static struct {
 	{ PKG_POSTRM,   "REPLACED_BY_VERSION" }
 };
 
+static const char * const qm_phase_env_names[] = {
+  "ACCEPT_LICENSE", "BINPKG_FORMAT", "DISTDIR", "DOC_SYMLINKS_DIR",
+  "GNUMAKEFLAGS", "INSTALL_MASK", "MAKEFLAGS", "MAKEOPTS", "NINJAOPTS",
+  "NOCOLOR", "NO_COLOR", "PKGDIR", "PKG_INSTALL_MASK", "PKG_LOGDIR",
+  "PKG_TMPDIR", "PM_EBUILD_HOOK_DIR", "PORTAGE_ARCHLIST", "PORTAGE_BASHRC",
+  "PORTAGE_BINPKG_TAR_OPTS", "PORTAGE_BUNZIP2_COMMAND",
+  "PORTAGE_BZIP2_COMMAND", "PORTAGE_COMPRESS",
+  "PORTAGE_COMPRESSION_COMMAND", "PORTAGE_COMPRESS_EXCLUDE_SUFFIXES",
+  "PORTAGE_CONFIGROOT", "PORTAGE_DEBUG", "PORTAGE_DEPCACHEDIR",
+  "PORTAGE_GID", "PORTAGE_GRPNAME", "PORTAGE_INST_GID", "PORTAGE_INST_UID",
+  "PORTAGE_QUIET", "PORTAGE_TMPDIR", "PORTAGE_USERNAME", "PORTAGE_VERBOSE",
+  "PORTAGE_WORKDIR_MODE", "PORTAGE_XATTR_EXCLUDE", "PORTDIR",
+  "PORTDIR_OVERLAY", "PREROOTPATH", "ROOTPATH", "USE_EXPAND", "USE_ORDER",
+  "XARGS",
+};
+
+static void qm_phase_env_add
+(
+  char      **out,
+  size_t     *cap,
+  size_t     *off,
+  const char *name,
+  const char *val
+)
+{
+  size_t      need = strlen(name) + strlen(val) * 4 + 16;
+  const char *p;
+
+  if (*off + need > *cap)
+  {
+    *cap = (*off + need) * 2;
+    *out = xrealloc(*out, *cap);
+  }
+  *off += (size_t)snprintf(*out + *off, *cap - *off, "export %s='", name);
+  for (p = val; *p != '\0'; p++)
+  {
+    if (*p == '\'')
+    {
+      memcpy(*out + *off, "'\\''", 4);
+      *off += 4;
+    }
+    else
+    {
+      (*out)[*off] = *p;
+      (*off)++;
+    }
+  }
+  memcpy(*out + *off, "'\n", 2);
+  *off += 2;
+  (*out)[*off] = '\0';
+}
+
+static const char *qm_phase_env_get
+(
+  const char *name
+)
+{
+  const char *v = getenv(name);
+
+  if (v == NULL)
+    v = qm_config_var(name);
+  return v;
+}
+
+static char *qm_phase_env_exports
+(
+  void
+)
+{
+  char       *out = xmalloc(1024);
+  size_t      cap = 1024;
+  size_t      off = 0;
+  size_t      i;
+  const char *v;
+  char        val[64];
+
+  out[0] = '\0';
+  for (i = 0; i < ARRAY_SIZE(qm_phase_env_names); i++)
+  {
+    v = qm_phase_env_get(qm_phase_env_names[i]);
+    if (v != NULL)
+      qm_phase_env_add(&out, &cap, &off, qm_phase_env_names[i], v);
+  }
+  if (qm_phase_env_get("MAKEOPTS") == NULL &&
+      qm_phase_env_get("MAKEFLAGS") == NULL)
+  {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+
+    if (n > 0)
+    {
+      snprintf(val, sizeof(val), "-j%ld", n);
+      qm_phase_env_add(&out, &cap, &off, "MAKEOPTS", val);
+      if (qm_phase_env_get("GNUMAKEFLAGS") == NULL)
+      {
+        snprintf(val, sizeof(val), "--load-average %ld --output-sync=line",
+                 n);
+        qm_phase_env_add(&out, &cap, &off, "GNUMAKEFLAGS", val);
+      }
+    }
+  }
+  return out;
+}
+
 static void
 pkg_run_func_at(
 		int             dirfd,
@@ -8603,6 +8710,7 @@ pkg_run_func_at(
 	const char *func;
 	const char *phase;
 	char       *script;
+	char       *penv;
 	int         eapi;
 	bool        declared;
 
@@ -8665,6 +8773,7 @@ pkg_run_func_at(
 	else
 		unsetenv("QMERGE_PHASE_QUIET");
 
+	penv   = qm_phase_env_exports();
 	script = xasprintf(
 		/* Provide the funcs the PMS defines as package-manager supplied
 		 * (PMS chapter 12): these are exactly the ones portage's
@@ -8892,6 +9001,7 @@ pkg_run_func_at(
 		"export LC_ALL=\"${QMERGE_PHASE_LOCALE:-C}\"\n"
 		/* Load the main env (unpacked by pkg_unpack_environment) */
 		". \"%6$s/environment\"\n"
+		"%11$s"
 		/* Reload env vars that matter to us; EBUILD_PHASE must be
 		 * re-exported after sourcing, since the environment carries
 		 * the build-time phase it was saved with */
@@ -8948,7 +9058,9 @@ pkg_run_func_at(
 		phase_replacingvers[phaseidx].varname,
 		replacing,
 		debug ? "set -x;" : "",
-		qm_preserve_active() ? "__qmerge_none__" : "preserve-libs");
+		qm_preserve_active() ? "__qmerge_none__" : "preserve-libs",
+		penv);
+	free(penv);
 	{
 		int prc = xsystem_status(script, dirfd);
 
@@ -9782,8 +9894,11 @@ zapdeps_pick(dep_node_t *any, set *parent_use)
 	int         best_rank = QM_RANK_OTHER + 1;
 
 	array_for_each(choices, i, node) {
-		int r = qm_choice_rank(node, parent_use);
+		int r;
 
+		if (dep_node_type(node) == DEP_NULL)
+			continue;
+		r = qm_choice_rank(node, parent_use);
 		if (r < best_rank) {
 			best_rank = r;
 			best      = node;
@@ -9932,6 +10047,221 @@ qm_unsat_note(const char *atomstr)
 
 static void qm_resolve(atom_ctx *atom, set *parent_use,
 					   struct qm_plan *plan, int level);
+
+#define QM_DYN_NKEYS 5
+
+static int     qm_dynamic_deps = -1;
+static hash_t *qm_dyn_cache    = NULL;
+
+struct qm_dyn_deps
+{
+  bool  ok;
+  char *dep[QM_DYN_NKEYS];
+};
+
+static const enum tree_pkg_meta_keys qm_dyn_keys[QM_DYN_NKEYS] = {
+  Q_RDEPEND, Q_PDEPEND, Q_IDEPEND, Q_DEPEND, Q_BDEPEND
+};
+
+static const char * const qm_dyn_names[QM_DYN_NKEYS] = {
+  "RDEPEND", "PDEPEND", "IDEPEND", "DEPEND", "BDEPEND"
+};
+
+static const char *qm_dyn_repo_path
+(
+  const char *name
+)
+{
+  size_t  n;
+  char   *nm;
+
+  array_for_each(overlay_names, n, nm)
+    if (nm != NULL &&
+        strcmp(nm, name) == 0)
+      return array_get(overlays, n);
+  return NULL;
+}
+
+static char *qm_dyn_bound
+(
+  const char *vdbdep
+)
+{
+  dep_node_t *t;
+  array      *flat;
+  size_t      i;
+  dep_node_t *node;
+  char       *out = NULL;
+  size_t      len = 0;
+
+  if (vdbdep == NULL ||
+      vdbdep[0] == '\0')
+    return NULL;
+  t = dep_grow_tree(vdbdep);
+  if (t == NULL)
+    return NULL;
+  flat = dep_flatten_tree(t);
+  array_for_each(flat, i, node)
+  {
+    atom_ctx   *A = dep_node_atom(node);
+    const char *s;
+    size_t      sl;
+
+    if (A == NULL ||
+        A->slotdep != ATOM_SD_ANY_REBUILD ||
+        A->SUBSLOT == NULL ||
+        A->blocker != ATOM_BL_NONE)
+      continue;
+    s   = atom_to_string(A);
+    sl  = strlen(s);
+    out = xrealloc(out, len + sl + 2);
+    out[len] = ' ';
+    memcpy(out + len + 1, s, sl + 1);
+    len += sl + 1;
+  }
+  array_free(flat);
+  dep_burn_tree(t);
+  return out;
+}
+
+static struct qm_dyn_deps *qm_dyn_load
+(
+  tree_pkg_ctx *pkg
+)
+{
+  atom_ctx           *pa    = tree_pkg_atom(pkg, true);
+  struct qm_dyn_deps *dd    = xzalloc(sizeof(*dd));
+  const char         *repo;
+  const char         *rpath;
+  const char         *cmd5  = NULL;
+  const char         *ceapi = NULL;
+  const char         *veapi;
+  char               *cache = NULL;
+  char               *vals[QM_DYN_NKEYS];
+  char               *line;
+  char               *savep;
+  char                path[_Q_PATH_MAX];
+  char                md5[MD5_DIGEST_LENGTH + 1];
+  size_t              len;
+  size_t              flen;
+  size_t              i;
+
+  if (pa == NULL ||
+      pa->CATEGORY == NULL ||
+      pa->PN == NULL ||
+      pa->PF == NULL)
+    return dd;
+  repo  = tree_pkg_meta(pkg, Q_repository);
+  rpath = repo != NULL ? qm_dyn_repo_path(repo) : NULL;
+  if (rpath == NULL)
+    return dd;
+  snprintf(path, sizeof(path), "%s/metadata/md5-cache/%s/%s",
+           rpath, pa->CATEGORY, pa->PF);
+  if (!eat_file(path, &cache, &len) ||
+      cache == NULL)
+  {
+    const char *dcd = qm_config_var("PORTAGE_DEPCACHEDIR");
+
+    free(cache);
+    cache = NULL;
+    snprintf(path, sizeof(path), "%s%s/%s/%s",
+             dcd != NULL && dcd[0] != '\0' ? dcd : "/var/cache/edb/dep",
+             rpath, pa->CATEGORY, pa->PF);
+    if (!eat_file(path, &cache, &len) ||
+        cache == NULL)
+      return dd;
+  }
+  memset(vals, 0, sizeof(vals));
+  for (line = strtok_r(cache, "\n", &savep);
+       line != NULL;
+       line = strtok_r(NULL, "\n", &savep))
+  {
+    char *eq = strchr(line, '=');
+
+    if (eq == NULL)
+      continue;
+    *eq = '\0';
+    if (strcmp(line, "_md5_") == 0)
+      cmd5 = eq + 1;
+    else if (strcmp(line, "EAPI") == 0)
+      ceapi = eq + 1;
+    else
+      for (i = 0; i < QM_DYN_NKEYS; i++)
+        if (strcmp(line, qm_dyn_names[i]) == 0)
+          vals[i] = eq + 1;
+  }
+  snprintf(path, sizeof(path), "%s/%s/%s/%s.ebuild",
+           rpath, pa->CATEGORY, pa->PN, pa->PF);
+  veapi = tree_pkg_meta(pkg, Q_EAPI);
+  if (cmd5 == NULL ||
+      ceapi == NULL ||
+      atoi(ceapi) > MAX_EAPI ||
+      (veapi != NULL && atoi(veapi) > MAX_EAPI) ||
+      hash_multiple_file_at(AT_FDCWD, path, md5, NULL, NULL, NULL,
+                            NULL, &flen, HASH_MD5) != 0 ||
+      strncmp(cmd5, md5, MD5_DIGEST_LENGTH) != 0)
+  {
+    free(cache);
+    return dd;
+  }
+  for (i = 0; i < QM_DYN_NKEYS; i++)
+  {
+    char *bound = qm_dyn_bound(tree_pkg_meta(pkg, qm_dyn_keys[i]));
+
+    if (bound != NULL)
+      dd->dep[i] = xasprintf("%s%s", vals[i] != NULL ? vals[i] : "", bound);
+    else
+      dd->dep[i] = xstrdup(vals[i] != NULL ? vals[i] : "");
+    free(bound);
+  }
+  dd->ok = true;
+  free(cache);
+  return dd;
+}
+
+static char *qm_inst_dep
+(
+  tree_pkg_ctx            *pkg,
+  enum tree_pkg_meta_keys  key
+)
+{
+  atom_ctx           *pa;
+  struct qm_dyn_deps *dd;
+  const char         *cpv;
+  size_t              i;
+
+  if (qm_dynamic_deps < 0)
+  {
+    const char *v = qmerge_dynamic_deps_conf;
+
+    if (v != NULL &&
+        *v != '\0')
+      qm_dynamic_deps = (*v == 'n' || *v == 'N' || *v == '0' ||
+                         *v == 'f' || *v == 'F') ? 0 : 1;
+    else
+      qm_dynamic_deps = 1;
+  }
+  if (qm_dynamic_deps == 0)
+    return tree_pkg_meta(pkg, key);
+  for (i = 0; i < QM_DYN_NKEYS; i++)
+    if (qm_dyn_keys[i] == key)
+      break;
+  if (i == QM_DYN_NKEYS)
+    return tree_pkg_meta(pkg, key);
+  pa = tree_pkg_atom(pkg, true);
+  if (pa == NULL)
+    return tree_pkg_meta(pkg, key);
+  if (qm_dyn_cache == NULL)
+    qm_dyn_cache = hash_new();
+  cpv = atom_format("%[CAT]%[PF]", pa);
+  dd  = hash_get(qm_dyn_cache, cpv);
+  if (dd == NULL)
+  {
+    dd = qm_dyn_load(pkg);
+    hash_add(qm_dyn_cache, atom_format("%[CAT]%[PF]", pa), dd, NULL);
+  }
+  return dd->ok ? dd->dep[i] : tree_pkg_meta(pkg, key);
+}
 
 static set *qm_in_progress = NULL;
 static int  qm_pdep_edge   = -1;
@@ -10632,9 +10962,12 @@ qm_resolve(atom_ctx *atom, set *parent_use, struct qm_plan *plan, int level)
 		qm_demand_record(dslot, atom_to_string(atom));
 	}
 	usestr = xstrdup(tree_pkg_meta(provider, Q_USE)     ? : "");
-	rdep   = xstrdup(tree_pkg_meta(provider, Q_RDEPEND) ? : "");
-	idep   = xstrdup(tree_pkg_meta(provider, Q_IDEPEND) ? : "");
-	pdep   = xstrdup(tree_pkg_meta(provider, Q_PDEPEND) ? : "");
+	rdep   = xstrdup((pull ? tree_pkg_meta(provider, Q_RDEPEND)
+						   : qm_inst_dep(provider, Q_RDEPEND)) ? : "");
+	idep   = xstrdup((pull ? tree_pkg_meta(provider, Q_IDEPEND)
+						   : qm_inst_dep(provider, Q_IDEPEND)) ? : "");
+	pdep   = xstrdup((pull ? tree_pkg_meta(provider, Q_PDEPEND)
+						   : qm_inst_dep(provider, Q_PDEPEND)) ? : "");
 	/* provider ctx must not be used past this point */
 
 	if (contains_set(cpv, plan->examined) != NULL) {
@@ -12200,7 +12533,7 @@ qm_vdb_freeze_cb(tree_pkg_ctx *pkg, void *priv)
 
 	if (qm_mr_hidden(pkg))
 		return 0;
-	d = tree_pkg_meta(pkg, Q_RDEPEND);
+	d = qm_inst_dep(pkg, Q_RDEPEND);
 	if (d == NULL || *d == '\0')
 		return 0;
 	tree = dep_grow_tree(d);
@@ -14598,7 +14931,7 @@ static int qm_mr_need_cb
   use = usedep_flags_to_set(tree_pkg_meta(pkg, Q_USE) ? : "");
   for (di = 0; di < ARRAY_SIZE(keys); di++)
   {
-    char       *d = tree_pkg_meta(pkg, keys[di]);
+    char       *d = qm_inst_dep(pkg, keys[di]);
     dep_node_t *t;
     array      *flat;
     size_t      i;
@@ -16667,9 +17000,9 @@ static array *qm_installed_blockers
   c        = xzalloc(sizeof(*c));
   c->stamp = xstrdup(stamp);
   c->atoms = array_new();
-  qm_runtime_blockers(tree_pkg_meta(pkg, Q_RDEPEND),
-                      tree_pkg_meta(pkg, Q_PDEPEND),
-                      tree_pkg_meta(pkg, Q_IDEPEND),
+  qm_runtime_blockers(qm_inst_dep(pkg, Q_RDEPEND),
+                      qm_inst_dep(pkg, Q_PDEPEND),
+                      qm_inst_dep(pkg, Q_IDEPEND),
                       tree_pkg_meta(pkg, Q_USE), c->atoms);
   hash_add(qm_blocked_cache, cpv, c, &prev);
   return c->atoms;
@@ -19780,7 +20113,10 @@ binpkg_index_regen(void)
 		idxts = time(NULL);
 		snprintf(tsbuf, sizeof(tsbuf), "%zu", (size_t)idxts);
 		QM_HV("TIMESTAMP", tsbuf);
-		QM_HV("VERSION", "0");
+		hdr[nh].k     = "VERSION";
+		hdr[nh].sortk = "VERSION";
+		hdr[nh].v     = q_deconst("0");
+		nh++;
 #undef QM_HV
 
 		qsort(hdr, nh, sizeof(*hdr), qm_kv_cmp);
@@ -23790,6 +24126,7 @@ qm_dc_atom_fmt(char *buf, size_t len, const atom_ctx *a, const char *slot,
 	if (usemode != 1) {
 		for (ud = a->usedeps; ud != NULL; ud = ud->next) {
 			const char *pfx = atom_usecond_str[ud->pfx_cond];
+			const char *dfl = atom_usecond_str[ud->dflt];
 			const char *sfx = atom_usecond_str[ud->sfx_cond];
 
 			if (usemode == 2 &&
@@ -23808,8 +24145,8 @@ qm_dc_atom_fmt(char *buf, size_t len, const atom_ctx *a, const char *slot,
 				}
 				sfx = "";
 			}
-			qm_dc_sapp(buf, len, &off, "%s%s%s%s",
-					   first ? "[" : ",", pfx, ud->use, sfx);
+			qm_dc_sapp(buf, len, &off, "%s%s%s%s%s",
+					   first ? "[" : ",", pfx, ud->use, dfl, sfx);
 			first = false;
 		}
 		if (!first)
@@ -27503,7 +27840,7 @@ qm_dc_load_cb(tree_pkg_ctx *pkg, void *priv)
 	p->use  = usedep_flags_to_set(tree_pkg_meta(pkg, Q_USE));
 	p->iuse = usedep_flags_to_set(tree_pkg_meta(pkg, Q_IUSE));
 	for (di = 0; di < QM_DC_NDEPS; di++) {
-		v = tree_pkg_meta(pkg, qm_dc_depkeys[di]);
+		v = qm_inst_dep(pkg, qm_dc_depkeys[di]);
 		p->deps[di] = xstrdup(v ? : "");
 	}
 	v = tree_pkg_meta(pkg, Q_RESTRICT);
@@ -30200,6 +30537,10 @@ int qmerge_main(int argc, char **argv)
 										  *optarg == 'y' || *optarg == '1' ||
 										  *optarg == 't' || *optarg == 'T')
 										  ? 1 : 0;
+					  break;
+			case 152: qm_dynamic_deps = (*optarg == 'y' || *optarg == '1' ||
+										 *optarg == 't' || *optarg == 'T')
+										 ? 1 : 0;
 					  break;
 			case 'c': qm_depclean = 1;     break;
 			case 'P': qm_depclean = 1;

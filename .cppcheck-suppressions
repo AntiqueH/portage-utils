@@ -14,11 +14,17 @@ nullPointerArithmetic:qmerge.c
 # it; cppcheck does not track the macro's stores into the buffer.
 uninitvar:libq/xpak.c
 
-# the else branch is entered only when q->buckets[pos] is non-NULL, so the for
-# loop sets ll to a real node before ll->next is written; ll is never NULL here.
-nullPointer:libq/set.c
+# the make.conf variable table marks a BOOL default of "true" with the
+# pointer value 1, the table's own convention.
+# it is compared, not dereferenced.
+intToPointerCast:main.c
 
-# informational notes, not findings; cppcheck's --error-exitcode trips on them
-# anyway, so silence them to keep the gate about real diagnostics.
-normalCheckLevelMaxBranches
-toomanyconfigs
+# the two %s targets are halves of a buffer twice the size of the string
+# being scanned, so no field can be longer than the buffer it lands in.
+invalidscanf:qlop.c
+
+# the summary lines use positional %N$ conversions. cppcheck maps the
+# arguments by position in the list, so it pairs
+# the size_t counts with the %s color strings and vice versa.
+invalidPrintfArgType_s:qcheck.c
+invalidPrintfArgType_uint:qcheck.c

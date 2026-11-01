@@ -224,7 +224,7 @@ atom_ctx *atom_explode_cat
 
       w->next = NULL;
       *ptr++ = '\0';
-      w->pfx_cond = w->sfx_cond = ATOM_UC_NONE;
+      w->pfx_cond = w->sfx_cond = w->dflt = ATOM_UC_NONE;
       switch (*ptr)
       {
       case '-':
@@ -254,13 +254,13 @@ atom_ctx *atom_explode_cat
         case '(':
           if (strncmp(ptr, "(+)", 3) == 0)
           {
-            w->sfx_cond = ATOM_UC_PREV_ENABLED;
+            w->dflt = ATOM_UC_PREV_ENABLED;
             *ptr = '\0';
             ptr += 3;
           }
           else if (strncmp(ptr, "(-)", 3) == 0)
           {
-            w->sfx_cond = ATOM_UC_PREV_DISABLED;
+            w->dflt = ATOM_UC_PREV_DISABLED;
             *ptr = '\0';
             ptr += 3;
           }
@@ -633,6 +633,7 @@ atom_ctx *atom_clone
       n->next     = NULL;
       n->pfx_cond = w->pfx_cond;
       n->sfx_cond = w->sfx_cond;
+      n->dflt     = w->dflt;
       n->use      = (char *)n + sizeof(*n);
       memcpy(n->use, w->use, nlen);
     }
@@ -1411,10 +1412,11 @@ char *atom_to_string_r
                     a->SUBSLOT && a->SUBSLOT != a->SLOT ? a->SUBSLOT : "",
                     atom_slotdep_str[a->slotdep]);
   for (ud = a->usedeps; ud != NULL; ud = ud->next)
-    off = atom_str_append(buf, buflen, off, "%s%s%s%s%s",
+    off = atom_str_append(buf, buflen, off, "%s%s%s%s%s%s",
                     ud == a->usedeps ? "[" : "",
                     atom_usecond_str[ud->pfx_cond],
                     ud->use,
+                    atom_usecond_str[ud->dflt],
                     atom_usecond_str[ud->sfx_cond],
                     ud->next == NULL ? "]" : ",");
   if (a->REPO != NULL)
@@ -1548,7 +1550,7 @@ char *atom_format_r
         {
           if (showit ||
               a->PR_int)
-            append_buf(buf, buflen, "%sr%d%s",
+            append_buf(buf, buflen, "%sr%u%s",
                        CYAN, a->PR_int, NORM);
         }
         else if (strncmp("SLOT", fmt, len) == 0)
@@ -1612,9 +1614,10 @@ char *atom_format_r
               if (connected)
                 append_buf(buf, buflen, "%s", "[");
               for (ud = a->usedeps; ud != NULL; ud = ud->next)
-                append_buf(buf, buflen, "%s%s%s%s%s%s",
+                append_buf(buf, buflen, "%s%s%s%s%s%s%s",
                            MAGENTA, atom_usecond_str[ud->pfx_cond],
-                           ud->use, atom_usecond_str[ud->sfx_cond],
+                           ud->use, atom_usecond_str[ud->dflt],
+                           atom_usecond_str[ud->sfx_cond],
                            NORM, ud->next == NULL ? "" :
                            (connected ? "," : " "));
               if (connected)

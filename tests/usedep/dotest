@@ -7,6 +7,6 @@ set -e
 m=${ab}/m
 
 ${m}
-: $(( tpassed += 14 ))
+: $(( tpassed += 21 ))
 
 end

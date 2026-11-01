@@ -38,7 +38,7 @@ safe_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 		}
 		nmemb -= this_ret;
 		ret += this_ret;
-		ptr += (this_ret * size);
+		ptr = (const char *)ptr + (this_ret * size);
 	} while (nmemb);
 
 	return ret;
@@ -74,7 +74,7 @@ ssize_t safe_write(int fd, const void *buf, size_t len)
 			errno = EIO;
 			return -1;
 		}
-		buf += ret;
+		buf = (const char *)buf + ret;
 		len -= ret;
 	}
 

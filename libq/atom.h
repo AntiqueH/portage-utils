@@ -70,6 +70,7 @@ typedef struct _atom_usedep {
   char *use;
   atom_usecond pfx_cond;
   atom_usecond sfx_cond;
+  atom_usecond dflt;
 } atom_usedep;
 
 typedef struct {

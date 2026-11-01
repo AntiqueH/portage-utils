@@ -235,7 +235,7 @@ static char *fmt_date(struct qlop_mode *flags, time_t ts, time_t te)
 
 	if (flags->do_machine || localtime_r(&t, &lt) == NULL)
 		snprintf(_date_buf, sizeof(_date_buf),
-				"%zd", (size_t)t);
+				"%zu", (size_t)t);
 	else
 		strftime(_date_buf, sizeof(_date_buf),
 				"%Y-%m-%dT%H:%M:%S", &lt);
@@ -254,7 +254,7 @@ static char *fmt_elapsedtime(struct qlop_mode *flags, time_t e)
 
 	if (flags->do_machine || e < 0) {
 		snprintf(_elapsed_buf, sizeof(_elapsed_buf),
-				"%s%zd%s",
+				"%s%zu%s",
 				GREEN, (size_t)e, NORM);
 		return _elapsed_buf;
 	}
@@ -271,42 +271,42 @@ static char *fmt_elapsedtime(struct qlop_mode *flags, time_t e)
 		if (dd > 0)
 			bufpos += snprintf(_elapsed_buf + bufpos,
 					sizeof(_elapsed_buf) - bufpos,
-					"%s%zd%s day%s",
+					"%s%zu%s day%s",
 					GREEN, (size_t)dd, NORM, dd == 1 ? "" : "s");
 		if (hh > 0)
 			bufpos += snprintf(_elapsed_buf + bufpos,
 					sizeof(_elapsed_buf) - bufpos,
-					"%s%s%zd%s hour%s",
+					"%s%s%zu%s hour%s",
 					bufpos == 0 ? "" : ", ",
 					GREEN, (size_t)hh, NORM, hh == 1 ? "" : "s");
 		if (mm > 0)
 			bufpos += snprintf(_elapsed_buf + bufpos,
 					sizeof(_elapsed_buf) - bufpos,
-					"%s%s%zd%s minute%s",
+					"%s%s%zu%s minute%s",
 					bufpos == 0 ? "" : ", ",
 					GREEN, (size_t)mm, NORM, mm == 1 ? "" : "s");
 		if (ss > 0 || (mm + hh + dd) == 0)
 			bufpos += snprintf(_elapsed_buf + bufpos,
 					sizeof(_elapsed_buf) - bufpos,
-					"%s%s%zd%s second%s",
+					"%s%s%zu%s second%s",
 					bufpos == 0 ? "" : ", ",
 					GREEN, (size_t)ss, NORM, ss == 1 ? "" : "s");
 	} else {
 		hh += 24 * dd;
 		if (hh > 0) {
 			snprintf(_elapsed_buf, sizeof(_elapsed_buf),
-					"%s%zd%s:%s%02zd%s:%s%02zd%s",
+					"%s%zu%s:%s%02zu%s:%s%02zu%s",
 					GREEN, (size_t)hh, NORM,
 					GREEN, (size_t)mm, NORM,
 					GREEN, (size_t)ss, NORM);
 		} else if (mm > 0) {
 			snprintf(_elapsed_buf, sizeof(_elapsed_buf),
-					"%s%zd%sm%s%02zd%ss",
+					"%s%zu%sm%s%02zu%ss",
 					GREEN, (size_t)mm, NORM,
 					GREEN, (size_t)ss, NORM);
 		} else {
 			snprintf(_elapsed_buf, sizeof(_elapsed_buf),
-					"%s%zd%ss",
+					"%s%zu%ss",
 					GREEN, (size_t)ss, NORM);
 		}
 	}
@@ -1222,7 +1222,7 @@ static int do_emerge_log(
 
 		array_sort(avgs, pkg_sort_cb);
 		array_for_each(avgs, i, pkg) {
-			printf("%s: %s average for %s%zd%s merge%s\n",
+			printf("%s: %s average for %s%zu%s merge%s\n",
 					atom_format(flags->fmt, pkg->atom),
 					fmt_elapsedtime(flags, pkg->time / pkg->cnt),
 					GREEN, pkg->cnt, NORM, pkg->cnt == 1 ? "" : "s");
@@ -1234,7 +1234,7 @@ static int do_emerge_log(
 		avgs = hash_values(unmerge_averages);
 		array_sort(avgs, pkg_sort_cb);
 		array_for_each(avgs, i, pkg) {
-			printf("%s: %s average for %s%zd%s unmerge%s\n",
+			printf("%s: %s average for %s%zu%s unmerge%s\n",
 					atom_format(flags->fmt, pkg->atom),
 					fmt_elapsedtime(flags, pkg->time / pkg->cnt),
 					GREEN, pkg->cnt, NORM, pkg->cnt == 1 ? "" : "s");
@@ -1244,7 +1244,7 @@ static int do_emerge_log(
 		array_free(avgs);
 
 		if (sync_cnt > 0) {
-			printf("%ssync%s: %s average for %s%zd%s sync%s\n",
+			printf("%ssync%s: %s average for %s%zu%s sync%s\n",
 					BLUE, NORM, fmt_elapsedtime(flags, sync_time / sync_cnt),
 					GREEN, sync_cnt, NORM, sync_cnt == 1 ? "" : "s");
 			total_time += sync_time;
@@ -1254,15 +1254,15 @@ static int do_emerge_log(
 			printf("%stotal%s: %s for ",
 					BLUE, NORM, fmt_elapsedtime(flags, total_time));
 			if (total_merges > 0)
-				printf("%s%zd%s merge%s",
+				printf("%s%zu%s merge%s",
 					GREEN, total_merges, NORM, total_merges == 1 ? "" : "s");
 			if (total_unmerges > 0)
-				printf("%s%s%zd%s unmerge%s",
+				printf("%s%s%zu%s unmerge%s",
 						total_merges == 0 ? "" : ", ",
 						GREEN, total_unmerges, NORM,
 						total_unmerges == 1 ? "" : "s");
 			if (sync_cnt > 0)
-				printf("%s%s%zd%s sync%s",
+				printf("%s%s%zu%s sync%s",
 						total_merges + total_unmerges == 0 ? "" : ", ",
 						GREEN, sync_cnt, NORM, sync_cnt == 1 ? "" : "s");
 			printf("\n");

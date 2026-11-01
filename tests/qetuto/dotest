@@ -74,6 +74,11 @@ keys | grep -q "^fpr:::::::::${fpr}:"
 [[ $(keys | grep -c '^uid:.*<extra[0-9]*@localhost>') -eq 20 ]]
 tpass "local trust key and all release keys are in the keyring"
 
+seckeys() { gpg --homedir "${home}" --batch --with-colons --list-secret-keys 2>/dev/null; }
+[[ $(seckeys | grep -c '^fpr:') -eq 2 ]]
+[[ ${mykeyid} == $(seckeys | awk -F: '$1 == "sec" { p = 1 } p && $1 == "fpr" { print $10; exit }') ]]
+tpass "mykeyid is the fingerprint of the primary local trust key"
+
 # the release key is locally signed by the trust key: its pub record
 # carries validity f once the trust db has been checked
 [[ $(keys | awk -F: -v f="${fpr}" '$1 == "pub" { v = $2 } $1 == "fpr" && $10 == f { print v; exit }') == f ]]
@@ -186,8 +191,25 @@ rc=$?
 set -e
 keys | grep -q "^fpr:::::::::${fpr}:"
 [[ ${rc} -ne 0 && ${err} == *"release key ${fpr} is not trusted"* ]]
-[[ ${err} == *"and run qetuto again"* ]]
+[[ ${err} == *"run qetuto --force-replace to rebuild"* ]]
 tpass "a release key that cannot be signed is reported"
+agents_down
+
+rm -rf ${home}
+cp -a home.good ${home}
+gpg --homedir ${home} --batch --yes --delete-keys ${fpr} >/dev/null 2>&1
+agents_down
+realgpg=$(command -v gpg)
+mkdir -p fakesign
+printf '#!/bin/sh\ncase " $* " in *" --quick-lsign-key "*|*" --lsign-key "*) exit 2 ;; esac\nexec %s "$@"\n' "${realgpg}" > fakesign/gpg
+chmod +x fakesign/gpg
+set +e
+err=$(PATH=${PWD}/fakesign:${PATH} qetuto -C 2>&1 >/dev/null)
+rc=$?
+set -e
+rm -rf fakesign
+[[ ${rc} -ne 0 && ${rc} -ne 141 && ${err} == *"release key ${fpr} is not trusted"* ]]
+tpass "a refused signing fallback is reported and the closed pipe survived"
 agents_down
 
 # a key file that someone other than its owner can change is not a
@@ -227,8 +249,72 @@ err=$(qetuto -C 2>&1 >/dev/null)
 rc=$?
 set -e
 [[ ${rc} -ne 0 && ${err} == *"gpg cannot read the keyring"* ]]
-[[ ${err} == *"and run qetuto again"* ]]
+[[ ${err} == *"run qetuto --force-replace to rebuild"* ]]
 tpass "a keyring gpg cannot read is reported"
+agents_down
+
+# check whether the keyring check is done by removing the local trust key
+oldid=$(<${home}/mykeyid)
+touch ${home}/marker
+out=$(qetuto -C -v --force-replace 2>/dev/null)
+[[ ${out} == *"Replacing ${ROOT}/etc/portage/gnupg"* ]]
+[[ -d ${home} && ! -e ${home}/marker ]]
+[[ ! -e ${home}.getuto.tmp && ! -e ${home}.getuto.old ]]
+[[ $(<${home}/mykeyid) != ${oldid} && $(kval ${fpr}) == f ]]
+[[ -f ${home}/.getuto.last ]]
+tpass "--force-replace rebuilds the keyring and swaps it in"
+agents_down
+
+# when the rebuild fails the old keyring stays as it was
+rm -rf ${home}
+cp -a home.good ${home}
+touch ${home}/marker
+oldid=$(<${home}/mykeyid)
+sum=$(cd ${home} && find . -type f | sort | xargs md5sum | md5sum)
+mkdir -p fakebin
+printf '#!/bin/sh\nexit 1\n' > fakebin/openssl
+chmod +x fakebin/openssl
+set +e
+err=$(PATH=${PWD}/fakebin:${PATH} qetuto -C --force-replace 2>&1 >/dev/null)
+rc=$?
+set -e
+rm -rf fakebin
+[[ ${rc} -ne 0 && ${err} == *"could not generate a passphrase"* ]]
+[[ -e ${home}/marker && $(<${home}/mykeyid) == ${oldid} ]]
+[[ $(cd ${home} && find . -type f | sort | xargs md5sum | md5sum) == ${sum} ]]
+[[ ! -e ${home}.getuto.tmp && ! -e ${home}.getuto.old ]]
+tpass "--force-replace keeps the old keyring when the rebuild fails"
+agents_down
+
+# a rebuilt keyring that fails the keyring check is thrown away too
+rm -rf ${home}
+cp -a home.good ${home}
+touch ${home}/marker
+sum=$(cd ${home} && find . -type f | sort | xargs md5sum | md5sum)
+mkdir -p fakesign
+printf '#!/bin/sh\ncase " $* " in *" --quick-lsign-key "*|*" --lsign-key "*) exit 2 ;; esac\nexec %s "$@"\n' "${realgpg}" > fakesign/gpg
+chmod +x fakesign/gpg
+set +e
+err=$(PATH=${PWD}/fakesign:${PATH} qetuto -C --force-replace 2>&1 >/dev/null)
+rc=$?
+set -e
+rm -rf fakesign
+[[ ${rc} -ne 0 && ${err} == *"did not pass the keyring check"* ]]
+[[ ${err} != *"run qetuto --force-replace"* ]]
+[[ -e ${home}/marker ]]
+[[ $(cd ${home} && find . -type f | sort | xargs md5sum | md5sum) == ${sum} ]]
+[[ ! -e ${home}.getuto.tmp && ! -e ${home}.getuto.old ]]
+tpass "--force-replace keeps the old keyring when the rebuilt one fails the check"
+agents_down
+
+# if we interrupt the replacement, the old keyring is left under .getuto.old and the
+# next run should recover it
+mv ${home} ${home}.getuto.old
+out=$(qetuto -C -v 2>/dev/null)
+[[ ${out} == *"Recovered ${ROOT}/etc/portage/gnupg"* ]]
+[[ -d ${home} && -e ${home}/marker && ! -e ${home}.getuto.old ]]
+[[ $(kval ${fpr}) == f ]]
+tpass "an interrupted replacement is recovered on the next run"
 agents_down
 
 rm -rf ${home}
@@ -353,6 +439,14 @@ set -e
 [[ ${rc} -ne 0 && ${err} == *"could not generate a passphrase"* ]]
 [[ ! -e ${home} && ! -e ${home}.getuto.tmp ]]
 tpass "bootstrap without openssl fails cleanly"
+
+# without a keyring the flag becomes our perfect bootstrap
+out=$(qetuto -C -v --force-replace 2>/dev/null)
+[[ ${out} == *"Initializing ${ROOT}/etc/portage/gnupg"* ]]
+[[ -d ${home} && $(kval ${fpr}) == f && ! -e ${home}.getuto.tmp ]]
+tpass "--force-replace without a keyring bootstraps"
+agents_down
+rm -rf ${home}
 
 if [[ ${EUID} -ne 0 ]] ; then
 	chmod 500 root/etc/portage

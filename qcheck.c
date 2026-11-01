@@ -299,7 +299,7 @@ qcheck_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 					const char *digest_disp;
 
 					if (state->qc_update)
-						fprintf(fp_contents_update, "obj %s %s %llu\n",
+						fprintf(fp_contents_update, "obj %s %s %lld\n",
 								entry->name, f_digest,
 								(long long int)st.st_mtime);
 
@@ -335,7 +335,7 @@ qcheck_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			if (state->chk_mtime) {
 				qcprintf(" %sMTIME%s: %s", RED, NORM, entry->name);
 				if (verbose)
-					qcprintf(" (recorded '%llu' != actual '%llu')",
+					qcprintf(" (recorded '%lld' != actual '%lld')",
 						 	 (long long int)entry->mtime,
 						 	 (long long int)st.st_mtime);
 				qcprintf("\n");
@@ -343,11 +343,11 @@ qcheck_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 				/* Update mtime */
 				if (state->qc_update) {
 					if (entry->type == CONTENTS_SYM) {
-						fprintf(fp_contents_update, "sym %s -> %s %llu\n",
+						fprintf(fp_contents_update, "sym %s -> %s %lld\n",
 								entry->name, entry->sym_target,
 								(long long int)st.st_mtime);
 					} else {
-						fprintf(fp_contents_update, "obj %s %s %llu\n",
+						fprintf(fp_contents_update, "obj %s %s %lld\n",
 								entry->name, entry->digest,
 								(long long int)st.st_mtime);
 					}

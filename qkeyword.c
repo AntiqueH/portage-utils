@@ -493,7 +493,7 @@ qkeyword_stats(tree_pkg_ctx *pkg_ctx, void *priv)
 		printf("+%.*s+\n", 25, border);
 		printf("|   general statistics    |\n");
 		printf("+%.*s+\n", 25, border);
-		printf("| %s%13s%s | %s%7zd%s |\n",
+		printf("| %s%13s%s | %s%7zu%s |\n",
 				GREEN, "architectures", NORM, BLUE, archlist_count, NORM);
 		printf("| %s%13s%s | %s%7d%s |\n",
 				GREEN, "categories", NORM, BLUE, numcat, NORM);

@@ -175,6 +175,7 @@ static void fuzz_reset_options
   show_phases = 0;
   qm_index_force = false;
   qm_plan_empty = false;
+  qm_dynamic_deps = -1;
   verbose = 0;
   quiet = 0;
 }

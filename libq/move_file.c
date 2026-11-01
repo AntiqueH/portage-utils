@@ -77,7 +77,7 @@ move_file(int rootfd_src, const char *name_src,
 		}
 		if (fchmod(fd_dst, stat_src->st_mode) != 0) {
 			warnp("could not set permission (%u) for %s",
-			  	  (int)stat_src->st_mode, name_dst);
+			  	  (unsigned int)stat_src->st_mode, name_dst);
 			close(fd_src);
 			close(fd_dst);
 			if (unlinkat(rootfd_dst, tmpname_dst, 0) != 0) {

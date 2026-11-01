@@ -113,6 +113,11 @@ qm_gpkg_craft() {
 	for kv in "$@" ; do
 		printf '%s' "${kv#*=}" > "${w}/md/metadata/${kv%%=*}" || return 1
 	done
+	if [[ -n ${QM_GPKG_ENVSED} ]] ; then
+		bzcat "${w}/md/metadata/environment.bz2" | sed -e "${QM_GPKG_ENVSED}" | bzip2 \
+			> "${w}/md/metadata/environment.new" || return 1
+		mv "${w}/md/metadata/environment.new" "${w}/md/metadata/environment.bz2" || return 1
+	fi
 	( cd "${w}/md" && tar --format=ustar -cf md.tar metadata && \
 	  zstd -q -f md.tar -o "../${pf}/metadata.tar.zst" ) || return 1
 	if [[ -n ${QM_GPKG_IMAGE} ]] ; then
@@ -844,6 +849,138 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 	fi
 
+	# the pkg_* phases with portage's make.conf variables testing, starting with MAKEOPTS first of
+	# all.
+	if qm_gpkg_usable ; then
+		QM_GPKG_ENVSED='s|^    p pkg_postinst$|    p pkg_postinst; printf "%s,%s,%s" "${MAKEOPTS}" "${INSTALL_MASK}" "${PKGDIR}" > "${ROOT%/}/uexenv.txt"|' \
+			qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs uexenv-1.0 SLOT=0 'KEYWORDS=**' RDEPEND= \
+			|| die "could not create uexenv-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+		out=$(yes | MAKEOPTS="-j7" INSTALL_MASK="/usr/share/doc" PKGDIR=/pgpkgs \
+			qmerge =dev-libs/uexenv-1.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -d ${ROOT}/var/db/pkg/dev-libs/uexenv-1.0 && \
+		   $(cat "${ROOT}/uexenv.txt" 2>&1) == "-j7,/usr/share/doc,/pgpkgs" ]]
+		tend $? "qmerge-test: [PE] pkg_postinst sees MAKEOPTS, INSTALL_MASK and PKGDIR from the environment" \
+			|| die "rc=${rc} $(cat "${ROOT}/uexenv.txt" 2>&1) ${out}"
+		rm -f "${ROOT}/uexenv.txt"
+		mkdir -p cfgpe/etc/portage/make.profile cfgpe2/etc/portage/make.profile
+		printf 'MAKEOPTS="-j5"\nINSTALL_MASK="/usr/share/man"\n' > cfgpe/etc/portage/make.conf
+		: > cfgpe2/etc/portage/make.conf
+		out=$(yes | env -u MAKEOPTS -u MAKEFLAGS -u INSTALL_MASK PORTAGE_CONFIGROOT=${PWD}/cfgpe \
+			PKGDIR=/pgpkgs qmerge =dev-libs/uexenv-1.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -d ${ROOT}/var/db/pkg/dev-libs/uexenv-1.0 && \
+		   $(cat "${ROOT}/uexenv.txt" 2>&1) == "-j5,/usr/share/man,/pgpkgs" ]]
+		tend $? "qmerge-test: [PE] pkg_postinst sees MAKEOPTS and INSTALL_MASK from make.conf" \
+			|| die "rc=${rc} $(cat "${ROOT}/uexenv.txt" 2>&1) ${out}"
+		rm -f "${ROOT}/uexenv.txt"
+		out=$(yes | env -u MAKEOPTS -u MAKEFLAGS -u INSTALL_MASK PORTAGE_CONFIGROOT=${PWD}/cfgpe2 \
+			PKGDIR=/pgpkgs qmerge =dev-libs/uexenv-1.0 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -d ${ROOT}/var/db/pkg/dev-libs/uexenv-1.0 && \
+		   $(cat "${ROOT}/uexenv.txt" 2>&1) == "-j$(nproc),,/pgpkgs" ]]
+		tend $? "qmerge-test: [PE] without MAKEOPTS the phases get one job per core like portage" \
+			|| die "rc=${rc} $(cat "${ROOT}/uexenv.txt" 2>&1) ${out}"
+		yes | PKGDIR=/pgpkgs qmerge -U =dev-libs/uexenv-1.0 >/dev/null 2>&1
+		rm -rf cfgpe cfgpe2 "${ROOT}/uexenv.txt" "${ROOT}/pgpkgs/dev-libs/uexenv-1.0.gpkg.tar"
+		PKGDIR=/pgpkgs q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	fi
+
+	# we are finally getting to the dynamic deps test. this is a crucial feature of emerge/qmerge.
+	# a installed packages's deps are extracted from its ebuild in the repository
+	# where that ebuild exists. so we're going to check that via --dynamic-deps=n|QMERGE_DYNAMIC_DEPS=n
+	dd_vdb() {
+		local d="${ROOT}/var/db/pkg/dev-libs/$1"
+		mkdir -p "${d}"
+		echo dev-libs > "${d}/CATEGORY"
+		echo "$1" > "${d}/PF"
+		echo "$2" > "${d}/SLOT"
+		echo 8 > "${d}/EAPI"
+		echo 1 > "${d}/COUNTER"
+		echo '**' > "${d}/KEYWORDS"
+		echo dynrepo > "${d}/repository"
+		: > "${d}/USE"
+		: > "${d}/IUSE"
+		printf '%s' "$3" > "${d}/RDEPEND"
+		: > "${d}/CONTENTS"
+	}
+	dd_vdb uexdd-1.0 0 'dev-libs/uexde:1'
+	dd_vdb uexde-1.0 1 ''
+	dd_vdb uexde-2.0 2 ''
+	echo 'dev-libs/uexdd' >> "${ROOT}/var/lib/portage/world"
+	mkdir -p dynrepo/profiles dynrepo/dev-libs/uexdd dynrepo/metadata/md5-cache/dev-libs \
+		cfgdd/etc/portage/make.profile
+	echo dynrepo > dynrepo/profiles/repo_name
+	printf 'EAPI=8\nSLOT="0"\nRDEPEND="dev-libs/uexde:2"\n' > dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild
+	ddmd5=$(md5sum dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild | cut -d' ' -f1)
+	printf 'EAPI=8\nRDEPEND=dev-libs/uexde:2\nSLOT=0\n_md5_=%s\n' "${ddmd5}" \
+		> dynrepo/metadata/md5-cache/dev-libs/uexdd-1.0
+	printf '[dynrepo]\nlocation = %s/dynrepo\n' "${PWD}" > cfgdd/etc/portage/repos.conf
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pc 2>&1)
+	sel=$(grep '^All selected packages' <<< "${out}")
+	[[ ${sel} == *"dev-libs/uexde-1.0"* && ${sel} != *"dev-libs/uexde-2.0"* ]]
+	tend $? "qmerge-test: [DD] depclean follows the ebuild's dependencies when the ebuild is in the repository" \
+		|| die "${out}"
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pc --dynamic-deps=n 2>&1)
+	sel=$(grep '^All selected packages' <<< "${out}")
+	[[ ${sel} == *"dev-libs/uexde-2.0"* && ${sel} != *"dev-libs/uexde-1.0"* ]]
+	tend $? "qmerge-test: [DD] --dynamic-deps=n uses the installed package's recorded dependencies" \
+		|| die "${out}"
+	out=$(QMERGE_DYNAMIC_DEPS=n PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pc 2>&1)
+	sel=$(grep '^All selected packages' <<< "${out}")
+	[[ ${sel} == *"dev-libs/uexde-2.0"* && ${sel} != *"dev-libs/uexde-1.0"* ]]
+	tend $? "qmerge-test: [DD] QMERGE_DYNAMIC_DEPS=n in the environment does the same" \
+		|| die "${out}"
+	printf 'EAPI=8\nRDEPEND=dev-libs/uexde:2\nSLOT=0\n_md5_=00000000000000000000000000000000\n' \
+		> dynrepo/metadata/md5-cache/dev-libs/uexdd-1.0
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pc 2>&1)
+	sel=$(grep '^All selected packages' <<< "${out}")
+	[[ ${sel} == *"dev-libs/uexde-2.0"* && ${sel} != *"dev-libs/uexde-1.0"* ]]
+	tend $? "qmerge-test: [DD] a stale metadata cache entry falls back to the recorded dependencies" \
+		|| die "${out}"
+	rm -f dynrepo/metadata/md5-cache/dev-libs/uexdd-1.0
+	mkdir -p "dcache${PWD}/dynrepo/dev-libs"
+	printf 'EAPI=8\nRDEPEND=dev-libs/uexde:2\nSLOT=0\n_md5_=%s\n' "${ddmd5}" \
+		> "dcache${PWD}/dynrepo/dev-libs/uexdd-1.0"
+	out=$(PORTAGE_DEPCACHEDIR=${PWD}/dcache PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pc 2>&1)
+	sel=$(grep '^All selected packages' <<< "${out}")
+	[[ ${sel} == *"dev-libs/uexde-1.0"* && ${sel} != *"dev-libs/uexde-2.0"* ]]
+	tend $? "qmerge-test: [DD] a repository without its own cache is read from portage's depcache" \
+		|| die "${out}"
+
+	# what we are testing here is that the ebuild's dependencies are evaluated with the current USE flags,
+	# and that the installed pkgs's deps are evaluated with the USE flags that were active when they
+	# were installed. yes this seems to be a hard one.
+	# we are going to create a USE conditional dependency on a package that is not installed, and check that
+	# qmerge -pD does not want it when the USE cond is inactive || and does want it when the USE cond is
+	# active. tldr many deps handling problems.
+	printf 'EAPI=8\nSLOT="0"\nIUSE="uexopt"\nRDEPEND="dev-libs/uexde:2 uexopt? ( dev-libs/uexopt )"\n' \
+		> dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild
+	ddmd5=$(md5sum dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild | cut -d' ' -f1)
+	printf 'EAPI=8\nIUSE=uexopt\nRDEPEND=dev-libs/uexde:2 uexopt? ( dev-libs/uexopt )\nSLOT=0\n_md5_=%s\n' "${ddmd5}" \
+		> dynrepo/metadata/md5-cache/dev-libs/uexdd-1.0
+	echo uexopt > "${ROOT}/var/db/pkg/dev-libs/uexdd-1.0/IUSE"
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pD dev-libs/uexdd 2>&1)
+	[[ ${out} != *"uexopt"* && ${out} != *"no binary packages to satisfy"* ]]
+	tend $? "qmerge-test: [DD] an inactive USE conditional of the ebuild's dependencies is not wanted" \
+		|| die "${out}"
+	echo uexopt > "${ROOT}/var/db/pkg/dev-libs/uexdd-1.0/USE"
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pD dev-libs/uexdd 2>&1)
+	[[ ${out} == *'no binary packages to satisfy "dev-libs/uexopt"'* ]]
+	tend $? "qmerge-test: [DD] an active USE conditional of the ebuild's dependencies is wanted" \
+		|| die "${out}"
+	: > "${ROOT}/var/db/pkg/dev-libs/uexdd-1.0/USE"
+	printf 'EAPI=8\nSLOT="0"\nIUSE="uexopt"\nRDEPEND="|| ( uexopt? ( dev-libs/uexopt ) dev-libs/uexde:3 )"\n' \
+		> dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild
+	ddmd5=$(md5sum dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild | cut -d' ' -f1)
+	printf 'EAPI=8\nIUSE=uexopt\nRDEPEND=|| ( uexopt? ( dev-libs/uexopt ) dev-libs/uexde:3 )\nSLOT=0\n_md5_=%s\n' "${ddmd5}" \
+		> dynrepo/metadata/md5-cache/dev-libs/uexdd-1.0
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pD dev-libs/uexdd 2>&1)
+	[[ ${out} == *'no binary packages to satisfy "dev-libs/uexde:3"'* && ${out} != *"uexopt"* ]]
+	tend $? "qmerge-test: [DD] an any-of group skips an inactive USE conditional branch" \
+		|| die "${out}"
+	rm -rf dynrepo cfgdd dcache "${ROOT}/var/db/pkg/dev-libs/uexdd-1.0" \
+		"${ROOT}/var/db/pkg/dev-libs/uexde-1.0" "${ROOT}/var/db/pkg/dev-libs/uexde-2.0"
+	sed -i '/^dev-libs\/uexdd$/d' "${ROOT}/var/lib/portage/world"
+
 	if qm_gpkg_usable ; then
 		qm_gpkg_craft "${ROOT}/pgpkgs" dev-libs qlive-1.0 SLOT=0 'KEYWORDS=**' \
 			PROPERTIES=live || die "could not create qlive-1.0.gpkg.tar"
@@ -1559,6 +1696,45 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 		BINPKG_COMPRESS_FLAGS_ZSTD="-19" qpkg -g ${gvpv} 2>&1); rc=$?
 	[[ ${rc} -eq 0 && ${out} != *"ignored"* ]]
 	tend $? "qmerge-test: [qpkg] per-codec FLAGS override replaces the generic" \
+		|| die "rc=${rc} ${out}"
+
+	# multiparalel MAKEOPTS zstd beautiful archiving
+	rm -f "${gvroot}/${gvpv}"*.gpkg.tar "${gvroot}/qmerge-test/${gvpv}"*.gpkg.tar
+	out=$(BINPKG_COMPRESS=zstd BINPKG_COMPRESS_FLAGS="-T2" \
+		qpkg -g ${gvpv} 2>&1); rc=$?
+	gvcf=$(find "${gvroot}" -name "${gvpv}*.gpkg.tar" | head -1)
+	[[ ${rc} -eq 0 && ${out} != *"ignored"* && -n ${gvcf} ]] && \
+		tar tf "${gvcf}" | grep -q "image.tar.zst\$"
+	tend $? "qmerge-test: [qpkg] -T thread count in BINPKG_COMPRESS_FLAGS accepted like zstd -T" \
+		|| die "rc=${rc} ${out}"
+	touch -d "@$(( $(stat -c %Y "${gvcf}") + 2 ))" "${gvcf}"
+	q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+	yes | qmerge -FU qmerge-test >/dev/null 2>&1
+	out=$(yes | qmerge -Fv =${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -n $(qlist -Iv 2>/dev/null) ]]
+	tend $? "qmerge-test: [qpkg] multi-threaded zstd gpkg merges back" \
+		|| die "rc=${rc} ${out}"
+
+	rm -f "${gvroot}/${gvpv}"*.gpkg.tar "${gvroot}/qmerge-test/${gvpv}"*.gpkg.tar
+	out=$(BINPKG_COMPRESS=xz BINPKG_COMPRESS_FLAGS="--threads=2" \
+		qpkg -g ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ${out} != *"ignored"* && \
+	   -n $(find "${gvroot}" -name "${gvpv}*.gpkg.tar" | head -1) ]]
+	tend $? "qmerge-test: [qpkg] --threads= in BINPKG_COMPRESS_FLAGS accepted for xz" \
+		|| die "rc=${rc} ${out}"
+
+	rm -f "${gvroot}/${gvpv}"*.gpkg.tar "${gvroot}/qmerge-test/${gvpv}"*.gpkg.tar
+	out=$(MAKEOPTS="-j2 -l4" BINPKG_COMPRESS=zstd qpkg -g ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ${out} != *"ignored"* && \
+	   -n $(find "${gvroot}" -name "${gvpv}*.gpkg.tar" | head -1) ]]
+	tend $? "qmerge-test: [qpkg] MAKEOPTS job count sets the default thread count" \
+		|| die "rc=${rc} ${out}"
+
+	rm -f "${gvroot}/${gvpv}"*.gpkg.tar "${gvroot}/qmerge-test/${gvpv}"*.gpkg.tar
+	out=$(BINPKG_COMPRESS=bzip2 BINPKG_COMPRESS_FLAGS="-T2" \
+		qpkg -g ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ${out} == *"'-T2' not supported"* ]]
+	tend $? "qmerge-test: [qpkg] -T on a codec without threads throw warns" \
 		|| die "rc=${rc} ${out}"
 
 	if [[ $(id -u) -ne 0 ]] ; then

@@ -88,7 +88,7 @@ static int xpak_walk_index(
 		}
 		pathname_len = READ_BE_INT32((unsigned char*)p);
 		if (pathname_len >= sizeof(pathname)) {
-			warn("pathname length %d exceeds limit %zd",
+			warn("pathname length %u exceeds limit %zu",
 					pathname_len, sizeof(pathname));
 			return -1;
 		}
@@ -226,12 +226,12 @@ xpak_process_fd(
 	x->data = NULL;
 
 	if (x->index_len >= sizeof(buf)) {
-		warn("index length %d exceeds limit %zd", x->index_len, sizeof(buf));
+		warn("index length %u exceeds limit %zu", x->index_len, sizeof(buf));
 		goto fail;
 	}
 	in = fread(x->index, 1, x->index_len, x->fp);
 	if (in != (size_t)x->index_len) {
-		warn("insufficient data read, got %zd, requested %d",
+		warn("insufficient data read, got %zu, requested %u",
 				in, x->index_len);
 		goto fail;
 	}
@@ -242,7 +242,7 @@ xpak_process_fd(
 
 		in = fread(x->data, 1, x->data_len, x->fp);
 		if (in != (size_t)x->data_len) {
-			warn("insufficient data read, got %zd, requested %d",
+			warn("insufficient data read, got %zu, requested %u",
 					in, x->data_len);
 			goto fail;
 		}

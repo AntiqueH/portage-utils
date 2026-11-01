@@ -20,7 +20,7 @@ set_t      *set_add_from_string(set_t *s, const char *buf);
 set_t      *set_clone(set_t *s);
 #define     set_contains(S,K)  (set_get(S,K) == NULL ? false : true)
 const char *set_get(set_t *s, const char *key);
-void       *set_delete(set_t *s, const char *key, bool *removed);
+void       *set_delete(set_t *q, const char *s, bool *removed);
 #define     set_keys(S)        hash_keys((hash_t *)S)
 bool        set_has_intersection(set_t *l, set_t *r);
 size_t      set_size(set_t *s);

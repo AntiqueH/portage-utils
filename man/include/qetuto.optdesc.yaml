@@ -1,0 +1,9 @@
+force-replace: |
+  Rebuild the keyring from scratch and put it in place of the existing
+  one. The new keyring is built in the staging directory
+  \fI${ROOT}/etc/portage/gnupg.getuto.tmp\fR as a first run does,
+  it is checked there, so a keyring that passed the check is replaced
+  in; the old directory is removed afterwards. When anything fails the
+  existing keyring is left as it was. Without an existing keyring the
+  option just installs the regular one. Use this option when you want
+  to replace the old keyring, whatever that is.

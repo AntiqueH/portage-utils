@@ -251,7 +251,7 @@ write_hashes
 	{
 		char *p = data;
 		char *e = data + sizeof(data);
-		p = hashline_adv(p, e, snprintf(p, e - p, "%s %s %zd",
+		p = hashline_adv(p, e, snprintf(p, e - p, "%s %s %zu",
 					type, name, flen));
 		p = hashline_adv(p, e, snprintf(p, e - p, " SHA512 %s", sha512));
 		p = hashline_adv(p, e, snprintf(p, e - p, " BLAKE2B %s", blak2b));
@@ -280,6 +280,52 @@ static const struct {
 	{ "lzop",  archive_write_add_filter_lzop,  ".lzo" },
 };
 
+static long
+qgpkg_jobs
+(
+  void
+)
+{
+  const char *mo = getenv("MAKEOPTS");
+  const char *p;
+  const char *q;
+  long        jobs = 0;
+  long        n;
+
+  if (mo == NULL &&
+      all_config_vars != NULL)
+    mo = get_set("MAKEOPTS", all_config_vars);
+  p = mo;
+  while (p != NULL &&
+         *p != '\0')
+  {
+    q = NULL;
+    if (strncmp(p, "--jobs=", 7) == 0)
+      q = p + 7;
+    else if (*p == 'j')
+      q = p + 1;
+    if (q == NULL)
+    {
+      p++;
+      continue;
+    }
+    while (*q == ' ' ||
+           *q == '\t')
+      q++;
+    if (*q >= '0' &&
+        *q <= '9')
+    {
+      n = strtol(q, (char **)&q, 10);
+      if (n > 0)
+        jobs = n;
+    }
+    p = q;
+  }
+  if (jobs <= 0)
+    jobs = sysconf(_SC_NPROCESSORS_ONLN);
+  return jobs > 0 ? jobs : 1;
+}
+
 static void
 qgpkg_compress_flags(struct archive *a, const char *codec)
 {
@@ -289,6 +335,15 @@ qgpkg_compress_flags(struct archive *a, const char *codec)
 	char       *tok;
 	char       *save;
 	size_t      i;
+	char        opt[80];
+	bool        mt = strcmp(codec, "zstd") == 0 ||
+	                 strcmp(codec, "xz") == 0;
+
+	if (mt)
+	{
+		snprintf(opt, sizeof(opt), "%s:threads=%ld", codec, qgpkg_jobs());
+		archive_write_set_options(a, opt);
+	}
 
 	snprintf(var, sizeof(var), "BINPKG_COMPRESS_FLAGS_%s", codec);
 	for (i = sizeof("BINPKG_COMPRESS_FLAGS_") - 1; var[i] != '\0'; i++)
@@ -305,18 +360,34 @@ qgpkg_compress_flags(struct archive *a, const char *codec)
 		 tok = strtok_r(NULL, " \t", &save))
 	{
 		bool numeric = tok[0] == '-' && tok[1] != '\0';
+		const char *thr = NULL;
 		size_t n;
 
 		for (n = 1; numeric && tok[n] != '\0'; n++)
 			if (tok[n] < '0' || tok[n] > '9')
 				numeric = false;
+		if (mt &&
+			strncmp(tok, "-T", 2) == 0)
+			thr = tok + 2;
+		else if (mt &&
+				 strncmp(tok, "--threads=", 10) == 0)
+			thr = tok + 10;
+		for (n = 0; thr != NULL && thr[n] != '\0'; n++)
+			if (thr[n] < '0' || thr[n] > '9')
+				thr = NULL;
 		if (numeric) {
-			char opt[80];
-
 			snprintf(opt, sizeof(opt), "%s:compression-level=%s",
 					 codec, tok + 1);
 			if (archive_write_set_options(a, opt) != ARCHIVE_OK)
 				warn("BINPKG_COMPRESS_FLAGS: level '%s' not supported "
+					 "for %s by the built-in packer, ignored", tok, codec);
+		}
+		else if (thr != NULL)
+		{
+			snprintf(opt, sizeof(opt), "%s:threads=%s", codec,
+					 thr[0] != '\0' ? thr : "0");
+			if (archive_write_set_options(a, opt) != ARCHIVE_OK)
+				warn("BINPKG_COMPRESS_FLAGS: '%s' not supported "
 					 "for %s by the built-in packer, ignored", tok, codec);
 		} else {
 			warn("BINPKG_COMPRESS_FLAGS: '%s' not supported by the "

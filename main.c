@@ -46,6 +46,7 @@ char *qmerge_local_priority_conf;
 char *qmerge_lenient_conf;
 char *qmerge_keep_going_conf;
 char *qmerge_masked_remove_conf;
+char *qmerge_dynamic_deps_conf;
 char *qmerge_respect_use_conf;
 char *qmerge_rebuilt_conf;
 bool qnews_enable;
@@ -1441,6 +1442,7 @@ env_vars vars_to_read[] = {
 	_Q_EVS(STR,  QMERGE_LENIENT_UPGRADE, qmerge_lenient_conf, true, "")
 	_Q_EVS(STR,  QMERGE_KEEP_GOING,    qmerge_keep_going_conf, true, "")
 	_Q_EVS(STR,  QMERGE_MASKED_REMOVE, qmerge_masked_remove_conf, true, "")
+	_Q_EVS(STR,  QMERGE_DYNAMIC_DEPS, qmerge_dynamic_deps_conf, true, "")
 	_Q_EVS(STR,  QMERGE_BINPKG_RESPECT_USE, qmerge_respect_use_conf, true, "")
 	_Q_EVS(STR,  QMERGE_REBUILT_BINARIES, qmerge_rebuilt_conf, true, "")
 	_Q_EVS(STR,  BINPKG_GPG_VERIFY_GPG_HOME, binpkg_gpg_verify_gpg_home, true,

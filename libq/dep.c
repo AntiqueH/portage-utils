@@ -943,7 +943,10 @@ array *dep_node_children
   const dep_node_t *node
 )
 {
-  return node == NULL ? NULL : node->members;
+  if (node == NULL ||
+      node->type == DEP_NULL)
+    return NULL;
+  return node->members;
 }
 
 array *dep_nodes

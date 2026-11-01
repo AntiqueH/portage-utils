@@ -219,7 +219,7 @@ write_hashes(
 	{
 		char *p = data;
 		char *e = data + sizeof(data);
-		p = hashline_adv(p, e, snprintf(p, e - p, "%s %s %zd",
+		p = hashline_adv(p, e, snprintf(p, e - p, "%s %s %zu",
 					type, name, flen));
 		if (hashes & HASH_BLAKE2B)
 			p = hashline_adv(p, e, snprintf(p, e - p,
@@ -1779,7 +1779,7 @@ process_dir_vrfy(void)
 
 	etime = ((double)((finisht.tv_sec - startt.tv_sec) * 1000000 +
 				finisht.tv_usec) - (double)startt.tv_usec) / 1000000.0;
-	printf("checked %zd Manifests, %zd files, %zd failures in %.02fs\n",
+	printf("checked %zu Manifests, %zu files, %zu failures in %.02fs\n",
 			checked_manifests, checked_files, failed_files, etime);
 	return ret;
 }

@@ -187,7 +187,7 @@ color_remap(void)
 					}
 					if (found == 0)
 						warn("[%s=%s] arbitrary RGB values in color map "
-							 "are not supported on line %d of %s",
+							 "are not supported on line %u of %s",
 							 buf, p, lineno, COLOR_MAP);
 				} else {
 					/* color=color format support */

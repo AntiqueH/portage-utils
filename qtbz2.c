@@ -158,7 +158,7 @@ _tbz2_write_file(FILE *src, int dir_fd, const char *dst, size_t len)
 
 	if (!dst) {
 		if (fseek(src, len, SEEK_CUR) == -1)
-			errp("cannot seek to pos %zd: %s", len, strerror(errno));
+			errp("cannot seek to pos %zu: %s", len, strerror(errno));
 		return 0;
 	}
 

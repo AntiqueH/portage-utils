@@ -46,6 +46,15 @@ int main(int argc, char *argv[])
 		{ "[a=] parent on cand on",  "c/p[a=]", "a", "a", "a", true  },
 		{ "[a=] parent on cand off", "c/p[a=]", "b", "a b", "a", false },
 		{ "[!a=] parent on cand off","c/p[!a=]","b", "a b", "a", true  },
+		/* conditional forms carrying a (+)/(-) default, the flag absent
+		 * from the candidate's IUSE */
+		{ "[a(+)?] parent on, a not in IUSE",  "c/p[a(+)?]", "b", "b", "a", true  },
+		{ "[a(-)?] parent on, a not in IUSE",  "c/p[a(-)?]", "b", "b", "a", false },
+		{ "[a(+)?] parent off, a not in IUSE", "c/p[a(+)?]", "b", "b", "b", true  },
+		{ "[a(+)=] parent on, a not in IUSE",  "c/p[a(+)=]", "b", "b", "a", true  },
+		{ "[a(+)=] parent off, a not in IUSE", "c/p[a(+)=]", "b", "b", "b", false },
+		{ "[!a(+)=] parent off, a not in IUSE","c/p[!a(+)=]","b", "b", "b", true  },
+		{ "[a?] parent on, a not in IUSE, no default", "c/p[a?]", "b", "b", "a", false },
 	};
 	size_t i;
 

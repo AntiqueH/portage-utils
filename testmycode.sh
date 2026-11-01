@@ -634,10 +634,12 @@ cppcheck_gate() {
         return 0
     fi
     if cppcheck --std=c99 --quiet -j "$CPU_JOBS" \
+            --enable=warning,performance,portability \
             --inline-suppr --error-exitcode=2 \
             --suppressions-list=.cppcheck-suppressions \
             --suppress=missingIncludeSystem --suppress=unmatchedSuppression \
-            -i src/curl -i autotools/gnulib -I libq -I . ./*.c libq/*.c; then
+            -DHAVE_CONFIG_H -i src/curl -i autotools/gnulib \
+            -I libq -I . -I autotools/gnulib ./*.c libq/*.c; then
         note PASS "cppcheck"
     else
         note FAIL "cppcheck"
