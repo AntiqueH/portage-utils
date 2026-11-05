@@ -289,6 +289,7 @@ qgpkg_jobs
   const char *mo = getenv("MAKEOPTS");
   const char *p;
   const char *q;
+  char       *end;
   long        jobs = 0;
   long        n;
 
@@ -315,7 +316,8 @@ qgpkg_jobs
     if (*q >= '0' &&
         *q <= '9')
     {
-      n = strtol(q, (char **)&q, 10);
+      n = strtol(q, &end, 10);
+      q = end;
       if (n > 0)
         jobs = n;
     }

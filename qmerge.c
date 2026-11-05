@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <sys/statvfs.h>
 #include <pwd.h>
 #include <grp.h>
@@ -10090,7 +10091,7 @@ static char *qm_dyn_bound
   dep_node_t *t;
   array      *flat;
   size_t      i;
-  dep_node_t *node;
+  atom_ctx   *A;
   char       *out = NULL;
   size_t      len = 0;
 
@@ -10101,9 +10102,8 @@ static char *qm_dyn_bound
   if (t == NULL)
     return NULL;
   flat = dep_flatten_tree(t);
-  array_for_each(flat, i, node)
+  array_for_each(flat, i, A)
   {
-    atom_ctx   *A = dep_node_atom(node);
     const char *s;
     size_t      sl;
 
@@ -10169,7 +10169,10 @@ static struct qm_dyn_deps *qm_dyn_load
              rpath, pa->CATEGORY, pa->PF);
     if (!eat_file(path, &cache, &len) ||
         cache == NULL)
+    {
+      free(cache);
       return dd;
+    }
   }
   memset(vals, 0, sizeof(vals));
   for (line = strtok_r(cache, "\n", &savep);
@@ -11435,6 +11438,107 @@ qm_portage_ids
   }
   *uid = puid;
   *gid = pgid;
+}
+
+static int
+qm_secpass
+(
+  void
+)
+{
+  char        path[_Q_PATH_MAX];
+  struct stat st;
+  gid_t      *groups;
+  uid_t       puid;
+  gid_t       pgid;
+  size_t      len;
+  int         n;
+  int         i;
+
+  if (geteuid() == 0 ||
+      contains_set("unprivileged", features) != NULL)
+    return 2;
+
+  snprintf(path, sizeof(path), "%s", portroot);
+  len = strlen(path);
+  while (len > 1 &&
+         lstat(path, &st) != 0 &&
+         (errno == ENOENT ||
+          errno == ESTALE))
+  {
+    while (len > 1 &&
+           path[len - 1] == '/')
+      path[--len] = '\0';
+    while (len > 1 &&
+           path[len - 1] != '/')
+      path[--len] = '\0';
+  }
+  if (stat(path, &st) == 0 &&
+      access(path, W_OK) == 0 &&
+      (st.st_mode & S_IWOTH) == 0)
+    return 2;
+
+  qm_portage_ids(&puid, &pgid);
+  if (pgid == getegid())
+    return 1;
+  n = getgroups(0, NULL);
+  if (n <= 0)
+    return 0;
+  groups = xmalloc((size_t)n * sizeof(*groups));
+  n = getgroups(n, groups);
+  for (i = 0; i < n; i++)
+    if (groups[i] == pgid)
+      break;
+  free(groups);
+  return i < n ? 1 : 0;
+}
+
+static void
+qm_portage_group_warning
+(
+  void
+)
+{
+  static const char *const lines[] = {
+    "For security reasons, only system administrators should be",
+    "allowed in the portage group. Untrusted users or processes",
+    "can potentially exploit the portage group for attacks such as",
+    "local privilege escalation.",
+  };
+  size_t i;
+
+  for (i = 0; i < ARRAY_SIZE(lines); i++)
+    fprintf(stderr, "%s*** WARNING ***  %s%s\n", RED, NORM, lines[i]);
+}
+
+static int
+qm_access_check
+(
+  bool superuser
+)
+{
+  const char *desc = superuser ? "superuser" : "portage group";
+  int         have = qm_secpass();
+
+  if (have >= 2 ||
+      (have >= 1 &&
+       !superuser))
+    return 0;
+  if (interactive)
+  {
+    printf("This action requires %s access...\n", desc);
+    if (!superuser)
+      qm_portage_group_warning();
+    if (!qmerge_prompt("Would you like to add --pretend to options"))
+      return 128 + SIGINT;
+    pretend     = 1;
+    interactive = 0;
+    return 0;
+  }
+  warn("%s access is required", desc);
+  if (!superuser)
+    qm_portage_group_warning();
+  return EXIT_FAILURE;
 }
 
 static int
@@ -16982,7 +17086,8 @@ static array *qm_installed_blockers
   const char   *cpv
 )
 {
-  struct qm_blocked_cache *c     = hash_get(qm_blocked_cache, cpv);
+  char                    *key   = xstrdup(cpv);
+  struct qm_blocked_cache *c     = hash_get(qm_blocked_cache, key);
   char                    *stamp = tree_pkg_meta(pkg, Q_BUILD_TIME);
   void                    *prev  = NULL;
 
@@ -16990,7 +17095,10 @@ static array *qm_installed_blockers
     stamp = q_deconst("");
   if (c != NULL &&
       strcmp(c->stamp, stamp) == 0)
+  {
+    free(key);
     return c->atoms;
+  }
   if (c != NULL)
   {
     free(c->stamp);
@@ -17004,7 +17112,8 @@ static array *qm_installed_blockers
                       qm_inst_dep(pkg, Q_PDEPEND),
                       qm_inst_dep(pkg, Q_IDEPEND),
                       tree_pkg_meta(pkg, Q_USE), c->atoms);
-  hash_add(qm_blocked_cache, cpv, c, &prev);
+  hash_add(qm_blocked_cache, key, c, &prev);
+  free(key);
   return c->atoms;
 }
 
@@ -30560,6 +30669,19 @@ int qmerge_main(int argc, char **argv)
 		}
 	}
 
+	if (!pretend &&
+			!search_pkgs &&
+			!show_info &&
+			!list_repos &&
+			!list_sets)
+	{
+		ret = qm_access_check(!fetch_only &&
+							  !regen_index &&
+							  !show_phases);
+		if (ret != 0)
+			return ret;
+	}
+
 	if (list_repos)
 		return qm_print_repos();
 
@@ -31199,6 +31321,22 @@ int qmerge_main(int argc, char **argv)
 		array_deepfree(nv, set_free_cb);
 		hash_free(qm_plan_notices);
 		qm_plan_notices = NULL;
+	}
+	if (qm_blocked_cache != NULL)
+	{
+		array                   *bv = hash_values(qm_blocked_cache);
+		size_t                   n;
+		struct qm_blocked_cache *c;
+
+		array_for_each(bv, n, c)
+		{
+			free(c->stamp);
+			array_deepfree(c->atoms, free);
+			free(c);
+		}
+		array_free(bv);
+		hash_free(qm_blocked_cache);
+		qm_blocked_cache = NULL;
 	}
 	if (qmerge_vdb_tree != NULL)
 	{

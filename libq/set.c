@@ -158,24 +158,22 @@ set_t *set_add_unique
   }
   else
   {
-    ll = NULL;
-    for (w = q->buckets[pos]; w != NULL; ll = w, w = w->next)
+    for (w = q->buckets[pos]; ; w = w->next)
     {
       if (w->hash == hash &&
           strcmp(w->name, name) == 0)
+        break;
+      if (w->next == NULL)
       {
-        uniq = false;
+        ll = xzalloc(sizeof(*ll));
+
+        ll->name = xstrdup(name);
+        ll->hash = hash;
+        w->next  = ll;
+
+        uniq = true;
         break;
       }
-    }
-    if (w == NULL)
-    {
-      ll = ll->next = xzalloc(sizeof(*ll));
-
-      ll->name = xstrdup(name);
-      ll->hash = hash;
-
-      uniq = true;
     }
   }
 
@@ -513,8 +511,7 @@ hash_t *hash_add
   }
   else
   {
-    ll = NULL;
-    for (w = q->buckets[pos]; w != NULL; ll = w, w = w->next)
+    for (w = q->buckets[pos]; ; w = w->next)
     {
       if (w->hash == hash &&
           strcmp(w->name, key) == 0)
@@ -524,13 +521,15 @@ hash_t *hash_add
         w->val = val;
         return q;
       }
-    }
-    if (w == NULL)
-    {
-      ll = ll->next = xzalloc(sizeof(*ll));
-      ll->name = xstrdup(key);
-      ll->hash = hash;
-      ll->val  = val;
+      if (w->next == NULL)
+      {
+        ll = xzalloc(sizeof(*ll));
+        ll->name = xstrdup(key);
+        ll->hash = hash;
+        ll->val  = val;
+        w->next  = ll;
+        break;
+      }
     }
   }
 

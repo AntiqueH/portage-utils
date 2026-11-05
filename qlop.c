@@ -333,6 +333,17 @@ pkg_sort_cb(const void *l, const void *r)
 	return atom_compar_cb(&al, &ar);
 }
 
+static void qlop_pkg_match_free
+(
+  void *p
+)
+{
+  struct pkg_match *pm = p;
+
+  atom_implode(pm->atom);
+  free(pm);
+}
+
 /* The format of the sync log has changed over time.
 
 Old format:
@@ -1398,12 +1409,8 @@ static int do_emerge_log(
 	hash_free(unmerge_averages);
 	if (upgrade_atom != NULL)
 		atom_implode(upgrade_atom);
-	array_for_each_rev(merge_matches, i, pkgw)
-		atom_implode(pkgw->atom);
-	array_deepfree(merge_matches, NULL);
-	array_for_each_rev(unmerge_matches, i, pkgw)
-		atom_implode(pkgw->atom);
-	array_deepfree(unmerge_matches, NULL);
+	array_deepfree(merge_matches, qlop_pkg_match_free);
+	array_deepfree(unmerge_matches, qlop_pkg_match_free);
 	if (atomset != NULL) {
 		array *t = hash_values(atomset);
 		array_deepfree(t, atom_implode_cb);

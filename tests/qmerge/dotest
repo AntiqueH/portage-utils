@@ -977,6 +977,16 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	[[ ${out} == *'no binary packages to satisfy "dev-libs/uexde:3"'* && ${out} != *"uexopt"* ]]
 	tend $? "qmerge-test: [DD] an any-of group skips an inactive USE conditional branch" \
 		|| die "${out}"
+	printf 'EAPI=8\nSLOT="0"\nRDEPEND="dev-libs/uexde:="\n' \
+		> dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild
+	ddmd5=$(md5sum dynrepo/dev-libs/uexdd/uexdd-1.0.ebuild | cut -d' ' -f1)
+	printf 'EAPI=8\nRDEPEND=dev-libs/uexde:=\nSLOT=0\n_md5_=%s\n' "${ddmd5}" \
+		> dynrepo/metadata/md5-cache/dev-libs/uexdd-1.0
+	printf '%s' 'dev-libs/uexde:3/3=' > "${ROOT}/var/db/pkg/dev-libs/uexdd-1.0/RDEPEND"
+	out=$(PORTAGE_CONFIGROOT=${PWD}/cfgdd qmerge -pD dev-libs/uexdd 2>&1)
+	[[ ${out} == *"no binary packages to satisfy"* && ${out} == *"uexde:3/3="* ]]
+	tend $? "qmerge-test: [DD] the installed slot-operator binding stays with the ebuild's dependencies" \
+		|| die "${out}"
 	rm -rf dynrepo cfgdd dcache "${ROOT}/var/db/pkg/dev-libs/uexdd-1.0" \
 		"${ROOT}/var/db/pkg/dev-libs/uexde-1.0" "${ROOT}/var/db/pkg/dev-libs/uexde-2.0"
 	sed -i '/^dev-libs\/uexdd$/d' "${ROOT}/var/lib/portage/world"
@@ -1786,6 +1796,70 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	rm -rf "${gvex}" "${gvex}.bak" "${gvroot}/qmerge-test" "${gvstore}" cfggv
 	rm -f "${gvroot}/${gvpv}.tbz2"
 	qmaint binhost -f >/dev/null 2>&1
+fi
+
+# [AC] the access check before running everything else.
+# users who can't write/use ROOT need root for merges
+# and the portage group for a fetch.
+# testing root permissions for qmerge
+if [[ $(id -u) -ne 0 ]] ; then
+	acr="${PWD}/acroot"
+	rm -rf "${acr}"; mkdir -p "${acr}"; chmod 0555 "${acr}"
+	out=$(ROOT="${acr}" qmerge -y -K qmerge-test 2>&1); rc=$?
+	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* && \
+	   ${out} != *"These are the packages"* ]]
+	tend $? "qmerge-test: [AC] unwritable ROOT: superuser required before any plan" \
+		|| die "rc=${rc} ${out}"
+
+	chmod 0777 "${acr}"
+	out=$(ROOT="${acr}" qmerge -y -K qmerge-test 2>&1); rc=$?
+	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* ]]
+	tend $? "qmerge-test: [AC] world-writable ROOT does not count as owned" \
+		|| die "rc=${rc} ${out}"
+	chmod 0555 "${acr}"
+
+	out=$(ROOT="${acr}" qmerge -y -U qmerge-test 2>&1); rc=$?
+	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* ]]
+	tend $? "qmerge-test: [AC] unmerge needs superuser too" || die "rc=${rc} ${out}"
+
+	out=$(ROOT="${acr}" qmerge -y -p -K qmerge-test 2>&1); rc=$?
+	[[ ${out} != *"access is required"* ]]
+	tend $? "qmerge-test: [AC] --pretend needs no access" || die "rc=${rc} ${out}"
+
+	out=$(ROOT="${acr}" qmerge -s qmerge-test 2>&1); rc=$?
+	[[ ${out} != *"access is required"* ]]
+	tend $? "qmerge-test: [AC] search needs no access" || die "rc=${rc} ${out}"
+
+	out=$(ROOT="${acr}" FEATURES="unprivileged" qmerge -y -K qmerge-test 2>&1); rc=$?
+	[[ ${out} != *"access is required"* ]]
+	tend $? "qmerge-test: [AC] FEATURES=unprivileged passes the check" \
+		|| die "rc=${rc} ${out}"
+
+	out=$(ROOT="${acr}" qmerge -f qmerge-test 2>&1); rc=$?
+	if id -nG | tr ' ' '\n' | grep -qx portage ; then
+		[[ ${out} != *"access is required"* ]]
+		tend $? "qmerge-test: [AC] fetch-only needs only the portage group" \
+			|| die "rc=${rc} ${out}"
+	else
+		[[ ${rc} -eq 1 && ${out} == *"portage group access is required"* && \
+		   ${out} == *"*** WARNING ***"* ]]
+		tend $? "qmerge-test: [AC] fetch-only outside the portage group refused with the warning" \
+			|| die "rc=${rc} ${out}"
+	fi
+
+	out=$(echo n | ROOT="${acr}" qmerge -K qmerge-test 2>&1); rc=$?
+	[[ ${rc} -eq 130 && ${out} == *"This action requires superuser access"* && \
+	   ${out} == *"Would you like to add --pretend to options"* ]]
+	tend $? "qmerge-test: [AC] interactive No quits with 130" || die "rc=${rc} ${out}"
+
+	out=$(echo y | ROOT="${acr}" qmerge -K qmerge-test 2>&1); rc=$?
+	[[ ${out} == *"Would you like to add --pretend to options"* && \
+	   ${out} != *"OK to merge"* && ${out} != *"access is required"* ]]
+	tend $? "qmerge-test: [AC] interactive Yes goes on as --pretend" || die "rc=${rc} ${out}"
+
+	chmod 0755 "${acr}"; rm -rf "${acr}"
+else
+	echo "${WARN}SKIPPED:${NORMAL} [AC] access check cases (root passes every level)"
 fi
 
 # root drops signature verification to a child running as 'nobody',

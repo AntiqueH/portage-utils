@@ -635,6 +635,7 @@ cppcheck_gate() {
     fi
     if cppcheck --std=c99 --quiet -j "$CPU_JOBS" \
             --enable=warning,performance,portability \
+            --check-level=exhaustive \
             --inline-suppr --error-exitcode=2 \
             --suppressions-list=.cppcheck-suppressions \
             --suppress=missingIncludeSystem --suppress=unmatchedSuppression \
