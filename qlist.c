@@ -250,7 +250,8 @@ qlist_match(
 
 	if (urepo) {
 		/* require exact match on repositories */
-		if (strcmp(atom->REPO, urepo) != 0)
+		if (atom->REPO == NULL ||
+				strcmp(atom->REPO, urepo) != 0)
 			return false;
 	}
 

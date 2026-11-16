@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 
 for d in /usr/lib/llvm/*/bin; do [ -x "$d/llvm-cov" ] && PATH="$d:$PATH"; done
 export PATH
-read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve}"
+read -ra TARGETS <<< "${FUZZ_TARGETS:-atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve args}"
 
 declare -A SRC=(
     [atom]=libq/atom.c
@@ -29,6 +29,7 @@ declare -A SRC=(
     [dcx]=qmerge.c
     [qmhelpers]=qmerge.c
     [resolve]=qmerge.c
+    [args]=qmerge.c
 )
 
 COV=tests/r/coverage

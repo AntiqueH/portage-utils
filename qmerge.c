@@ -219,6 +219,8 @@ static struct option const qmerge_long_opts[] = {
 	{"keep-going", opt_argument, NULL, 147},
 	{"masked-remove", opt_argument, NULL, 151},
 	{"dynamic-deps", a_argument, NULL, 152},
+	{"disable-env-update", no_argument, NULL, 153},
+	{"no-ldconfig", no_argument, NULL, 154},
 	{"depclean", no_argument, NULL, 'c'},
 	{"prune",   no_argument, NULL, 'P'},
 	{"with-bdeps", a_argument, NULL, 148},
@@ -265,6 +267,8 @@ static const char * const qmerge_opts_help[] = {
 	"Continue past a failed package like emerge --keep-going: hide from the list, re-resolve, drop dependents whose dependency is no longer satisfied, merge the rest (y/n, default n)",
 	"With -u @world: unmerge an installed package masked in /etc/portage/package.mask that has no acceptable build and that no installed package needs, and drop its world entry (y/n, default y)",
 	"Substitute the dependencies of installed packages with the dependencies of unbuilt ebuilds, like emerge --dynamic-deps (y/n, default y)",
+	"Do not run env-update (profile.env, ld.so.conf, ldconfig) after a merge or unmerge",
+	"Run env-update after a merge or unmerge but skip ldconfig, like env-update --no-ldconfig",
 	"Remove packages not required by @world (emerge --depclean); with atoms: only those, if nothing needs them",
 	"Remove all but the highest installed version of a package if nothing needs the others (emerge --prune); with -O ignoring dependencies",
 	"With --depclean: y/n follow DEPEND/BDEPEND of installed packages (default y)",
@@ -301,6 +305,8 @@ static set   *qm_nb_world   = NULL;
 static set   *qm_nb_cp      = NULL;
 static bool   qm_nb_world_run = false;
 static int qm_deselect = -1;
+static bool qm_no_env_update = false;
+static bool qm_no_ldconfig   = false;
 char oneshot = 0;
 char force_download = 0;
 char follow_rdepends = 1;
@@ -1538,6 +1544,53 @@ qm_repo_loc(size_t i, char *buf, size_t buflen)
 	return buf;
 }
 
+static const char *qm_uri_hide_passwd
+(
+  const char *uri,
+  char       *buf,
+  size_t      len
+)
+{
+  const char *user;
+  const char *pass;
+  const char *at;
+  const char *p;
+  size_t      ulen;
+
+  if (uri == NULL)
+    return "";
+  user = strstr(uri, "//");
+  if (user == NULL)
+    return uri;
+  user += 2;
+  for (p = user;
+       *p != '\0' &&
+       *p != ':' &&
+       !isspace((unsigned char)*p);
+       p++)
+    ;
+  if (p == user ||
+      *p != ':')
+    return uri;
+  pass = p + 1;
+  for (at = pass;
+       *at != '\0' &&
+       *at != '@' &&
+       !isspace((unsigned char)*at);
+       at++)
+    ;
+  if (at == pass ||
+      *at != '@')
+    return uri;
+  ulen = (size_t)(p - uri);
+  if (ulen >= len ||
+      len - ulen < sizeof(":*password*@"))
+    return "";
+  memcpy(buf, uri, ulen);
+  snprintf(buf + ulen, len - ulen, ":*password*%s", at);
+  return buf;
+}
+
 static void
 qm_binrepos_flush(void *ctx, const char *name, const char *uri,
 				  const char *loc, int priority, int verify_sig,
@@ -2091,6 +2144,7 @@ fetch_curl
 	CURLcode    res;
 	curl_off_t  resume_from = 0;
 	struct stat st;
+	char        ubuf[_Q_PATH_MAX];
 
 	if (!curl_ready)
 	{
@@ -2112,7 +2166,8 @@ fetch_curl
 	if (pretend &&
 			!qm_fetch_meta)
 	{
-		printf("fetch %s -> %s\n", uri, dest);
+		printf("fetch %s -> %s\n",
+			   qm_uri_hide_passwd(uri, ubuf, sizeof(ubuf)), dest);
 		free(uri);
 		free(dest);
 		return 0;
@@ -2185,7 +2240,9 @@ fetch_curl
 	if (res != CURLE_OK && !qm_fetch_notmod &&
 			strcmp(src, "Moves") != 0 && strcmp(src, "News.tar") != 0 &&
 			strcmp(src, "Packages.gz") != 0)
-		warn("fetching %s failed: %s", uri, curl_easy_strerror(res));
+		warn("fetching %s failed: %s",
+			 qm_uri_hide_passwd(uri, ubuf, sizeof(ubuf)),
+			 curl_easy_strerror(res));
 	free(uri);
 	free(dest);
 	return res == CURLE_OK ? 0 : -1;
@@ -3190,6 +3247,7 @@ qm_print_repos(void)
 		   GREEN, NORM);
 	for (i = 0; i < qm_nbinrepos; i++) {
 		size_t w = qm_walk_order[i];
+		char   ubuf[_Q_PATH_MAX];
 
 		/* this would be @local, the one established in the
 		 * PKGDIR, for now */
@@ -3209,8 +3267,8 @@ qm_print_repos(void)
 			    * but we don't want to break gentooes eyes */
 			   MAGENTA, qm_binrepos[w].name, NORM,
 			   qm_binrepos[w].priority,
-			   DKBLUE, qm_binrepos[w].uri != NULL ?
-					qm_binrepos[w].uri : "", NORM,
+			   DKBLUE, qm_uri_hide_passwd(qm_binrepos[w].uri,
+										  ubuf, sizeof(ubuf)), NORM,
 			   qm_binrepos[w].verify_sig == 1 ? "  [verify-signature]" :
 			   qm_binrepos[w].verify_sig == 0 ? "  [unverified]" : "",
 			   qm_binrepos[w].frozen ? "  [frozen]" : "",
@@ -21226,12 +21284,15 @@ qm_env_update(bool check_only, bool always_ldconfig, bool no_ldconfig,
 }
 
 /* env_update after every package. yay! */
-static void
-qm_env_update_hook(array *touched)
+static void qm_env_update_hook
+(
+  array *touched
+)
 {
-	if (pretend)
-		return;
-	qm_env_update(false, false, false, touched);
+  if (pretend ||
+      qm_no_env_update)
+    return;
+  qm_env_update(false, false, qm_no_ldconfig, touched);
 }
 
 /* qmaint env: -c reports outdated generated files, -f = env-update CLI */
@@ -22105,6 +22166,7 @@ qm_owner_counts_drop(hash_t *counts, array *paths)
 struct qm_unmerge_batch {
 	set    *todo;
 	set    *interest;
+	set    *hits;
 	hash_t *counts;
 	bool    failed;
 };
@@ -22211,6 +22273,7 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 			char      ucnt[64];
 			char      ucpv[512];
 
+			ub->hits = add_set_unique(p, ub->hits, NULL);
 			snprintf(uslot, sizeof(uslot), "%s", a->SLOT ? : "0");
 			snprintf(ucpv, sizeof(ucpv), "%s/%s",
 					 a->CATEGORY ? : "", a->PF ? : "");
@@ -22276,57 +22339,105 @@ qmerge_unmerge_cb(tree_pkg_ctx *pkg_ctx, void *priv)
 }
 
 static int
-unmerge_packages(set *todo)
+qm_unmerge_missing
+(
+  set *todo,
+  set *hits
+)
 {
-	struct qm_unmerge_batch ub;
-	tree_ctx               *vdb;
-	int                     ret = 1;
+  array  *keys = set_keys(todo);
+  size_t  i;
+  char   *k;
+  bool    any = false;
+  char    shown[_Q_PATH_MAX];
 
-	if (!pretend)
-		qm_vdb_lock();
-	ub.todo     = todo;
-	ub.interest = create_set();
-	ub.counts   = NULL;
-	ub.failed   = false;
-	if (!uninstall_force) {
-		tree_ctx        *scan = tree_new(portroot, portvdb, TREETYPE_VDB, true);
-		preserved_entry *pe;
-		size_t           i;
+  array_for_each(keys, i, k)
+  {
+    if (contains_set(k, hits) != NULL)
+    {
+      any = true;
+      continue;
+    }
+    fprintf(stderr, "--- Couldn't find '%s' to unmerge.\n",
+            qm_bid_shown(k, shown, sizeof(shown)));
+  }
+  array_free(keys);
+  if (any)
+    return 0;
+  printf(">>> No packages selected for removal by unmerge\n");
+  return 1;
+}
 
-		if (scan != NULL) {
-			tree_foreach_pkg_fast(scan, qm_unmerge_interest_cb, &ub, NULL);
-			tree_close(scan);
-		}
-		array_for_each(preserved_entries(qm_preserved_get()), i, pe) {
-			size_t k;
-			char  *pt;
+static int
+unmerge_packages
+(
+  set *todo
+)
+{
+  struct qm_unmerge_batch ub;
+  tree_ctx               *vdb;
+  int                     ret = 1;
 
-			array_for_each(pe->paths, k, pt)
-				add_set(pt, ub.interest);
-		}
-		ub.counts = qm_owner_counts(ub.interest);
-	}
-	free_set(ub.interest);
-	vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
-	if (vdb != NULL) {
-		ret = tree_foreach_pkg_fast(vdb, qmerge_unmerge_cb, &ub, NULL);
-		tree_close(vdb);
-	}
-	if (ub.counts != NULL)
-		hash_free(ub.counts);
-	if (!pretend) {
-		qm_preserved_gc();
-		qm_preserved_finish();
-	}
-	if (!pretend && qm_deselect != 0)
-		qm_world_clean_unmerged();
-	if (!pretend)
-		qm_vdb_unlock();
-	return ub.failed ? 1 : ret;
+  if (!pretend)
+    qm_vdb_lock();
+  ub.todo     = todo;
+  ub.interest = create_set();
+  ub.hits     = NULL;
+  ub.counts   = NULL;
+  ub.failed   = false;
+  if (!uninstall_force)
+  {
+    tree_ctx        *scan = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+    preserved_entry *pe;
+    size_t           i;
+
+    if (scan != NULL)
+    {
+      tree_foreach_pkg_fast(scan, qm_unmerge_interest_cb, &ub, NULL);
+      tree_close(scan);
+    }
+    array_for_each(preserved_entries(qm_preserved_get()), i, pe)
+    {
+      size_t  k;
+      char   *pt;
+
+      array_for_each(pe->paths, k, pt)
+        add_set(pt, ub.interest);
+    }
+    ub.counts = qm_owner_counts(ub.interest);
+  }
+  free_set(ub.interest);
+  vdb = tree_new(portroot, portvdb, TREETYPE_VDB, true);
+  if (vdb != NULL)
+  {
+    ret = tree_foreach_pkg_fast(vdb, qmerge_unmerge_cb, &ub, NULL);
+    tree_close(vdb);
+  }
+  if (uninstall &&
+      todo != NULL &&
+      (pretend != 0 ||
+       !interactive) &&
+      qm_unmerge_missing(todo, ub.hits) != 0)
+    ret = 1;
+  free_set(ub.hits);
+  if (ub.counts != NULL)
+    hash_free(ub.counts);
+  if (!pretend)
+  {
+    qm_preserved_gc();
+    qm_preserved_finish();
+  }
+  if (!pretend &&
+      qm_deselect != 0)
+    qm_world_clean_unmerged();
+  if (!pretend)
+    qm_vdb_unlock();
+  return ub.failed ? 1 : ret;
 }
 
 /* this is where we'll have @sets files, and their expansion */
 static set *qmerge_expand_setname(const char *name, set *q);
+static bool qm_set_name_ok(const char *name);
 
 static set *qm_sets_seen = NULL;
 
@@ -22335,6 +22446,10 @@ qmerge_expand_setref(const char *name, set *q)
 {
 	bool ok;
 
+	if (!qm_set_name_ok(name)) {
+		warn("there are no sets to satisfy '@%s' (skipped)", name);
+		return q;
+	}
 	if (contains_set(name, qm_sets_seen) != NULL) {
 		warn("circular set reference: @%s (skipped)", name);
 		return q;
@@ -22733,14 +22848,382 @@ qm_arg_buildid(const char *arg, char *out, size_t olen)
 	return true;
 }
 
+static bool qm_args_invalid = false;
+static int  qm_depclean;
+
+static const char *qm_arg_shown
+(
+  const char *s,
+  char       *out,
+  size_t      olen
+)
+{
+  size_t i;
+
+  for (i = 0; i + 1 < olen && s[i] != '\0'; i++)
+    out[i] = (unsigned char)s[i] < 0x20 || s[i] == 0x7f ? '?' : s[i];
+  out[i] = '\0';
+  return out;
+}
+
+static bool qm_arg_word_ok
+(
+  const char *s,
+  const char *end,
+  const char *first_extra,
+  const char *extra
+)
+{
+  const char *p;
+
+  if (s >= end)
+    return false;
+  if (!isalnum((unsigned char)*s) &&
+      *s != '_' &&
+      strchr(first_extra, *s) == NULL)
+    return false;
+  for (p = s + 1; p < end; p++)
+    if (!isalnum((unsigned char)*p) &&
+        *p != '_' &&
+        strchr(extra, *p) == NULL)
+      return false;
+  return true;
+}
+
+static bool qm_arg_version_ok
+(
+  const char *s,
+  const char *end
+)
+{
+  static const char *const sfx[] = { "alpha", "beta", "pre", "rc", "p" };
+  const char *p = s;
+  size_t      i;
+
+  if (p >= end ||
+      !isdigit((unsigned char)*p))
+    return false;
+  while (p < end &&
+         isdigit((unsigned char)*p))
+    p++;
+  while (p < end &&
+         *p == '.')
+  {
+    p++;
+    if (p >= end ||
+        !isdigit((unsigned char)*p))
+      return false;
+    while (p < end &&
+           isdigit((unsigned char)*p))
+      p++;
+  }
+  if (p < end &&
+      islower((unsigned char)*p))
+    p++;
+  while (p < end &&
+         *p == '_')
+  {
+    p++;
+    for (i = 0; i < ARRAY_SIZE(sfx); i++)
+    {
+      size_t l = strlen(sfx[i]);
+
+      if ((size_t)(end - p) >= l &&
+          strncmp(p, sfx[i], l) == 0)
+      {
+        p += l;
+        break;
+      }
+    }
+    if (i == ARRAY_SIZE(sfx))
+      return false;
+    while (p < end &&
+           isdigit((unsigned char)*p))
+      p++;
+  }
+  if (p < end &&
+      *p == '-')
+  {
+    p++;
+    if (p >= end ||
+        *p != 'r')
+      return false;
+    p++;
+    if (p >= end ||
+        !isdigit((unsigned char)*p))
+      return false;
+    while (p < end &&
+           isdigit((unsigned char)*p))
+      p++;
+  }
+  return p == end;
+}
+
+static char qm_arg_usedep_flag
+(
+  const char  *p,
+  const char  *e,
+  const char **fs,
+  const char **fe
+)
+{
+  if (p < e &&
+      (*p == '!' ||
+       *p == '-'))
+    p++;
+  *fs = p;
+  while (p < e &&
+         (isalnum((unsigned char)*p) ||
+          strchr("+_@-", *p) != NULL))
+    p++;
+  *fe = p;
+  if (e - p >= 3 &&
+      p[0] == '(')
+    return p[1];
+  return '\0';
+}
+
+static bool qm_arg_usedeps_ok
+(
+  const char *s,
+  const char *end
+)
+{
+  const char *p = s;
+
+  if (s >= end)
+    return false;
+  while (p < end)
+  {
+    const char *q = memchr(p, ',', (size_t)(end - p));
+    const char *e = q != NULL ? q : end;
+    const char *f = p;
+    const char *fs;
+    const char *fe;
+    const char *o;
+    char        dflt;
+
+    if (f < e &&
+        (*f == '!' ||
+         *f == '-'))
+      f++;
+    if (f >= e ||
+        !isalnum((unsigned char)*f))
+      return false;
+    while (f < e &&
+           (isalnum((unsigned char)*f) ||
+            strchr("+_@-", *f) != NULL))
+      f++;
+    if (e - f >= 3 &&
+        f[0] == '(' &&
+        (f[1] == '+' ||
+         f[1] == '-') &&
+        f[2] == ')')
+      f += 3;
+    if (f < e &&
+        (*f == '?' ||
+         *f == '='))
+      f++;
+    if (f != e)
+      return false;
+    dflt = qm_arg_usedep_flag(p, e, &fs, &fe);
+    for (o = s; o < p; o++)
+    {
+      const char *oq = memchr(o, ',', (size_t)(p - o));
+      const char *os;
+      const char *oe;
+
+      if (qm_arg_usedep_flag(o, oq, &os, &oe) != dflt &&
+          oe - os == fe - fs &&
+          memcmp(os, fs, (size_t)(fe - fs)) == 0)
+        return false;
+      o = oq;
+    }
+    if (q == NULL)
+      break;
+    p = q + 1;
+    if (p == end)
+      return false;
+  }
+  return true;
+}
+
+static bool qm_arg_atom_valid
+(
+  const char *arg,
+  bool        wildcard
+)
+{
+  const char *catfirst = wildcard ? "+*" : "";
+  const char *catrest  = wildcard ? "+.*-" : "+.-";
+  const char *pnfirst  = wildcard ? "+*" : "";
+  const char *pnrest   = wildcard ? "+*-" : "+-";
+  const char *p        = arg;
+  const char *end;
+  const char *at;
+  const char *body_end;
+  const char *slash;
+  const char *dash;
+  const char *vend;
+  const char *name_end;
+  bool        op = false;
+  bool        eq = false;
+
+  for (end = arg; *end != '\0'; end++)
+    if ((unsigned char)*end < 0x20 ||
+        *end == 0x7f)
+      return false;
+  at = arg[0] != '\0' ? strchr(arg + 1, '@') : NULL;
+  if (at != NULL)
+  {
+    if (!qm_arg_word_ok(at + 1, end, "", "-"))
+      return false;
+    end = at;
+  }
+  if (*p == '<' ||
+      *p == '>')
+  {
+    op = true;
+    p++;
+    if (*p == '=')
+      p++;
+  }
+  else if (*p == '=')
+  {
+    op = true;
+    eq = true;
+    p++;
+  }
+  else if (*p == '~')
+  {
+    op = true;
+    p++;
+  }
+  body_end = p;
+  while (body_end < end &&
+         *body_end != ':' &&
+         *body_end != '[')
+    body_end++;
+  slash = memchr(p, '/', (size_t)(body_end - p));
+  if (slash != NULL)
+  {
+    if (!qm_arg_word_ok(p, slash, catfirst, catrest))
+      return false;
+    p = slash + 1;
+  }
+  vend = body_end;
+  if (eq &&
+      vend > p &&
+      vend[-1] == '*')
+    vend--;
+  name_end = vend;
+  for (dash = memchr(p, '-', (size_t)(vend - p));
+       dash != NULL;
+       dash = memchr(dash + 1, '-', (size_t)(vend - dash - 1)))
+  {
+    const char *bid;
+
+    if (qm_arg_version_ok(dash + 1, vend))
+    {
+      name_end = dash;
+      break;
+    }
+    if (!eq)
+      continue;
+    for (bid = vend;
+         bid > dash + 1 &&
+         isdigit((unsigned char)bid[-1]);
+         bid--)
+      ;
+    if (bid < vend &&
+        bid > dash + 2 &&
+        bid[-1] == '-' &&
+        qm_arg_version_ok(dash + 1, bid - 1))
+    {
+      name_end = dash;
+      break;
+    }
+  }
+  if (op &&
+      name_end == vend)
+    return false;
+  if (!qm_arg_word_ok(p, name_end, pnfirst, pnrest))
+    return false;
+  p = body_end;
+  if (p < end &&
+      *p == ':' &&
+      p[1] != ':')
+  {
+    const char *s = ++p;
+
+    while (p < end &&
+           *p != '[' &&
+           !(*p == ':' &&
+             p[1] == ':'))
+      p++;
+    if (!qm_arg_word_ok(s, p, "+./*=-", "+./*=-"))
+      return false;
+  }
+  if (p < end &&
+      *p == ':' &&
+      p[1] == ':')
+  {
+    const char *s = p + 2;
+
+    p = s;
+    while (p < end &&
+           *p != '[')
+      p++;
+    if (!qm_arg_word_ok(s, p, "", "-"))
+      return false;
+  }
+  if (p < end &&
+      *p == '[')
+  {
+    if (end[-1] != ']' ||
+        !qm_arg_usedeps_ok(p + 1, end - 1))
+      return false;
+    p = end;
+  }
+  return p == end;
+}
+
+static bool qm_set_name_ok
+(
+  const char *name
+)
+{
+  const char *p;
+
+  if (name[0] == '\0')
+    return false;
+  for (p = name; *p != '\0'; p++)
+    if ((unsigned char)*p < 0x20 ||
+        *p == 0x7f ||
+        *p == '/')
+      return false;
+  return true;
+}
+
 static set *
 qmerge_add_set(char *buf, set *q)
 {
 	char *name = NULL;
 	char *at;
 	char  bid[_Q_PATH_MAX];
+	char  shown[_Q_PATH_MAX];
 
 	rmspace(buf);
+	if (buf[0] != '@' &&
+			strcmp(buf, "world") != 0 &&
+			strcmp(buf, "all") != 0 &&
+			strcmp(buf, "system") != 0 &&
+			!qm_arg_atom_valid(buf, uninstall || qm_depclean)) {
+		warn("'%s' is not a valid package atom",
+			 qm_arg_shown(buf, shown, sizeof(shown)));
+		qm_args_invalid = true;
+		return q;
+	}
 	if (buf[0] != '@' && qm_arg_buildid(buf, bid, sizeof(bid)))
 		buf = bid;
 
@@ -22755,7 +23238,15 @@ qmerge_add_set(char *buf, set *q)
 	if (name != NULL) {
 		/* @set@binrepo: expand the set, pinning EVERY member to that
 		 * binhost; plain @set resolves priority-first as usual */
-		char *pin = strchr(name, '@');
+		char *pin;
+
+		if (!qm_set_name_ok(name)) {
+			warn("there are no sets to satisfy '%s'",
+				 qm_arg_shown(name, shown, sizeof(shown)));
+			qm_args_invalid = true;
+			return q;
+		}
+		pin = strchr(name, '@');
 
 		if (pin != NULL && pin[1] != '\0') {
 			set    *tmp;
@@ -22785,7 +23276,9 @@ qmerge_add_set(char *buf, set *q)
 	/* pkg@binrepo: explicit binhost selector (distinct sigil, so
 	 * ::repo keeps its classic ebuild-repo meaning); rewritten to
 	 * the internal ::@name marker the resolver keys on. */
-	at = strchr(buf + 1, '@');
+	at = NULL;
+	if (buf[0] != '\0')
+		at = strchr(buf + 1, '@');
 	if (at != NULL && at[1] != '\0') {
 		char tmp[_Q_PATH_MAX];
 
@@ -23570,6 +24063,7 @@ qm_show_phases(int nargs, char **args)
 
 	for (i = 0; i < nargs; i++) {
 		char          abuf[_Q_PATH_MAX];
+		char          shown[_Q_PATH_MAX];
 		char         *at;
 		atom_ctx     *a;
 		tree_pkg_ctx *bpkg;
@@ -23578,9 +24072,17 @@ qm_show_phases(int nargs, char **args)
 		const char   *rn;
 		char         *dp;
 
+		if (!qm_arg_atom_valid(args[i], false)) {
+			warn("'%s' is not a valid package atom",
+				 qm_arg_shown(args[i], shown, sizeof(shown)));
+			ret = EXIT_FAILURE;
+			continue;
+		}
 		/* pkg@binrepo sigil, same rewrite as the install path */
 		snprintf(abuf, sizeof(abuf), "%s", args[i]);
-		at = strchr(abuf + 1, '@');
+		at = NULL;
+		if (abuf[0] != '\0')
+			at = strchr(abuf + 1, '@');
 		if (at != NULL && at[1] != '\0') {
 			char tmp[_Q_PATH_MAX + 8];
 
@@ -23639,6 +24141,239 @@ qm_show_phases(int nargs, char **args)
 	return ret;
 }
 
+#define QM_SEARCH_RE_NODES 65536
+#define QM_SEARCH_RE_EMPTY 2048
+#define QM_SEARCH_RE_DEPTH 256
+
+struct qm_search_re_frame
+{
+  size_t an;
+  size_t ae;
+  size_t bn;
+  size_t be;
+  size_t ln;
+  size_t le;
+};
+
+static size_t qm_search_re_add
+(
+  size_t a,
+  size_t b
+)
+{
+  if (a > QM_SEARCH_RE_NODES ||
+      b > QM_SEARCH_RE_NODES - a)
+    return QM_SEARCH_RE_NODES + 1;
+  return a + b;
+}
+
+static size_t qm_search_re_mul
+(
+  size_t a,
+  size_t k
+)
+{
+  if (a == 0 ||
+      k == 0)
+    return 0;
+  if (a > QM_SEARCH_RE_NODES ||
+      k > QM_SEARCH_RE_NODES / a)
+    return QM_SEARCH_RE_NODES + 1;
+  return a * k;
+}
+
+static void qm_search_re_item
+(
+  struct qm_search_re_frame *f,
+  size_t                     n,
+  size_t                     e
+)
+{
+  f->bn = qm_search_re_add(f->bn, f->ln);
+  f->be = qm_search_re_add(f->be, f->le);
+  f->ln = n;
+  f->le = e;
+}
+
+static struct qm_search_re_frame *qm_search_re_close
+(
+  struct qm_search_re_frame *st,
+  size_t                    *depth
+)
+{
+  struct qm_search_re_frame *f = &st[*depth];
+  size_t                     n;
+  size_t                     e;
+
+  qm_search_re_item(f, 0, 0);
+  n = qm_search_re_add(qm_search_re_add(f->an, f->bn), 1);
+  e = qm_search_re_add(f->ae, f->be);
+  (*depth)--;
+  f = &st[*depth];
+  qm_search_re_item(f, n, e);
+  return f;
+}
+
+static const char *qm_search_re_num
+(
+  const char *p,
+  size_t     *v
+)
+{
+  *v = 0;
+  while (isdigit((unsigned char)*p))
+  {
+    if (*v <= QM_SEARCH_RE_NODES)
+      *v = *v * 10 + (size_t)(*p - '0');
+    p++;
+  }
+  return p;
+}
+
+static const char *qm_search_re_bracket
+(
+  const char *p
+)
+{
+  const char *q = p + 1;
+  const char *c;
+
+  if (*q == '^')
+    q++;
+  if (*q == ']')
+    q++;
+  while (*q != '\0' &&
+         *q != ']')
+  {
+    if (*q == '[' &&
+        (q[1] == ':' ||
+         q[1] == '=' ||
+         q[1] == '.'))
+    {
+      for (c = q + 2; *c != '\0'; c++)
+        if (c[0] == q[1] &&
+            c[1] == ']')
+          break;
+      if (*c != '\0')
+      {
+        q = c + 2;
+        continue;
+      }
+    }
+    q++;
+  }
+  return *q == ']' ? q : q - 1;
+}
+
+static bool qm_search_re_ok
+(
+  const char *pat
+)
+{
+  struct qm_search_re_frame  st[QM_SEARCH_RE_DEPTH + 1];
+  struct qm_search_re_frame *f;
+  const char                *p;
+  const char                *q;
+  const char                *r;
+  size_t                     depth = 0;
+  size_t                     lo;
+  size_t                     hi;
+  size_t                     n;
+  size_t                     e;
+  bool                       open;
+
+  f = &st[0];
+  VALP_CLEAR(f);
+  for (p = pat; *p != '\0'; p++)
+  {
+    switch (*p)
+    {
+      case '(':
+        if (depth == QM_SEARCH_RE_DEPTH)
+          return false;
+        qm_search_re_item(f, 0, 0);
+        depth++;
+        f = &st[depth];
+        VALP_CLEAR(f);
+        break;
+      case ')':
+        if (depth == 0)
+          qm_search_re_item(f, 1, 0);
+        else
+          f = qm_search_re_close(st, &depth);
+        break;
+      case '|':
+        qm_search_re_item(f, 0, 0);
+        f->an = qm_search_re_add(f->an, qm_search_re_add(f->bn, 1));
+        f->ae = qm_search_re_add(f->ae, qm_search_re_add(f->be, 1));
+        f->bn = 0;
+        f->be = 0;
+        break;
+      case '*':
+      case '?':
+      case '+':
+        if (f->ln == 0)
+        {
+          qm_search_re_item(f, 1, 0);
+          break;
+        }
+        lo    = *p == '+' ? 2 : 1;
+        f->ln = qm_search_re_add(qm_search_re_mul(f->ln, lo), 1);
+        f->le = qm_search_re_add(qm_search_re_mul(f->le, lo), 1);
+        break;
+      case '{':
+        q    = qm_search_re_num(p + 1, &lo);
+        hi   = lo;
+        open = false;
+        if (*q == ',')
+        {
+          r    = qm_search_re_num(q + 1, &hi);
+          open = r == q + 1;
+          q    = r;
+        }
+        if (*q != '}' ||
+            f->ln == 0)
+        {
+          qm_search_re_item(f, 1, 0);
+          break;
+        }
+        p = q;
+        if (open)
+        {
+          f->ln = qm_search_re_add(qm_search_re_mul(f->ln, lo + 1), 1);
+          f->le = qm_search_re_add(qm_search_re_mul(f->le, lo + 1), 1);
+        }
+        else if (hi > 0)
+        {
+          if (hi < lo)
+            hi = lo;
+          f->ln = qm_search_re_add(qm_search_re_mul(f->ln, hi), hi - lo);
+          f->le = qm_search_re_add(qm_search_re_mul(f->le, hi), hi - lo);
+        }
+        break;
+      case '\\':
+        if (p[1] != '\0')
+          p++;
+        qm_search_re_item(f, 1, 0);
+        break;
+      case '[':
+        p = qm_search_re_bracket(p);
+        qm_search_re_item(f, 1, 0);
+        break;
+      default:
+        qm_search_re_item(f, 1, 0);
+        break;
+    }
+  }
+  while (depth > 0)
+    f = qm_search_re_close(st, &depth);
+  qm_search_re_item(f, 0, 0);
+  n = qm_search_re_add(f->an, f->bn);
+  e = qm_search_re_add(f->ae, f->be);
+  return n <= QM_SEARCH_RE_NODES &&
+         e <= QM_SEARCH_RE_EMPTY;
+}
+
 static int
 qm_search_binpkgs(int npat, char **pats)
 {
@@ -23667,26 +24402,40 @@ qm_search_binpkgs(int npat, char **pats)
 		res    = xmalloc(sizeof(*res) * npat);
 		qatoms = xmalloc(sizeof(*qatoms) * npat);
 		for (i = 0; i < npat; i++) {
-			int r;
+			int  r = 0;
+			bool toobig;
 
 			qatoms[i] = qm_search_atom_key(pats[i]);
 			if (qatoms[i] != NULL)
 				continue;
-			if (qm_search_exact) {
+			toobig = !qm_search_re_ok(pats[i]);
+			if (toobig)
+			{
+				warn("invalid search pattern `%s': too complex", pats[i]);
+			}
+			else if (qm_search_exact)
+			{
 				char *ap;
 
 				ap = xasprintf("^(%s)$", pats[i]);
 				r = regcomp(&res[i], ap,
 							REG_EXTENDED | REG_ICASE | REG_NOSUB);
 				free(ap);
-			} else {
+			}
+			else
+			{
 				r = regcomp(&res[i], pats[i],
 							REG_EXTENDED | REG_ICASE | REG_NOSUB);
 			}
-			if (r != 0) {
-				char eb[256];
-				regerror(r, &res[i], eb, sizeof(eb));
-				warn("invalid search pattern `%s': %s", pats[i], eb);
+			if (toobig ||
+				r != 0)
+			{
+				if (r != 0)
+				{
+					char eb[256];
+					regerror(r, &res[i], eb, sizeof(eb));
+					warn("invalid search pattern `%s': %s", pats[i], eb);
+				}
 				while (i-- > 0) {
 					if (qatoms[i] != NULL)
 						atom_implode(qatoms[i]);
@@ -30651,6 +31400,8 @@ int qmerge_main(int argc, char **argv)
 										 *optarg == 't' || *optarg == 'T')
 										 ? 1 : 0;
 					  break;
+			case 153: qm_no_env_update = true; break;
+			case 154: qm_no_ldconfig = true; break;
 			case 'c': qm_depclean = 1;     break;
 			case 'P': qm_depclean = 1;
 					  qm_prune = 1;        break;
@@ -30939,6 +31690,7 @@ int qmerge_main(int argc, char **argv)
 	/* Expand any portage sets on the command line (not for -s or
 	 * --show-phases: their arguments are handled raw) */
 	todo = NULL;
+	qm_args_invalid = false;
 	if (!search_pkgs && !show_phases)
 		for (i = optind; i < argc; ++i) {
 			if (qm_depclean) {
@@ -30968,6 +31720,7 @@ int qmerge_main(int argc, char **argv)
 						if (builtin)
 							fprintf(stderr, "qmerge: QMERGE_PROTOCOL_OMEGA=1 "
 									"allows depcleaning the built-in sets\n");
+						free_set(todo);
 						return EXIT_FAILURE;
 					}
 					qm_world_capture(argv[i]);
@@ -30987,6 +31740,10 @@ int qmerge_main(int argc, char **argv)
 			todo = qmerge_add_set(argv[i], todo);
 		}
 
+	if (qm_args_invalid) {
+		free_set(todo);
+		return EXIT_FAILURE;
+	}
 	if (search_pkgs == 0 && show_phases == 0 && todo == NULL &&
 			force_download != 1 && !qm_depclean) {
 		warn("need package names to work with");

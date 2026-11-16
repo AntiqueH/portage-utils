@@ -206,6 +206,35 @@ tend $? "qmerge-test: [SR] --exact rejects substring key" || die "${out}"
 out=$(qmerge --exact -s qmerge-test 2>&1)
 tend $? "qmerge-test: [SR] --exact whole-name match" || die "${out}"
 
+# glibc regcomp grows without bound on some patterns.
+# so we need to make sure qmerge refuses them as "too complex" in order to not get to segfaults or ooms.
+sr_complex() {
+	out=$(timeout 60 qmerge -s "$@" 2>&1); rc=$?
+	[[ ${rc} -eq 1 && ${out} == *"invalid search pattern"*": too complex"* ]]
+}
+sr_complex 'd++++++++++++++'
+tend $? "qmerge-test: [SR] stacked + repeats are refused as too complex" || die "rc=${rc} ${out}"
+
+sr_complex '((((((((((((((d+)+)+)+)+)+)+)+)+)+)+)+)+)+)'
+tend $? "qmerge-test: [SR] repeated nested groups are refused as too complex" || die "rc=${rc} ${out}"
+
+sr_complex 'd{300}{300}'
+tend $? "qmerge-test: [SR] multiplied intervals are refused as too complex" || die "rc=${rc} ${out}"
+
+sr_complex '(d?){3000}'
+tend $? "qmerge-test: [SR] a long chain of optional items is refused as too complex" || die "rc=${rc} ${out}"
+
+sr_complex "$(printf '(%.0s' $(seq 300))d$(printf ')%.0s' $(seq 300))"
+tend $? "qmerge-test: [SR] groups nested 300 deep are refused as too complex" || die "rc=${rc} ${out:0:300}"
+
+sr_complex --exact 'd++++++++++++++'
+tend $? "qmerge-test: [SR] --exact refuses a too complex key the same way" || die "rc=${rc} ${out}"
+unset -f sr_complex
+
+out=$(qmerge -s '(q+m)(e|x)rge-(te){1,2}st' 2>&1)
+[[ ${out} == *"qmerge-test-2.0"* ]]
+tend $? "qmerge-test: [SR] groups, alternatives and intervals within the limits still search" || die "${out}"
+
 # dDo a merge into an empty tree.
 
 out=$(yes | qmerge -F qmerge-test-1.3)
@@ -1807,19 +1836,21 @@ if [[ $(id -u) -ne 0 ]] ; then
 	rm -rf "${acr}"; mkdir -p "${acr}"; chmod 0555 "${acr}"
 	out=$(ROOT="${acr}" qmerge -y -K qmerge-test 2>&1); rc=$?
 	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* && \
-	   ${out} != *"These are the packages"* ]]
+	   ${out} != *"These are the packages"* && -z $(find "${acr}" -mindepth 1) ]]
 	tend $? "qmerge-test: [AC] unwritable ROOT: superuser required before any plan" \
 		|| die "rc=${rc} ${out}"
 
 	chmod 0777 "${acr}"
 	out=$(ROOT="${acr}" qmerge -y -K qmerge-test 2>&1); rc=$?
-	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* ]]
+	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* && \
+	   -z $(find "${acr}" -mindepth 1) ]]
 	tend $? "qmerge-test: [AC] world-writable ROOT does not count as owned" \
 		|| die "rc=${rc} ${out}"
 	chmod 0555 "${acr}"
 
 	out=$(ROOT="${acr}" qmerge -y -U qmerge-test 2>&1); rc=$?
-	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* ]]
+	[[ ${rc} -eq 1 && ${out} == *"superuser access is required"* && \
+	   -z $(find "${acr}" -mindepth 1) ]]
 	tend $? "qmerge-test: [AC] unmerge needs superuser too" || die "rc=${rc} ${out}"
 
 	out=$(ROOT="${acr}" qmerge -y -p -K qmerge-test 2>&1); rc=$?
@@ -1831,36 +1862,182 @@ if [[ $(id -u) -ne 0 ]] ; then
 	tend $? "qmerge-test: [AC] search needs no access" || die "rc=${rc} ${out}"
 
 	out=$(ROOT="${acr}" FEATURES="unprivileged" qmerge -y -K qmerge-test 2>&1); rc=$?
-	[[ ${out} != *"access is required"* ]]
+	[[ ${out} != *"access is required"* && -z $(find "${acr}" -mindepth 1) ]]
 	tend $? "qmerge-test: [AC] FEATURES=unprivileged passes the check" \
 		|| die "rc=${rc} ${out}"
 
 	out=$(ROOT="${acr}" qmerge -f qmerge-test 2>&1); rc=$?
 	if id -nG | tr ' ' '\n' | grep -qx portage ; then
-		[[ ${out} != *"access is required"* ]]
+		[[ ${out} != *"access is required"* && -z $(find "${acr}" -mindepth 1) ]]
 		tend $? "qmerge-test: [AC] fetch-only needs only the portage group" \
 			|| die "rc=${rc} ${out}"
 	else
 		[[ ${rc} -eq 1 && ${out} == *"portage group access is required"* && \
-		   ${out} == *"*** WARNING ***"* ]]
+		   ${out} == *"*** WARNING ***"* && -z $(find "${acr}" -mindepth 1) ]]
 		tend $? "qmerge-test: [AC] fetch-only outside the portage group refused with the warning" \
 			|| die "rc=${rc} ${out}"
 	fi
 
 	out=$(echo n | ROOT="${acr}" qmerge -K qmerge-test 2>&1); rc=$?
 	[[ ${rc} -eq 130 && ${out} == *"This action requires superuser access"* && \
-	   ${out} == *"Would you like to add --pretend to options"* ]]
+	   ${out} == *"Would you like to add --pretend to options"* && \
+	   -z $(find "${acr}" -mindepth 1) ]]
 	tend $? "qmerge-test: [AC] interactive No quits with 130" || die "rc=${rc} ${out}"
 
 	out=$(echo y | ROOT="${acr}" qmerge -K qmerge-test 2>&1); rc=$?
 	[[ ${out} == *"Would you like to add --pretend to options"* && \
-	   ${out} != *"OK to merge"* && ${out} != *"access is required"* ]]
+	   ${out} != *"OK to merge"* && ${out} != *"access is required"* && \
+	   -z $(find "${acr}" -mindepth 1) ]]
 	tend $? "qmerge-test: [AC] interactive Yes goes on as --pretend" || die "rc=${rc} ${out}"
 
 	chmod 0755 "${acr}"; rm -rf "${acr}"
 else
 	echo "${WARN}SKIPPED:${NORMAL} [AC] access check cases (root passes every level)"
 fi
+
+# testing new fuzz: [LA] long arguments: 5000 and 100000 characters as every kind of
+# argument, as the value of every option that takes one, and in every
+# QMERGE_* variable. the run has to end on its own with 0 or 1.
+# checking also if qmerge takes the variables correctly from the env.
+la_long=$(printf 'a%.0s' $(seq 1 5000))
+la_huge=$(printf 'b%.0s' $(seq 1 100000))
+la_run() {
+	la_out=$(timeout 60 qmerge -p "$@" 2>&1); la_rc=$?
+	[[ ${la_rc} -eq 0 || ${la_rc} -eq 1 ]]
+}
+la_run -p "${la_long}"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"nothing to merge"* ]]
+tend $? "qmerge-test: [LA] a 5000 character package name is refused" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -p "dev-libs/${la_long}"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"nothing to merge"* ]]
+tend $? "qmerge-test: [LA] a 5000 character category/name atom is refused" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -p "=dev-libs/${la_long}-1.0"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"nothing to merge"* ]]
+tend $? "qmerge-test: [LA] a 5000 character versioned atom is refused" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -p "${la_huge}"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"nothing to merge"* ]]
+tend $? "qmerge-test: [LA] a 100000 character package name is refused" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -p "" "" dev-libs/nosuchpkg
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"'' is not a valid package atom"* && \
+   ${la_out} != *"cannot satisfy"* ]]
+tend $? "qmerge-test: [LA] empty arguments are refused before resolving" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run --show-phases "" "${la_long}"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"'' is not a valid package atom"* && \
+   ${la_out} == *"cannot satisfy"* ]]
+tend $? "qmerge-test: [LA] --show-phases refuses an empty atom and answers a 5000 character one" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -p "@${la_long}"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"unable to read set file"* ]]
+tend $? "qmerge-test: [LA] a 5000 character set name is reported as unreadable" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -pU "${la_long}"
+[[ $? -eq 0 && ${la_rc} -eq 1 && ${la_out} == *"Couldn't find"* && \
+   ${la_out} == *"No packages selected for removal by unmerge"* ]]
+tend $? "qmerge-test: [LA] a 5000 character unmerge target is reported as not found" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -s "${la_long}"
+tend $? "qmerge-test: [LA] a 5000 character search pattern ends the search normally" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -s --exact "^${la_long}\$"
+tend $? "qmerge-test: [LA] a 5000 character exact search pattern ends the search normally" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_run -p --exclude "${la_long}" dev-libs/nosuchpkg
+tend $? "qmerge-test: [LA] a 5000 character exclude pattern ends the run normally" \
+	|| die "rc=${la_rc} ${la_out:0:300}"
+la_fail=""
+la_opts=$(q qmerge --help 2>&1 | grep -oE -- '--[a-z-]+ [<[]arg[]>]' | cut -d' ' -f1 | sort -u)
+for la_opt in ${la_opts} ; do
+	la_run -p "${la_opt}=${la_long}" dev-libs/nosuchpkg || la_fail+=" ${la_opt}(rc=${la_rc})"
+done
+[[ -n ${la_opts} && -z ${la_fail} ]]
+tend $? "qmerge-test: [LA] every option that takes a value ends the run normally with a 5000 character value" \
+	|| die "options: ${la_opts//$'\n'/ } failed:${la_fail}"
+la_fail=""
+la_vars="QMERGE_BACKTRACK QMERGE_DEPCLEAN_LIB_CHECK QMERGE_EXCLUDE QMERGE_GETBINPKG_EXCLUDE
+QMERGE_GETBINPKG_INCLUDE QMERGE_IGNORE_SLOT_CONFLICTS QMERGE_IGNORE_TTL QMERGE_NO_PHASES
+QMERGE_PHASE_QUIET QMERGE_PREFER_NEWEST QMERGE_PROTOCOL_OMEGA QMERGE_REFETCH
+QMERGE_SLOT_UNIFY QMERGE_SONAME_DEPS QMERGE_TRUST_HELPER QMERGE_USEPKG_EXCLUDE QMERGE_WITH_BDEPS"
+for la_var in ${la_vars} ; do
+	la_out=$(env "${la_var}=${la_long}" timeout 60 qmerge -p dev-libs/nosuchpkg 2>&1); la_rc=$?
+	[[ ${la_rc} -eq 0 || ${la_rc} -eq 1 ]] || la_fail+=" ${la_var}(rc=${la_rc})"
+done
+[[ -z ${la_fail} ]]
+tend $? "qmerge-test: [LA] every QMERGE_* variable ends the run normally with a 5000 character value" \
+	|| die "failed:${la_fail}"
+unset la_long la_huge la_out la_rc la_opts la_opt la_vars la_var la_fail
+
+# [IV] invalid arguments: emerge refuses them before resolving with
+# "'x' is not a valid package atom." and set names are looked up, not
+# joined into a path. qmerge does the same now.
+iv_bad() {
+	local out rc
+	out=$(timeout 60 qmerge -p "$1" 2>&1); rc=$?
+	[[ ${rc} -eq 1 && ${out} == *"is not a valid package atom"* && \
+	   ${out} != *"cannot satisfy"* && ${out} != *"nothing to merge"* ]]
+	tend $? "qmerge-test: [IV] $2" || die "arg=$1 rc=${rc} ${out:0:300}"
+}
+iv_ok() {
+	local out
+	out=$(timeout 60 qmerge -p "$1" 2>&1)
+	[[ ${out} != *"is not a valid package atom"* ]]
+	tend $? "qmerge-test: [IV] $2" || die "arg=$1 ${out:0:300}"
+}
+iv_bad 'dev-libs/foo%%' "a percent sign in a name is refused"
+iv_bad 'dev-libs/f oo' "a space in a name is refused"
+iv_bad 'dev-libs/foo;id' "a semicolon in a name is refused"
+iv_bad '=' "a bare operator is refused"
+iv_bad '>=dev-libs/foo' "an operator without a version is refused"
+iv_ok 'dev-libs/foo-1.0' "a version without an operator stays accepted, qmerge's historic form"
+iv_bad 'dev-libs/foo[]' "empty USE brackets are refused"
+iv_bad 'dev-libs/foo[a,]' "a trailing comma in USE brackets is refused"
+iv_bad 'dev-libs/foo::' "an empty repository is refused"
+iv_bad 'dev-libs/foo:' "an empty slot is refused"
+iv_bad 'dev-libs/*' "a wildcard is refused for a merge"
+iv_bad '!dev-libs/foo' "a blocker is refused"
+iv_bad '=dev-libs/foo-1.0x2' "a malformed version is refused"
+iv_bad 'dev-libs/foo[a(+),-a]' "a flag with (+) once and no default once is refused (bug 981298)"
+iv_bad 'dev-libs/foo[a(+),a(-)]' "a flag with (+) once and (-) once is refused"
+iv_bad 'dev-libs/foo[a(-),a]' "a flag with (-) once and no default once is refused"
+iv_bad 'dev-libs/foo[a,a(+)?]' "a conditional repeat with a differing default is refused"
+iv_ok 'dev-libs/foo[a(+),b,-a(+)]' "a repeated flag with the same default stays accepted"
+iv_ok 'dev-libs/foo[a,-a]' "a repeated flag without defaults stays accepted"
+iv_ok 'dev-libs/foo[ab(+),a]' "a flag that is a prefix of another is not a repeat"
+out=$(timeout 60 qmerge -p $'dev-libs/foo\e[31m' 2>&1); rc=$?
+[[ ${rc} -eq 1 && ${out} == *"'dev-libs/foo?[31m' is not a valid package atom"* && \
+   ${out} != *$'\e'* ]]
+tend $? "qmerge-test: [IV] a control character is refused and not echoed" \
+	|| die "rc=${rc} ${out:0:300}"
+out=$(timeout 60 qmerge -p $'dev-libs/foo\nbar' 2>&1); rc=$?
+[[ ${rc} -eq 1 && ${out} == *"'dev-libs/foo?bar' is not a valid package atom"* ]]
+tend $? "qmerge-test: [IV] a newline inside an argument is refused" \
+	|| die "rc=${rc} ${out:0:300}"
+mkdir -p "${PWD}/cfgiv/etc/portage/sets"
+echo "dev-libs/fromfile" > "${PWD}/cfgiv/etc/portage/iv-outside.txt"
+out=$(PORTAGE_CONFIGROOT="${PWD}/cfgiv" timeout 60 qmerge -p "@../iv-outside.txt" 2>&1); rc=$?
+[[ ${rc} -eq 1 && ${out} == *"there are no sets to satisfy '../iv-outside.txt'"* && \
+   ${out} != *"fromfile"* ]]
+tend $? "qmerge-test: [IV] a set name with a slash is not a path" \
+	|| die "rc=${rc} ${out:0:300}"
+rm -rf "${PWD}/cfgiv"
+out=$(timeout 60 qmerge -p '@' 2>&1); rc=$?
+[[ ${rc} -eq 1 && ${out} == *"there are no sets to satisfy ''"* ]]
+tend $? "qmerge-test: [IV] an empty set name is refused" || die "rc=${rc} ${out:0:300}"
+iv_ok '>=sys-devel/qmerge-test-1.0:0::gentoo[foo(+)?,!bar=]' "a full atom with operator, slot, repository and USE deps passes"
+iv_ok '=sys-devel/qmerge-test-1.3*' "an equals-star atom passes"
+iv_ok '=sys-devel/qmerge-test-1.3-r1-2' "a build number after the version passes"
+iv_ok 'qmerge-test' "a bare package name passes"
+iv_ok 'sys-devel/qmerge-test:0/1=' "a slot operator passes"
+iv_ok '~sys-devel/qmerge-test-1.3_rc2_p1' "a version with suffixes passes"
+iv_ok 'sys-devel/qmerge-test@binhost-main' "a binhost selector passes"
+out=$(timeout 60 qmerge -pU 'dev-libs/*' 2>&1)
+[[ ${out} != *"is not a valid package atom"* ]]
+tend $? "qmerge-test: [IV] a wildcard is accepted for an unmerge" || die "${out:0:300}"
+unset -f iv_bad iv_ok
 
 # root drops signature verification to a child running as 'nobody',
 # which cannot read a 0700 test keyring. Check the condition FIRST and
@@ -2359,6 +2536,23 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 		[[ ${out} == *"openpgp-key-package: dev-libs/keyanchor"* ]]
 		tend $? "qmerge-test: verify-signature: openpgp-key-package parsed and listed" \
 			|| die "${out}"
+
+		# emerge --info prints sync-uri with the password replaced by
+		# *password* (portage bug 280478); --repos and the fetch messages do the same
+		mkdir -p cfg-pw/etc/portage/binrepos.conf
+		printf '[pwrepo]\npriority = 1\nlocation = /pwstore\nsync-uri = http://alice:s3cret@127.0.0.1:1/\n' \
+			> cfg-pw/etc/portage/binrepos.conf/r.conf
+		out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-pw" qmerge --repos 2>&1)
+		[[ ${out} == *"http://alice:*password*@127.0.0.1:1"* && \
+		   ${out} != *"s3cret"* ]]
+		tend $? "qmerge-test: --repos hides the sync-uri password like emerge --info" \
+			|| die "${out}"
+		out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-pw" timeout 60 qmerge -f 2>&1)
+		[[ ${out} == *"fetching http://alice:*password*@127.0.0.1:1/"*"failed"* && \
+		   ${out} != *"s3cret"* ]]
+		tend $? "qmerge-test: a failed index fetch names the URI without its password" \
+			|| die "${out}"
+		rm -rf cfg-pw "${ROOT}/pwstore"
 
 		out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-vskp" \
 			qmerge -p dev-libs/otherpkg dev-libs/keyanchor 2>&1); rc=$?
@@ -5119,6 +5313,30 @@ outc2=$(PORTAGE_CONFIGROOT=${PWD}/cfgue qmerge -pc "=dev-libs/uex-1.0-2" 2>&1)
    ${outc2} != *"Couldn't find"* && ${outc2} == *"dev-libs/uex"*"selected: 1.0"* ]]
 tend $? "qmerge-test: [MI] -U and -c with =pkg-ver-N act on the installed build only" \
 	|| die "u1: ${outu1} u2: ${outu2} c1: ${outc1} c2: ${outc2}"
+outun1=$(qmerge -pU dev-libs/nosuchpkg 2>&1); rcun1=$?
+outun2=$(qmerge -pU dev-libs/nosuchpkg "=dev-libs/uex-1.0-2" 2>&1); rcun2=$?
+[[ ${rcun1} -eq 1 && \
+   ${outun1} == *"--- Couldn't find 'dev-libs/nosuchpkg' to unmerge."* && \
+   ${outun1} == *">>> No packages selected for removal by unmerge"* && \
+   ${rcun2} -eq 0 && \
+   ${outun2} == *"--- Couldn't find 'dev-libs/nosuchpkg' to unmerge."* && \
+   ${outun2} == *"unmerging dev-libs/uex-1.0"* && \
+   ${outun2} != *"No packages selected"* ]]
+tend $? "qmerge-test: [MI] -U names the targets that match no installed package" \
+	|| die "un1 rc=${rcun1}: ${outun1} un2 rc=${rcun2}: ${outun2}"
+uexrepo="${ROOT}/var/db/pkg/dev-libs/uex-1.0/repository"
+if [[ -f ${uexrepo} ]] ; then
+	mv "${uexrepo}" "${PWD}/uex.repository"
+fi
+outur1=$(qmerge -pU "dev-libs/uex::gentoo" 2>&1); rcur1=$?
+outur2=$(qmerge -pU "dev-libs/uex" 2>&1); rcur2=$?
+if [[ -f ${PWD}/uex.repository ]] ; then
+	mv "${PWD}/uex.repository" "${uexrepo}"
+fi
+[[ ${rcur1} -eq 1 && ${outur1} == *"--- Couldn't find 'dev-libs/uex::gentoo' to unmerge."* && \
+   ${rcur2} -eq 0 && ${outur2} == *"unmerging dev-libs/uex-1.0"* ]]
+tend $? "qmerge-test: [MI] a ::repo target does not match an installed package without a recorded repository" \
+	|| die "ur1 rc=${rcur1}: ${outur1} ur2 rc=${rcur2}: ${outur2}"
 yes | qmerge -FU dev-libs/uex >/dev/null 2>&1
 
 rm -rf cfgue "${ROOT}/packages/dev-libs/uex"
@@ -6842,6 +7060,12 @@ outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfgdc" qmerge -pc @dcrootonly 2>&1); rcdc
 [[ ${rcdc} -ne 0 && \
    ${outdc} == *"the given set 'dcrootonly' does not support unmerge operations"* ]]
 tend $? "qmerge-test: [DC] a set file under ROOT alone is not a configuration set" \
+	|| die "rc=${rcdc} ${outdc}"
+outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfgdc" qmerge -pc dc-libs/B @dcrootonly 2>&1); rcdc=$?
+[[ ${rcdc} -ne 0 && \
+   ${outdc} == *"the given set 'dcrootonly' does not support unmerge operations"* && \
+   ${outdc} != *"selected:"* ]]
+tend $? "qmerge-test: [DC] a refused set after an atom stops the run before any selection" \
 	|| die "rc=${rcdc} ${outdc}"
 rm -f "${ROOT}/etc/portage/sets/dcrootonly"
 # an empty set is noted and the run continues without arguments

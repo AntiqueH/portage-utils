@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build a fuzz target that compiles main.c and qmerge.c,
-# fuzz_dcx, or the target named as the first argument (qmhelpers, resolve)
+# fuzz_dcx, or the target named as the first argument (qmhelpers, resolve, args)
 # Takes the source list, preprocessor flags and libraries from the generated
 # Makefile so it follows configure (vendored curl, gpgme, libarchive).
 #

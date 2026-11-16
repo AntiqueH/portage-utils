@@ -296,7 +296,7 @@ NONBUILT_SRC="qglsa.c template.c"
 VG_CHROOT_DEFAULT="/home/work/sources/qmerge_chroot_x86_64_tests"
 ALL_GATES=(gcc warnings clang opt lto c23 asan integer cppcheck fanalyzer tidy heap m32 static valgrind fuzz cbmc tsan flagmatrix)
 OPTIONAL_GATES=(warnings tidy m32 static valgrind fuzz cbmc tsan flagmatrix)
-FUZZ_TARGETS=(atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve)
+FUZZ_TARGETS=(atom dep contents packages gpkg_manifest gpkg_structure envd binpath binrepos moves needed preserved usedep useflags xpak hash mfline elfneeded dcx qmhelpers resolve args)
 
 HAVE_GCC=0;   command -v gcc   >/dev/null 2>&1 && HAVE_GCC=1
 HAVE_CLANG=0; command -v clang >/dev/null 2>&1 && HAVE_CLANG=1
@@ -878,7 +878,7 @@ fuzz_gate_libfuzzer() {
     fi
     for t in "${FUZZ_TARGETS[@]}"; do
         mkdir -p "tests/r/corpus/$t"
-        if [ "$t" = dcx ] || [ "$t" = qmhelpers ] || [ "$t" = resolve ]; then
+        if [ "$t" = dcx ] || [ "$t" = qmhelpers ] || [ "$t" = resolve ] || [ "$t" = args ]; then
             if CC=clang FUZZ_CFLAGS="-fsanitize=fuzzer $sanflags -O1 -g ${extra[*]}" \
                     OUT="$bin" tests/fuzz/build-dcx.sh "$t" >>"$QOUT" 2>&1; then
                 built+=("$t")

@@ -4,7 +4,7 @@
  *
  * Copyright 2026-     Jaeger H.       - <antiq.hofer@gmail.com>
  *
- * qetuto: a C reimplementation of app-portage/getuto (getuto 1.18),
+ * qetuto: a C reimplementation of app-portage/getuto (getuto 2.0),
  * maintaining ${ROOT}/etc/portage/gnupg so the Gentoo release keys are
  * trusted for binary-package signatures. Same behaviour that goes by
  * gpg/gpgconf.
