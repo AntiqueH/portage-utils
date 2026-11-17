@@ -2,6 +2,8 @@
 
 # check family label special decoder for our tests:
 #   [N] [R] [U] [C]  basic merge / re-emerge / update+unmerge / pkg_* phase order
+#   [NL]             checking if no lost files: after qmerge run, check whether path(s) installed
+#                    package records still exist(s) (checked by the qmerge wrapper)
 #   [R2] [R3]        config-protect re-emerge rounds (._cfg offer, confmem)
 #   [RM]             CONFIG_PROTECT_MASK creates a path back out of CONFIG_PROTECT
 #   [B]              binhost index maintenance (qmaint binhost, TIMESTAMP)
@@ -59,6 +61,15 @@ export Q_VDB=/var/db/pkg
 export PKGDIR=/packages
 
 mkdir -p "${ROOT}/var/db/pkg"
+qm_root_layout() {
+	local n
+	for n in bin sbin lib ; do
+		mkdir -p "${ROOT}/usr/${n}"
+		: > "${ROOT}/usr/${n}/.keep"
+		[[ -L ${ROOT}/${n} ]] || ln -s "usr/${n}" "${ROOT}/${n}"
+	done
+}
+qm_root_layout
 
 # copy packages into the ROOT
 cp -a "${as}/packages" "${ROOT}/"
@@ -91,6 +102,48 @@ qm_merged() {
 qm_unmerged() {
 	[[ -z $(qlist -Iv 2>/dev/null | grep "$1") ]]
 	tend $? "qmerge-test: $2" || die "$(qlist -Iv 2>&1)"
+}
+
+qm_lost_log=${PWD}/qm-lost.log
+: > "${qm_lost_log}"
+if declare -F qmerge >/dev/null ; then
+	eval "$(declare -f qmerge | sed '1s/^qmerge /qm_qmerge_run /')"
+else
+	qm_qmerge_run() { command qmerge "$@" ; }
+fi
+qm_contents_path() {
+	case $1 in
+		obj\ *) qm_cp=${1#obj }; qm_cp=${qm_cp% *}; qm_cp=${qm_cp% *} ;;
+		sym\ *) qm_cp=${1#sym }; qm_cp=${qm_cp%% -> *} ;;
+		*) return 1 ;;
+	esac
+}
+qmerge() {
+	local -A had=() ids=()
+	local vdb="${ROOT}${Q_VDB:-/var/db/pkg}" d id line rc qm_cp
+	for d in "${vdb}"/*/*/ ; do
+		[[ -f ${d}CONTENTS ]] || continue
+		id="${d}:$(cat "${d}COUNTER" 2>/dev/null):$(stat -c %Y "${d}CONTENTS")"
+		ids[${id}]=1
+		while IFS= read -r line ; do
+			qm_contents_path "${line}" || continue
+			[[ -e ${ROOT}${qm_cp} || -L ${ROOT}${qm_cp} ]] && had[${qm_cp}]=1
+		done < "${d}CONTENTS"
+	done
+	qm_qmerge_run "$@"
+	rc=$?
+	for d in "${vdb}"/*/*/ ; do
+		[[ -f ${d}CONTENTS ]] || continue
+		id="${d}:$(cat "${d}COUNTER" 2>/dev/null):$(stat -c %Y "${d}CONTENTS")"
+		while IFS= read -r line ; do
+			qm_contents_path "${line}" || continue
+			[[ -n ${ids[${id}]} && -z ${had[${qm_cp}]} ]] && continue
+			[[ -e ${ROOT}${qm_cp} || -L ${ROOT}${qm_cp} ]] && continue
+			printf '%s %s lost by: qmerge %s\n' \
+				"${d#"${vdb}"/}" "${qm_cp}" "$*" >> "${qm_lost_log}"
+		done < "${d}CONTENTS"
+	done
+	return ${rc}
 }
 
 qm_gpkg_usable() {
@@ -1258,6 +1311,7 @@ tend $? "qmerge-test: [B-escape] escaping symlink relocated, files kept inside -
 tend $? "qmerge-test: [B-escape] warned about the escaping symlink" || die "${out}"
 yes | qmerge -FU qmerge-test >/dev/null 2>&1
 rm -rf "${ROOT}/usr" "${ROOT}/etc" "${ROOT}/realbin" "${PWD}/escape-target"
+qm_root_layout
 
 # try all compressions we know to see if we handle them properly
 pkgver=qmerge-test-1.3
@@ -7208,6 +7262,7 @@ outdc=$(qmerge -pcv 2>&1)
 tend $? "qmerge-test: [DC] the library /bin/sh links against survives with it" \
 	|| die "${outdc}"
 dc_vdb dc-libs/N-2 1 ""
+rm -f "${ROOT}/lib"
 mkdir -p "${ROOT}/lib"
 echo lib > "${ROOT}/lib/libdcsh.so.1"
 dcmd=$(md5sum "${ROOT}/lib/libdcsh.so.1" | cut -d' ' -f1)
@@ -7221,6 +7276,8 @@ outdc=$(qmerge -pcv 2>&1)
 tend $? "qmerge-test: [DC] two slots providing the shell's library: the old slot is not pinned and goes" \
 	|| die "${outdc}"
 rm -f "${ROOT}/lib/libdcsh.so.1"
+rmdir "${ROOT}/lib"
+qm_root_layout
 rm -rf "${ROOT}/var/db/pkg/dc-libs/N-2"
 rm -f "${ROOT}/usr/lib/libdcsh.so.1"
 rm -rf "${ROOT}/usr/bin/q" "${ROOT}/bin/sh"
@@ -7522,6 +7579,41 @@ tend $? "qmerge-test: [DC] replace: a hardlink the new version owns is not suspi
 	|| die "rc=${rcdc} ${outdc} $(ls -lai "${ROOT}/usr/share/dc/hl" 2>&1) $(qlist -Iv)"
 yes | qmerge -U dc-libs/H >/dev/null 2>&1
 rm -f "${ROOT}"/packages/dc-libs/H-*.tbz2
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+
+al_craft() {
+	local v=$1 sub=$2 d="al-$1"
+	rm -rf "${d}"
+	mkdir -p "${d}/xp" "${d}/img/${sub}"
+	printf '%s\n' "A-${v}" > "${d}/img/${sub}/al-x"
+	ln -s al-x "${d}/img/${sub}/al-s"
+	(
+		cd "${d}"
+		cp "${ROOT}/packages/sys-devel/qmerge-test-1.3.tbz2" b.tbz2
+		qtbz2 -s b.tbz2 >/dev/null
+		( cd xp && qxpak -x ../b.xpak >/dev/null )
+		echo dc-libs > xp/CATEGORY
+		echo "A-${v}" > xp/PF
+		echo 0 > xp/SLOT
+		echo '**' > xp/KEYWORDS
+		: > xp/RDEPEND
+		tar cjf img.tar.bz2 -C img .
+		( cd xp && rm -f ./*.ebuild; touch "A-${v}.ebuild"
+		  qxpak -c ../new.xpak $(ls) )
+		mkdir -p "${ROOT}/packages/dc-libs"
+		qtbz2 -j img.tar.bz2 new.xpak "${ROOT}/packages/dc-libs/A-${v}.tbz2"
+	)
+	rm -rf "${d}"
+}
+dc_reset
+al_craft 1 bin
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge =dc-libs/A-1 >/dev/null 2>&1
+al_craft 2 usr/bin
+q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
+yes | qmerge -u dc-libs/A >/dev/null 2>&1
+yes | qmerge -U dc-libs/A >/dev/null 2>&1
+rm -f "${ROOT}"/packages/dc-libs/A-*.tbz2
 q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 
 # -U of several packages over one owners table (vardbapi._owners), a file
@@ -7868,6 +7960,9 @@ dc_reset
 rm -rf "${ROOT}/var/db/pkg"; cp -a "${dc_saved}" "${ROOT}/var/db/pkg"; rm -rf "${dc_saved}"
 printf '%s\n' "${dc_world_saved}" > "${ROOT}/var/lib/portage/world"
 
+[[ ! -s ${qm_lost_log} ]]
+tend $? "qmerge-test: [NL] when installed package is missing a file after qmerge run" \
+	|| die "$(sort -u "${qm_lost_log}" | head -40)"
 
 cleantmpdir
 

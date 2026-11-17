@@ -18572,6 +18572,125 @@ qm_unmerge_path(const char *name)
 	return p;
 }
 
+struct qm_keep_dir
+{
+  dev_t  dev;
+  ino_t  ino;
+  char  *dir;
+};
+
+static void qm_keep_dir_free
+(
+  void *p
+)
+{
+  struct qm_keep_dir *kd = p;
+
+  free(kd->dir);
+  free(kd);
+}
+
+static array *qm_keep_dirs
+(
+  set *keep,
+  int  portroot_fd
+)
+{
+  array              *dirs;
+  array              *keys;
+  set                *seen;
+  struct qm_keep_dir *kd;
+  struct stat         sb;
+  char               *k;
+  char               *dir;
+  char               *slash;
+  size_t              i;
+  bool                unique;
+
+  if (keep == NULL)
+    return NULL;
+  dirs = array_new();
+  keys = set_keys(keep);
+  seen = create_set();
+  array_for_each(keys, i, k)
+  {
+    if (k[0] != '/')
+      continue;
+    slash = strrchr(k, '/');
+    if (slash == k)
+      continue;
+    dir = xstrdup(k);
+    dir[slash - k] = '\0';
+    unique = false;
+    seen = add_set_unique(dir, seen, &unique);
+    if (!unique ||
+        fstatat(portroot_fd, dir + 1, &sb, 0) != 0)
+    {
+      free(dir);
+      continue;
+    }
+    kd = xmalloc(sizeof(*kd));
+    kd->dev = sb.st_dev;
+    kd->ino = sb.st_ino;
+    kd->dir = dir;
+    array_append(dirs, kd);
+  }
+  array_free(keys);
+  free_set(seen);
+  return dirs;
+}
+
+static bool qm_keep_owns
+(
+  set        *keep,
+  array      *dirs,
+  int         portroot_fd,
+  const char *name
+)
+{
+  struct qm_keep_dir *kd;
+  struct stat         sb;
+  const char         *slash;
+  char                path[_Q_PATH_MAX];
+  size_t              len;
+  size_t              dlen;
+  size_t              slen;
+  size_t              i;
+
+  if (keep == NULL)
+    return false;
+  if (contains_set(name, keep) != NULL)
+    return true;
+  if (dirs == NULL)
+    return false;
+  slash = strrchr(name, '/');
+  if (slash == NULL ||
+      slash == name)
+    return false;
+  len  = (size_t)(slash - name);
+  slen = strlen(slash);
+  if (len >= sizeof(path))
+    return false;
+  memcpy(path, name, len);
+  path[len] = '\0';
+  if (fstatat(portroot_fd, path + 1, &sb, 0) != 0)
+    return false;
+  array_for_each(dirs, i, kd)
+  {
+    if (kd->dev != sb.st_dev ||
+        kd->ino != sb.st_ino)
+      continue;
+    dlen = strlen(kd->dir);
+    if (dlen + slen >= sizeof(path))
+      continue;
+    memcpy(path, kd->dir, dlen);
+    memcpy(path + dlen, slash, slen + 1);
+    if (contains_set(path, keep) != NULL)
+      return true;
+  }
+  return false;
+}
+
 /* dblink._security_check clone (vartree.py). before prerm, refuse the
  * unmerge when a regular file of the package is setuid or setgid, has
  * more than one hardlink and not every link is a path the package owns
@@ -18681,6 +18800,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 	char TB[_Q_PATH_MAX];
 	int portroot_fd;
 	llist_char *dirs = NULL;
+	array *keepdirs = NULL;
 	bool unmerge_config_protected;
 	size_t nskipped = 0;
 
@@ -18742,6 +18862,8 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 	} else {
 		contentsp = xstrdup(contentsp);
 	}
+
+	keepdirs = qm_keep_dirs(keep, portroot_fd);
 
 	for (buf = strtok_r(contentsp, "\n", &savep);
 		 buf != NULL;
@@ -18810,7 +18932,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		/* a path this unmerge releases (no other owner keeps it)
 		 * drops its config-memory entry, portage's orphaned-confmem rule */
 		if (!pretend &&
-				(keep == NULL || contains_set(e->name, keep) == NULL) &&
+				!qm_keep_owns(keep, keepdirs, portroot_fd, e->name) &&
 				qm_confmem_has(e->name))
 			qm_confmem_del(e->name);
 
@@ -18834,7 +18956,7 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 		 * would delete files the new package still owns. */
 		del = false;
 		if (keep != NULL)
-			del = contains_set(e->name, keep) != NULL;
+			del = qm_keep_owns(keep, keepdirs, portroot_fd, e->name);
 		if (del)
 			strcpy(zing, "---");
 
@@ -18865,6 +18987,8 @@ pkg_unmerge(tree_pkg_ctx *pkg_ctx, depend_atom *rpkg, set *keep,
 	}
 
 	free(contentsp);
+	if (keepdirs != NULL)
+		array_deepfree(keepdirs, qm_keep_dir_free);
 
 	qm_confmem_write();
 
