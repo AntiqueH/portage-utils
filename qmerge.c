@@ -16480,6 +16480,10 @@ qm_gpkg_verify_impl(const char *gpkg_path, int cfd)
 	size_t                i;
 	struct qm_sig        *sg;
 	int                   pass1_fd = -1;
+	char                 *pmem;
+	char                 *ptext;
+	size_t                plen = 0;
+	bool                  same;
 
 	gpgme_check_version(NULL);
 
@@ -16543,6 +16547,7 @@ qm_gpkg_verify_impl(const char *gpkg_path, int cfd)
 		warn("%s: Manifest not found", gpkg_path);
 		goto out;
 	}
+	manifest[manifest_len] = '\0';
 
 	/* 1. the Manifest must carry a good, trusted cleartext signature */
 	if (gpgme_data_new_from_mem(&md, manifest, manifest_len, 1)
@@ -16555,6 +16560,19 @@ qm_gpkg_verify_impl(const char *gpkg_path, int cfd)
 				"untrusted key", gpkg_path);
 		goto out;
 	}
+	pmem  = gpgme_data_release_and_get_mem(plain, &plen);
+	plain = NULL;
+	ptext = xmalloc(plen + 1);
+	if (pmem != NULL)
+		memcpy(ptext, pmem, plen);
+	else
+		plen = 0;
+	ptext[plen] = '\0';
+	gpgme_free(pmem);
+	same = gpkg_manifest_signed_same(manifest, ptext, gpkg_path);
+	free(ptext);
+	if (!same)
+		goto out;
 
 	/* 2. stream-verify every signed member's detached signature */
 	{

@@ -31,6 +31,9 @@ struct gpkg_member {
 bool gpkg_manifest_verify(const char *manifest, array *members,
 		const char *gpkg_path);
 
+bool gpkg_manifest_signed_same(const char *raw, const char *plain,
+		const char *gpkg_path);
+
 /* Validate one GLEP 78 */
 bool gpkg_member_ok(const char *name, bool is_regular, char **prefix,
 		set *seen, const char *gpkg_path);

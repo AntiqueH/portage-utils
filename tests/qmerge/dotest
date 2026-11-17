@@ -2220,6 +2220,52 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 		gs_reject "tampered signed gpkg refused" \
 			"failed OpenPGP signature verification" "${gshome}"
 
+		gs_data_line() {
+			printf 'DATA %s %s SHA512 %s\n' "$1" \
+				"$(stat -c %s "${gsex}/${gspfx}/$1")" \
+				"$(sha512sum "${gsex}/${gspfx}/$1" | cut -d' ' -f1)" \
+				>> "${gsex}/${gspfx}/Manifest"
+		}
+		gsmem_signed=${gsmem}
+
+		gs_restore
+		echo extra > "${gsex}/${gspfx}/extra"
+		gs_data_line extra
+		gsmem="${gsmem_signed} ${gspfx}/extra"
+		gs_rebuild
+		gs_reject "DATA line outside the signed Manifest text refused" \
+			"Manifest has DATA lines outside the signed text" "${gshome}"
+
+		gs_restore
+		cp "${gsex}/${gspfx}/image.tar.zst" "${gsex}/${gspfx}/image.tar.gz"
+		gs_data_line image.tar.gz
+		gsmem="${gsmem_signed} ${gspfx}/image.tar.gz"
+		gs_rebuild
+		gs_reject "second image member refused" \
+			"more than one image.tar member" "${gshome}"
+
+		gsfeat_signed=${gsfeat}
+		gsfeat='config-protect-if-modified'
+		gsmem="${gspfx}/gpkg-1 ${gspfx}/metadata.tar.zst \
+			${gspfx}/image.tar.zst ${gspfx}/Manifest"
+
+		rm -rf "${gsex}"; mkdir -p "${gsex}"
+		tar xf "${PWD}/gs-unsigned.gpkg.tar" -C "${gsex}"
+		echo "not a record" >> "${gsex}/${gspfx}/Manifest"
+		gs_rebuild
+		gs_reject "unsigned Manifest with a line that is not DATA refused" \
+			"Manifest holds a line that is not a DATA record" "${gshome}"
+
+		rm -rf "${gsex}"; mkdir -p "${gsex}"
+		tar xf "${PWD}/gs-unsigned.gpkg.tar" -C "${gsex}"
+		sed -i 's#^DATA image.tar.zst [0-9]*#&x#' "${gsex}/${gspfx}/Manifest"
+		gs_rebuild
+		gs_reject "Manifest size that is not a number refused" \
+			"has an invalid size in the Manifest" "${gshome}"
+
+		gsfeat=${gsfeat_signed}
+		gsmem=${gsmem_signed}
+
 		# signature from a key the trust keyring does not hold
 		gs_restore; gs_rebuild
 		mkdir -m 700 -p "${PWD}/gs-gnupg-empty"

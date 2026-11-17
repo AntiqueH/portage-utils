@@ -78,6 +78,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	array_append(members, mk_member("image.tar.zst", 0, "", ""));
 
 	gpkg_manifest_verify(s, members, "fuzz");
+	gpkg_manifest_signed_same(s, s + size / 2, "fuzz");
 
 	array_for_each(members, i, m) {
 		free(m->base);

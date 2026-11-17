@@ -17,7 +17,10 @@ gpkg_member_ok(const char *name, bool is_regular, char **prefix,
 		set *seen, const char *gpkg_path)
 {
 	const char *slash;
+	const char *base;
+	const char *stem;
 	size_t      dirlen;
+	size_t      blen;
 
 	if (name == NULL || name[0] == '/') {
 		warn("%s: member with absolute path", gpkg_path);
@@ -39,6 +42,26 @@ gpkg_member_ok(const char *name, bool is_regular, char **prefix,
 		return false;
 	}
 	add_set(name, seen);
+
+	base = slash + 1;
+	blen = strlen(base);
+	stem = NULL;
+	if (strncmp(base, "image.tar", sizeof("image.tar") - 1) == 0)
+		stem = "image.tar";
+	else if (strncmp(base, "metadata.tar", sizeof("metadata.tar") - 1) == 0)
+		stem = "metadata.tar";
+	if (stem != NULL &&
+		(blen < 4 ||
+		 strcmp(base + blen - 4, ".sig") != 0))
+	{
+		if (contains_set(stem, seen) != NULL)
+		{
+			warn("%s: more than one %s member: %s",
+					gpkg_path, stem, name);
+			return false;
+		}
+		add_set(stem, seen);
+	}
 
 	dirlen = (size_t)(slash - name);
 	if (*prefix == NULL) {
@@ -65,6 +88,9 @@ gpkg_manifest_verify(const char *manifest, array *members,
 	char               *savep;
 	char               *line;
 	set                *mseen = create_set();
+	bool                issigned;
+
+	issigned = strstr(manifest, "-----BEGIN PGP SIGNATURE-----") != NULL;
 
 	for (line = strtok_r(mcopy, "\n", &savep);
 			ok && line != NULL;
@@ -77,18 +103,33 @@ gpkg_manifest_verify(const char *manifest, array *members,
 		char               *sp;
 		struct gpkg_member *found = NULL;
 		long long           msize;
+		char               *end;
 		int                 k;
 		int                 matched = 0;
 
 		if (strncmp(line, "DATA ", 5) != 0)
+		{
+			if (!issigned &&
+				line[strspn(line, " \t\r")] != '\0')
+			{
+				warn("%s: Manifest holds a line that is not a DATA record",
+						gpkg_path);
+				ok = false;
+				break;
+			}
 			continue;
+		}
 		snprintf(buf, sizeof(buf), "%s", line);
 		for (tok = strtok_r(buf, " \t", &sp);
 				tok != NULL && ntok < (int)(sizeof(toks) / sizeof(toks[0]));
 				tok = strtok_r(NULL, " \t", &sp))
 			toks[ntok++] = tok;
 		if (ntok < 3)
-			continue;
+		{
+			warn("%s: Manifest holds an incomplete DATA record", gpkg_path);
+			ok = false;
+			break;
+		}
 
 		if (contains_set(toks[1], mseen) != NULL) {
 			warn("%s: duplicate Manifest entry '%s'", gpkg_path, toks[1]);
@@ -104,7 +145,15 @@ gpkg_manifest_verify(const char *manifest, array *members,
 			ok = false; break;
 		}
 
-		msize = strtoll(toks[2], NULL, 10);
+		msize = strtoll(toks[2], &end, 10);
+		if (end == toks[2] ||
+			*end != '\0')
+		{
+			warn("%s: '%s' has an invalid size in the Manifest",
+					gpkg_path, toks[1]);
+			ok = false;
+			break;
+		}
 		if (msize != found->size) {
 			warn("%s: '%s' size mismatch vs Manifest", gpkg_path, toks[1]);
 			ok = false; break;
@@ -152,4 +201,106 @@ gpkg_manifest_verify(const char *manifest, array *members,
 		}
 	}
 	return ok;
+}
+
+static char *gpkg_manifest_next_line
+(
+  char  **pos,
+  size_t *len
+)
+{
+  char *line;
+  char *nl;
+
+  line = *pos;
+  if (line == NULL ||
+      *line == '\0')
+    return NULL;
+  nl = strchr(line, '\n');
+  if (nl == NULL)
+  {
+    *len = strlen(line);
+    *pos = line + *len;
+  }
+  else
+  {
+    *len = (size_t)(nl - line);
+    *pos = nl + 1;
+  }
+  while (*len > 0 &&
+         (line[*len - 1] == ' '  ||
+          line[*len - 1] == '\t' ||
+          line[*len - 1] == '\r'))
+    (*len)--;
+  line[*len] = '\0';
+  return line;
+}
+
+bool gpkg_manifest_signed_same
+(
+  const char *raw,
+  const char *plain,
+  const char *gpkg_path
+)
+{
+  set    *lines;
+  char   *rcopy;
+  char   *pcopy;
+  char   *pos;
+  char   *line;
+  size_t  len;
+  size_t  nplain;
+  size_t  nraw;
+  bool    ok;
+
+  lines  = create_set();
+  rcopy  = xstrdup(raw);
+  pcopy  = xstrdup(plain);
+  nplain = 0;
+  nraw   = 0;
+  ok     = true;
+
+  pos = pcopy;
+  while (ok &&
+         (line = gpkg_manifest_next_line(&pos, &len)) != NULL)
+  {
+    if (len == 0)
+      continue;
+    if (strncmp(line, "DATA ", 5) != 0)
+    {
+      warn("%s: signed Manifest text holds a line that is not a "
+           "DATA record", gpkg_path);
+      ok = false;
+      break;
+    }
+    add_set(line, lines);
+    nplain++;
+  }
+
+  pos = rcopy;
+  while (ok &&
+         (line = gpkg_manifest_next_line(&pos, &len)) != NULL)
+  {
+    if (strncmp(line, "DATA ", 5) != 0)
+      continue;
+    if (contains_set(line, lines) == NULL)
+    {
+      warn("%s: Manifest has DATA lines outside the signed text",
+           gpkg_path);
+      ok = false;
+      break;
+    }
+    nraw++;
+  }
+  if (ok &&
+      nraw != nplain)
+  {
+    warn("%s: Manifest DATA lines differ from the signed text", gpkg_path);
+    ok = false;
+  }
+
+  free(rcopy);
+  free(pcopy);
+  free_set(lines);
+  return ok;
 }
