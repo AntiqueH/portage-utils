@@ -58,7 +58,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	f = fmemopen((void *)data, size, "r");
 	if (f == NULL)
 		return 0;
-	binrepos_parse(f, count_cb, &n);
+	binrepos_parse(f, NULL, count_cb, &n);
 	fclose(f);
 	return 0;
 }

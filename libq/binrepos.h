@@ -13,6 +13,20 @@ typedef void (binrepos_parse_cb)(void *ctx, const char *name,
 		int verify_sig, int frozen, const char *gbex,
 		const char *gbin, const char *keypkg);
 
-void binrepos_parse(FILE *fp, binrepos_parse_cb *cb, void *ctx);
+struct binrepos_dflt
+{
+  char uri[4096];
+  char loc[4096];
+  char gbex[4096];
+  char gbin[4096];
+  char keypkg[256];
+  int  priority;
+  int  verify_sig;
+  int  frozen;
+};
+
+void binrepos_dflt_init(struct binrepos_dflt *dflt);
+void binrepos_parse(FILE *fp, const struct binrepos_dflt *dflt,
+		binrepos_parse_cb *cb, void *ctx);
 
 #endif

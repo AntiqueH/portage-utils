@@ -282,6 +282,13 @@ tend $? "qmerge-test: [SR] groups nested 300 deep are refused as too complex" ||
 
 sr_complex --exact 'd++++++++++++++'
 tend $? "qmerge-test: [SR] --exact refuses a too complex key the same way" || die "rc=${rc} ${out}"
+
+sr_complex --exact 'l***************x***************y***************z***************'
+tend $? "qmerge-test: [SR] several runs of stacked * are refused as too complex" || die "rc=${rc} ${out}"
+
+out=$(qmerge -s 'qmerge-te**st' 2>&1)
+[[ ${out} == *"qmerge-test-2.0"* ]]
+tend $? "qmerge-test: [SR] a doubled * within the limits still searches" || die "${out}"
 unset -f sr_complex
 
 out=$(qmerge -s '(q+m)(e|x)rge-(te){1,2}st' 2>&1)
@@ -818,7 +825,7 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 			|| die "${out}"
 		mkdir -p "${ROOT}/srstore/dev-libs" cfgsr/etc/portage/binrepos.conf
 		cp "${ROOT}/pgpkgs/dev-libs/uexs-2.0.gpkg.tar" "${ROOT}/srstore/dev-libs/"
-		printf '[srrepo]\npriority = 1\nlocation = /srstore\nsync-uri = http://sr.test:1/\n' \
+		printf '[srrepo]\npriority = 1\nlocation = /srstore\nsync-uri = http://sr.test:1/\nverify-signature = false\n' \
 			> cfgsr/etc/portage/binrepos.conf/sr.conf
 		qm_fake_fetch srstore "http://sr.test:1/"
 		out=$(PORTAGE_CONFIGROOT=${PWD}/cfgsr PKGDIR=/pgpkgs qmerge -sv dev-libs/uexs 2>&1)
@@ -1509,7 +1516,7 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	gvstore="${ROOT}/gvstore"
 	rm -rf "${gvstore}" cfggv
 	mkdir -p "${gvstore}/sys-devel" cfggv/etc/portage/binrepos.conf
-	printf '[gvrepo]\npriority = 1\nlocation = /gvstore\nsync-uri = http://127.0.0.1:1/\n' \
+	printf '[gvrepo]\npriority = 1\nlocation = /gvstore\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 		> cfggv/etc/portage/binrepos.conf/gv.conf
 	gvtgt="${gvstore}/sys-devel/${gvpv}.gpkg.tar"
 	( cd "${gvex}.bak" && tar --format=ustar -cf "${gvtgt}" ${gvmem} )
@@ -2533,7 +2540,7 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 			| awk -F: '/^fpr/{print $10; exit}')
 		qmerge_keyring_ready "${vshome}"
 
-		for vsr in vsyes vsno vsdef ; do
+		for vsr in vsyes vsno vsdef vsdty vsdtn ; do
 			mkdir -p "${ROOT}/${vsr}/sys-devel" \
 				"cfg-${vsr}/etc/portage/binrepos.conf"
 			cp "${vsgpkg}" "${ROOT}/${vsr}/sys-devel/${vspv}.gpkg.tar"
@@ -2543,8 +2550,14 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 			> cfg-vsyes/etc/portage/binrepos.conf/r.conf
 		printf '[vsno]\npriority = 1\nlocation = /vsno\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 			> cfg-vsno/etc/portage/binrepos.conf/r.conf
-		printf '[vsdef]\npriority = 1\nlocation = /vsdef\nsync-uri = http://127.0.0.1:1/\n' \
+		printf '[DEFAULT]\nverify-signature = false\n[vsdef]\npriority = 1\nlocation = /vsdef\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 			> cfg-vsdef/etc/portage/binrepos.conf/r.conf
+		printf '[vsdty]\npriority = 1\nlocation = /vsdty\nsync-uri = http://127.0.0.1:1/\n' \
+			> cfg-vsdty/etc/portage/binrepos.conf/r.conf
+		printf '[DEFAULT]\nverify-signature = true\n' \
+			> cfg-vsdty/etc/portage/binrepos.conf/z.conf
+		printf '[DEFAULT]\nverify-signature = true\n[vsdtn]\npriority = 1\nlocation = /vsdtn\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
+			> cfg-vsdtn/etc/portage/binrepos.conf/r.conf
 		rm -f "${vsgpkg}"
 		qmaint binhost -f >/dev/null 2>&1
 
@@ -2581,7 +2594,21 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 		out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-vsdef" \
 			qmerge -Fv =${vspv} 2>&1); rc=$?
 		[[ ${rc} -eq 0 && -n $(qlist -Iv 2>/dev/null) ]]
-		tend $? "qmerge-test: verify-signature: unset repo merges unsigned (verify-if-present)" \
+		tend $? "qmerge-test: verify-signature: [DEFAULT] false, repo without the key merges unsigned" \
+			|| die "rc=${rc}; ${out}"
+		yes | qmerge -FU qmerge-test >/dev/null 2>&1
+
+		out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-vsdty" \
+			qmerge -Fv =${vspv} 2>&1); rc=$?
+		[[ ${rc} -ne 0 && ${out} == *"carries no OpenPGP signature"* && \
+		   ${out} == *"refusing to merge"* && -z $(qlist -Iv 2>/dev/null) ]]
+		tend $? "qmerge-test: verify-signature: [DEFAULT] true in a later file, repo without the key refuses unsigned" \
+			|| die "rc=${rc}; ${out}"
+
+		out=$(yes | env PORTAGE_CONFIGROOT="${PWD}/cfg-vsdtn" \
+			qmerge -Fv =${vspv} 2>&1); rc=$?
+		[[ ${rc} -eq 0 && -n $(qlist -Iv 2>/dev/null) ]]
+		tend $? "qmerge-test: verify-signature: [DEFAULT] true, repo false merges unsigned" \
 			|| die "rc=${rc}; ${out}"
 		yes | qmerge -FU qmerge-test >/dev/null 2>&1
 
@@ -2640,7 +2667,7 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 		# emerge --info prints sync-uri with the password replaced by
 		# *password* (portage bug 280478); --repos and the fetch messages do the same
 		mkdir -p cfg-pw/etc/portage/binrepos.conf
-		printf '[pwrepo]\npriority = 1\nlocation = /pwstore\nsync-uri = http://alice:s3cret@127.0.0.1:1/\n' \
+		printf '[pwrepo]\npriority = 1\nlocation = /pwstore\nsync-uri = http://alice:s3cret@127.0.0.1:1/\nverify-signature = false\n' \
 			> cfg-pw/etc/portage/binrepos.conf/r.conf
 		out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-pw" qmerge --repos 2>&1)
 		[[ ${out} == *"http://alice:*password*@127.0.0.1:1"* && \
@@ -2675,6 +2702,7 @@ if [[ -n ${GPKG_ENABLED} && -n ${GPGME_ENABLED} ]] && type -P gpg >/dev/null ; t
 		rm -rf "${ROOT}/pkgs/dev-libs" cfg-vskp cfg-vskn
 		gpgconf --homedir "${vshome}" --kill all >/dev/null 2>&1
 		rm -rf "${vshome}" "${ROOT}/vsyes" "${ROOT}/vsno" "${ROOT}/vsdef" \
+			"${ROOT}/vsdty" "${ROOT}/vsdtn" cfg-vsdty cfg-vsdtn \
 			cfg-vsyes cfg-vsno cfg-vsdef "${vsroot}/qmerge-test"
 		qmaint binhost -f >/dev/null 2>&1
 	else
@@ -3481,9 +3509,9 @@ mkdir -p cfgsp/etc/portage/binrepos.conf
 printf 'ACCEPT_KEYWORDS="**"\n' > cfgsp/etc/portage/make.conf
 printf '[nowhere]\npriority = 1\n' > cfgsp/etc/portage/binrepos.conf/bad1.conf
 printf '[broken\nlocation = /nope\n' > cfgsp/etc/portage/binrepos.conf/bad2.conf
-printf '[weird]\npriority = banana\nlocation = /nope2\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[weird]\npriority = banana\nlocation = /nope2\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> cfgsp/etc/portage/binrepos.conf/bad3.conf
-printf '[goodrepo]\npriority = 2\nlocation = /pkgs\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[goodrepo]\npriority = 2\nlocation = /pkgs\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> cfgsp/etc/portage/binrepos.conf/good.conf
 out=$(timeout 60 env PORTAGE_CONFIGROOT="${PWD}/cfgsp" \
 	qmerge -p "=qmerge-test-1.3" 2>&1); rc=$?
@@ -3957,7 +3985,7 @@ if [[ -n ${GPKG_ENABLED} ]] && type -P gpg >/dev/null ; then
 
 		mvcache=$(qm_idx_cache http://127.0.0.1:1/)
 		mkdir -p "${ROOT}/mvstore" "${mvcache}" cfg-mv/etc/portage/binrepos.conf
-		printf '[mvrepo]\npriority = 1\nlocation = /mvstore\nsync-uri = http://127.0.0.1:1/\n' \
+		printf '[mvrepo]\npriority = 1\nlocation = /mvstore\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 			> cfg-mv/etc/portage/binrepos.conf/r.conf
 		printf 'move dev-libs/mvpkg dev-libs/mvmoved\n' > "${mvcache}/Moves"
 		out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-mv" QMERGE_MOVES=binhost-only \
@@ -4062,7 +4090,7 @@ if [[ ${ftup} -eq 1 ]] ; then
 		"${ftroot}/dev-libs/ftpkg/ftpkg-1.0-2.xpak"
 	qmaint binhost -f >/dev/null 2>&1
 	env PKGDIR="${ftroot}" q --root / qmaint binhost -f >/dev/null 2>&1
-	printf '[ftrepo]\npriority = 1\nlocation = /ftstore\nsync-uri = %s/\n' \
+	printf '[ftrepo]\npriority = 1\nlocation = /ftstore\nsync-uri = %s/\nverify-signature = false\n' \
 		"${fturl}" > cfg-ft/etc/portage/binrepos.conf/r.conf
 
 	out=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-ft" qmerge -f 2>&1); rc=$?
@@ -4097,7 +4125,7 @@ if [[ ${ftup} -eq 1 ]] ; then
 	iccache=$(qm_idx_cache "${icurl}/")
 	rm -rf "${icroot}" "${ROOT}/icstore" "${iccache}" cfg-ic
 	mkdir -p "${icroot}" "${ROOT}/icstore" "${iccache}" cfg-ic/etc/portage/binrepos.conf
-	printf '[icrepo]\npriority = 1\nlocation = /icstore\nsync-uri = %s/\n' \
+	printf '[icrepo]\npriority = 1\nlocation = /icstore\nsync-uri = %s/\nverify-signature = false\n' \
 		"${icurl}" > cfg-ic/etc/portage/binrepos.conf/r.conf
 	printf 'DOWNLOAD_TIMESTAMP: 1700000001\nTIMESTAMP: 1700000000\nVERSION: 0\n\nCPV: fake/ic-1\n' \
 		> "${iccache}/Packages"
@@ -4171,7 +4199,7 @@ mv "${acstore}/dev-libs/gbpkg-1.0.tbz2" "${gbstore}/dev-libs/"
 qmaint binhost -f >/dev/null 2>&1
 env PKGDIR="${gbstore}" q --root / qmaint binhost -f >/dev/null 2>&1
 gb_conf() {
-	printf '[gbrepo]\npriority = 1\nlocation = /gbstore\nsync-uri = http://127.0.0.1:1/\n%s\n' \
+	printf '[gbrepo]\npriority = 1\nlocation = /gbstore\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n%s\n' \
 		"$1" > cfg-gb/etc/portage/binrepos.conf/r.conf
 }
 
@@ -4286,7 +4314,7 @@ yes | qmerge -FU sopr >/dev/null 2>&1
 yes | qmerge -FU sopdep >/dev/null 2>&1
 rm -rf "${sostore}" cfg-so
 mkdir -p "${sostore}/dev-libs" cfg-so/etc/portage/binrepos.conf
-printf '[sorepo]\npriority = 1\nlocation = /sostore\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[sorepo]\npriority = 1\nlocation = /sostore\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> cfg-so/etc/portage/binrepos.conf/r.conf
 so_craft sopdep 1.0 "0/1" "" dev-libs/sopdep-1.0.tbz2
 so_craft sopdep 2.0 "0/2" "" dev-libs/sopdep-2.0.tbz2
@@ -4853,7 +4881,7 @@ mkdir -p check2 cfgpu/etc/portage/binrepos.conf "${ROOT}/puA/sys-devel"
 cp "${ROOT}/packages/sys-devel/qmerge-test-1.3-r50.tbz2" "${ROOT}/puA/sys-devel/"
 qm_fake_fetch puA http://127.0.0.1:1/
 printf 'ACCEPT_KEYWORDS="**"\nUSE="check_flag"\n' > cfgpu/etc/portage/make.conf
-printf '[purepo]\npriority = 1\nlocation = /puA\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[purepo]\npriority = 1\nlocation = /puA\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> cfgpu/etc/portage/binrepos.conf/p.conf
 echo "sys-devel/qmerge-test -check_flag" > cfgpu/etc/portage/package.use
 outpu1=$(PORTAGE_CONFIGROOT=${PWD}/cfgpu qmerge -p "=qmerge-test-1.3-r51@purepo" 2>&1)
@@ -5135,7 +5163,7 @@ tend $? "qmerge-test: [W] --list-set without args fails with guidance" \
 # failed fetch keeps the previous index
 ttlcache=$(qm_idx_cache http://127.0.0.1:1/)
 mkdir -p cfgttl/etc/portage/binrepos.conf "${ROOT}/ttlstore" "${ttlcache}"
-printf '[ttlrepo]\npriority = 1\nlocation = /ttlstore\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[ttlrepo]\npriority = 1\nlocation = /ttlstore\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> cfgttl/etc/portage/binrepos.conf/t.conf
 printf 'DOWNLOAD_TIMESTAMP: %s\nTTL: 3600\n\nCPV: fake/a-1\n' \
 	"$(date +%s)" > "${ttlcache}/Packages"
@@ -5156,7 +5184,7 @@ rm -rf cfgttl "${ROOT}/ttlstore" "${ttlcache}"
 
 olcache=$(qm_idx_cache "${PWD}/ol src")
 mkdir -p cfgol/etc/portage/binrepos.conf "${ROOT}/olstore" "${olcache}" 'ol src'
-printf '[olrepo]\npriority = 1\nlocation = /olstore\nsync-uri = %s/ol src\n' \
+printf '[olrepo]\npriority = 1\nlocation = /olstore\nsync-uri = %s/ol src\nverify-signature = false\n' \
 	"${PWD}" > cfgol/etc/portage/binrepos.conf/o.conf
 printf 'TIMESTAMP: 1000000\nVERSION: 0\n\nCPV: fake/c-1\n' > 'ol src/Packages'
 gzip -c 'ol src/Packages' > 'ol src/Packages.gz'
@@ -5206,7 +5234,7 @@ rm -rf cfgol 'ol src' "${ROOT}/olstore" "${olcache}"
 
 fwcache=$(qm_idx_cache "${PWD}/fw src")
 mkdir -p cfgfw/etc/portage/binrepos.conf "${ROOT}/fwstore" "${fwcache}" 'fw src'
-printf '[fwrepo]\npriority = 1\nlocation = /fwstore\nsync-uri = %s/fw src\n' \
+printf '[fwrepo]\npriority = 1\nlocation = /fwstore\nsync-uri = %s/fw src\nverify-signature = false\n' \
 	"${PWD}" > cfgfw/etc/portage/binrepos.conf/f.conf
 printf 'TIMESTAMP: %s\nVERSION: 0\n\nCPV: fake/b-1\n' "$(date +%s)" \
 	> 'fw src/Packages'
@@ -5449,9 +5477,9 @@ q --root "${ROOT}" qmaint binhost -f >/dev/null 2>&1
 # repo's instance; the merge-list line and the merged VDB must both show the PULLED instance
 mkdir -p cfgdv/etc/portage/binrepos.conf "${ROOT}/dvA" "${ROOT}/dvB"
 printf 'ACCEPT_KEYWORDS="**"\n' > cfgdv/etc/portage/make.conf
-printf '[repoa]\npriority = 1\nlocation = /dvA\nsync-uri = http://127.0.0.1:1/a\n' \
+printf '[repoa]\npriority = 1\nlocation = /dvA\nsync-uri = http://127.0.0.1:1/a\nverify-signature = false\n' \
 	> cfgdv/etc/portage/binrepos.conf/a.conf
-printf '[repob]\npriority = 2\nlocation = /dvB\nsync-uri = http://127.0.0.1:1/b\n' \
+printf '[repob]\npriority = 2\nlocation = /dvB\nsync-uri = http://127.0.0.1:1/b\nverify-signature = false\n' \
 	> cfgdv/etc/portage/binrepos.conf/b.conf
 for b in 1 2; do
 	if [ "$b" = 1 ]; then st=dvA; else st=dvB; fi
@@ -5511,7 +5539,7 @@ rm -rf cfgdv dv1 dv2 "${ROOT}/dvA" "${ROOT}/dvB" \
 mkdir -p cfgpi/etc/portage/binrepos.conf "${ROOT}/piA"
 printf 'ACCEPT_KEYWORDS="**"\nUSE_EXPAND="PPT_TARGETS"\nPPT_TARGETS="pa pb"\n' \
 	> cfgpi/etc/portage/make.conf
-printf '[pirepo]\npriority = 1\nlocation = /piA\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[pirepo]\npriority = 1\nlocation = /piA\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> cfgpi/etc/portage/binrepos.conf/p.conf
 pidir="${PWD}/cfgpi/etc/portage/make.profile"
 mkdir -p "${pidir}"
@@ -7816,7 +7844,7 @@ dc_vdb dc-libs/old-1 0 "" && dc_vdb dc-libs/R-1 0 "dc-libs/new"
 dc_world dc-libs/R
 dcmvcache=$(qm_idx_cache http://127.0.0.1:1/)
 mkdir -p "${ROOT}/mvstore" "${dcmvcache}" "${PWD}/cfg-dcmv/etc/portage/binrepos.conf"
-printf '[mvrepo]\npriority = 1\nlocation = /mvstore\nsync-uri = http://127.0.0.1:1/\n' \
+printf '[mvrepo]\npriority = 1\nlocation = /mvstore\nsync-uri = http://127.0.0.1:1/\nverify-signature = false\n' \
 	> "${PWD}/cfg-dcmv/etc/portage/binrepos.conf/r.conf"
 printf 'move dc-libs/old dc-libs/new\n' > "${dcmvcache}/Moves"
 outdc=$(env PORTAGE_CONFIGROOT="${PWD}/cfg-dcmv" QMERGE_MOVES=binhost-only qmerge -pc 2>&1); rcdc=$?

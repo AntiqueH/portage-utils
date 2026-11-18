@@ -13,9 +13,26 @@
 #include "rmspace.h"
 #include "binrepos.h"
 
-void
-binrepos_parse(FILE *fp, binrepos_parse_cb *cb, void *ctx)
+void binrepos_dflt_init
+(
+  struct binrepos_dflt *dflt
+)
 {
+  dflt->uri[0]     = '\0';
+  dflt->loc[0]     = '\0';
+  dflt->gbex[0]    = '\0';
+  dflt->gbin[0]    = '\0';
+  dflt->keypkg[0]  = '\0';
+  dflt->priority   = 1;
+  dflt->verify_sig = -1;
+  dflt->frozen     = 0;
+}
+
+void
+binrepos_parse(FILE *fp, const struct binrepos_dflt *dflt,
+		binrepos_parse_cb *cb, void *ctx)
+{
+	struct binrepos_dflt fixed;
 	char   *line = NULL;
 	size_t  len  = 0;
 	char    name[128]        = "";
@@ -28,6 +45,12 @@ binrepos_parse(FILE *fp, binrepos_parse_cb *cb, void *ctx)
 	int     verify_sig       = -1;
 	int     frozen           = 0;
 	bool    insection        = false;
+
+	if (dflt == NULL)
+	{
+		binrepos_dflt_init(&fixed);
+		dflt = &fixed;
+	}
 
 	while (getline(&line, &len, fp) != -1) {
 		char *s = rmspace(line);
@@ -45,14 +68,14 @@ binrepos_parse(FILE *fp, binrepos_parse_cb *cb, void *ctx)
 				continue;
 			*e = '\0';
 			snprintf(name, sizeof(name), "%s", s + 1);
-			uri[0]     = '\0';
-			loc[0]     = '\0';
-			gbex[0]    = '\0';
-			gbin[0]    = '\0';
-			keypkg[0]  = '\0';
-			priority   = 1;
-			verify_sig = -1;
-			frozen     = 0;
+			snprintf(uri, sizeof(uri), "%s", dflt->uri);
+			snprintf(loc, sizeof(loc), "%s", dflt->loc);
+			snprintf(gbex, sizeof(gbex), "%s", dflt->gbex);
+			snprintf(gbin, sizeof(gbin), "%s", dflt->gbin);
+			snprintf(keypkg, sizeof(keypkg), "%s", dflt->keypkg);
+			priority   = dflt->priority;
+			verify_sig = dflt->verify_sig;
+			frozen     = dflt->frozen;
 			insection  = true;
 			continue;
 		}

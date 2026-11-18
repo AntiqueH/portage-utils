@@ -1608,6 +1608,38 @@ qm_binrepos_flush(void *ctx, const char *name, const char *uri,
 				 keypkg);
 }
 
+static struct binrepos_dflt qm_binrepos_dflt;
+static bool                 qm_binrepos_dflt_round = false;
+
+static void qm_binrepos_dflt_cb
+(
+  void       *ctx,
+  const char *name,
+  const char *uri,
+  const char *loc,
+  int         priority,
+  int         verify_sig,
+  int         frozen,
+  const char *gbex,
+  const char *gbin,
+  const char *keypkg
+)
+{
+  struct binrepos_dflt *d = &qm_binrepos_dflt;
+
+  (void)ctx;
+  if (strcmp(name, "DEFAULT") != 0)
+    return;
+  snprintf(d->uri, sizeof(d->uri), "%s", uri);
+  snprintf(d->loc, sizeof(d->loc), "%s", loc);
+  snprintf(d->gbex, sizeof(d->gbex), "%s", gbex);
+  snprintf(d->gbin, sizeof(d->gbin), "%s", gbin);
+  snprintf(d->keypkg, sizeof(d->keypkg), "%s", keypkg);
+  d->priority   = priority;
+  d->verify_sig = verify_sig;
+  d->frozen     = frozen;
+}
+
 static void
 binrepos_load_file(const char *file)
 {
@@ -1615,7 +1647,9 @@ binrepos_load_file(const char *file)
 
 	if (fp == NULL)
 		return;
-	binrepos_parse(fp, qm_binrepos_flush, NULL);
+	binrepos_parse(fp, &qm_binrepos_dflt,
+				   qm_binrepos_dflt_round ?
+				   qm_binrepos_dflt_cb : qm_binrepos_flush, NULL);
 	fclose(fp);
 }
 
@@ -1670,6 +1704,16 @@ binrepos_load(void)
 	if (qm_binrepos_loaded)
 		return;
 	qm_binrepos_loaded = true;
+
+	binrepos_dflt_init(&qm_binrepos_dflt);
+	qm_binrepos_dflt_round = true;
+	snprintf(path, sizeof(path), "%s/%s", CONFIG_EPREFIX,
+			 "usr/share/portage/config/binrepos.conf");
+	binrepos_load_path(path);
+	snprintf(path, sizeof(path), "%s/etc/portage/binrepos.conf",
+			 configroot);
+	binrepos_load_path(path);
+	qm_binrepos_dflt_round = false;
 
 	snprintf(path, sizeof(path), "%s/%s", CONFIG_EPREFIX,
 			 "usr/share/portage/config/binrepos.conf");
@@ -24286,6 +24330,7 @@ qm_show_phases(int nargs, char **args)
 #define QM_SEARCH_RE_NODES 65536
 #define QM_SEARCH_RE_EMPTY 2048
 #define QM_SEARCH_RE_DEPTH 256
+#define QM_SEARCH_RE_STACK 4096
 
 struct qm_search_re_frame
 {
@@ -24422,12 +24467,23 @@ static bool qm_search_re_ok
   size_t                     hi;
   size_t                     n;
   size_t                     e;
+  size_t                     stack = 0;
+  size_t                     prod  = 1;
   bool                       open;
 
   f = &st[0];
   VALP_CLEAR(f);
   for (p = pat; *p != '\0'; p++)
   {
+    if (*p != '*' &&
+        *p != '?' &&
+        *p != '+' &&
+        *p != '{')
+    {
+      if (stack > 1)
+        prod = qm_search_re_mul(prod, stack);
+      stack = 0;
+    }
     switch (*p)
     {
       case '(':
@@ -24459,6 +24515,7 @@ static bool qm_search_re_ok
           qm_search_re_item(f, 1, 0);
           break;
         }
+        stack++;
         lo    = *p == '+' ? 2 : 1;
         f->ln = qm_search_re_add(qm_search_re_mul(f->ln, lo), 1);
         f->le = qm_search_re_add(qm_search_re_mul(f->le, lo), 1);
@@ -24476,9 +24533,13 @@ static bool qm_search_re_ok
         if (*q != '}' ||
             f->ln == 0)
         {
+          if (stack > 1)
+            prod = qm_search_re_mul(prod, stack);
+          stack = 0;
           qm_search_re_item(f, 1, 0);
           break;
         }
+        stack++;
         p = q;
         if (open)
         {
@@ -24512,8 +24573,11 @@ static bool qm_search_re_ok
   qm_search_re_item(f, 0, 0);
   n = qm_search_re_add(f->an, f->bn);
   e = qm_search_re_add(f->ae, f->be);
+  if (stack > 1)
+    prod = qm_search_re_mul(prod, stack);
   return n <= QM_SEARCH_RE_NODES &&
-         e <= QM_SEARCH_RE_EMPTY;
+         e <= QM_SEARCH_RE_EMPTY &&
+         prod <= QM_SEARCH_RE_STACK;
 }
 
 static int
