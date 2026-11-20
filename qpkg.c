@@ -1373,7 +1373,9 @@ qpkg_cb(tree_pkg_ctx *pkg, void *priv)
 	qpkg_cb_args *args = priv;
 
 	/* check atoms to compute a build-id */
-	if (contains_set("binpkg-multi-instance", features)) {
+	if (args->binpkg != NULL &&
+		contains_set("binpkg-multi-instance", features))
+	{
 		atom_ctx *atom = tree_pkg_atom(pkg, false);
 		array    *m    = tree_match_atom(args->binpkg, atom, TREE_MATCH_FIRST);
 		if (array_cnt(m) > 0) {
@@ -1408,6 +1410,8 @@ int qpkg_main(int argc, char **argv)
 	int qclean = 0;
 	int fd;
 	char bindir[_Q_PATH_MAX];
+	char *sl;
+	bool bindir_absent = false;
 	qpkg_cb_args cb_args;
 
 	VAL_CLEAR(cb_args);
@@ -1433,30 +1437,49 @@ int qpkg_main(int argc, char **argv)
 	/* setup temp dirs */
 	if (cb_args.bindir[0] != '/')
 		err("'%s' is not a valid package destination", cb_args.bindir);
-	/* brute force just unlink any file or symlink, if this fails, it's
-	 * actually good :) */
 	snprintf(bindir, sizeof(bindir), "%s%s", portroot, cb_args.bindir);
-	unlink(bindir);
-	fd = open(bindir, O_RDONLY);
-	if (fd == -1) {
+	if (stat(bindir, &st) == 0)
+	{
+		if (!S_ISDIR(st.st_mode))
+			err("packages directory '%s' is not a directory", bindir);
+	}
+	else if (lstat(bindir, &st) == 0)
+	{
+		err("packages directory '%s' is not a directory", bindir);
+	}
+	else if (pretend)
+	{
+		bindir_absent = true;
+	}
+	else
+	{
+		sl = strrchr(bindir, '/');
+		if (sl != NULL &&
+			sl != bindir)
+		{
+			*sl = '\0';
+			mkdir_p(bindir, 0755);
+			*sl = '/';
+		}
 		if (mkdir(bindir, 0750) == -1)
 			errp("could not create packages directory '%s'", bindir);
 		fd = open(bindir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
 		if (fd == -1)
 			errp("could not open packages directory '%s'", bindir);
-		if (!restrict_chmod && fchmod(fd, 0750) != 0)
+		if (!restrict_chmod &&
+			fchmod(fd, 0750) != 0)
 			errp("could not chmod(0750) packages directory '%s'", bindir);
 		close(fd);
-	} else {
-		if (fstat(fd, &st) == -1 || !S_ISDIR(st.st_mode))
-			errp("could not create packages directory '%s'", bindir);
-		close(fd);
 	}
-	if (access(bindir, W_OK) != 0)
-		err("No write access to '%s'", bindir);
-	cb_args.binpkg = tree_new(portroot, cb_args.bindir, TREETYPE_BINPKG, false);
-	if (cb_args.binpkg == NULL)
-		return EXIT_FAILURE;
+	if (!bindir_absent)
+	{
+		if (access(bindir, W_OK) != 0)
+			err("No write access to '%s'", bindir);
+		cb_args.binpkg = tree_new(portroot, cb_args.bindir,
+				TREETYPE_BINPKG, false);
+		if (cb_args.binpkg == NULL)
+			return EXIT_FAILURE;
+	}
 
 	cb_args.vdb = tree_new(portroot, portvdb, TREETYPE_VDB, false);
 	if (!cb_args.vdb)
@@ -1466,7 +1489,7 @@ int qpkg_main(int argc, char **argv)
 	}
 
 	if (qclean) {
-		int ret = qpkg_clean(&cb_args);
+		int ret = bindir_absent ? 0 : qpkg_clean(&cb_args);
 		tree_close(cb_args.vdb);
 		tree_close(cb_args.binpkg);
 		return ret;

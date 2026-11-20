@@ -1860,6 +1860,49 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	tend $? "qmerge-test: [qpkg] created PKGDIR gets 0750" \
 		|| die "rc=${rc} mode=$(stat -c %a "${ROOT}/freshpd" 2>/dev/null) ${out}"
 
+	rm -rf "${ROOT}/realpd" "${ROOT}/linkpd"
+	mkdir -p "${ROOT}/realpd"; ln -s realpd "${ROOT}/linkpd"
+	out=$(PKGDIR=/linkpd qpkg -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -L ${ROOT}/linkpd && \
+	   -n $(find "${ROOT}/realpd" -type f -name "${gvpv}*") ]]
+	tend $? "qmerge-test: [qpkg] PKGDIR that is a link to a directory stays a link" \
+		|| die "rc=${rc} $(ls -ld "${ROOT}/linkpd") real=$(find "${ROOT}/realpd") ${out}"
+	out=$(PKGDIR=/linkpd qpkg -p -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && -L ${ROOT}/linkpd ]]
+	tend $? "qmerge-test: [qpkg] -p leaves a PKGDIR link in place" \
+		|| die "rc=${rc} $(ls -ld "${ROOT}/linkpd") ${out}"
+
+	rm -rf "${ROOT}/filepd"; echo keep > "${ROOT}/filepd"
+	out=$(PKGDIR=/filepd qpkg -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -ne 0 && ${out} == *"is not a directory"* && \
+	   -f ${ROOT}/filepd && $(< "${ROOT}/filepd") == keep ]]
+	tend $? "qmerge-test: [qpkg] PKGDIR that is a regular file is refused and kept" \
+		|| die "rc=${rc} $(ls -ld "${ROOT}/filepd") ${out}"
+
+	rm -rf "${ROOT}/danglepd"; ln -s nowherepd "${ROOT}/danglepd"
+	out=$(PKGDIR=/danglepd qpkg -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -ne 0 && ${out} == *"is not a directory"* && \
+	   -L ${ROOT}/danglepd && ! -e ${ROOT}/nowherepd ]]
+	tend $? "qmerge-test: [qpkg] PKGDIR that is a blurry/cloudy (drunken?) link is refused and kept" \
+		|| die "rc=${rc} $(ls -ld "${ROOT}/danglepd") ${out}"
+
+	rm -rf "${ROOT}/deeppd"
+	out=$(PKGDIR=/deeppd/a/b qpkg -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && $(stat -c %a "${ROOT}/deeppd/a/b") == "750" && \
+	   -n $(find "${ROOT}/deeppd/a/b" -type f -name "${gvpv}*") ]]
+	tend $? "qmerge-test: [qpkg] missing parent directories of PKGDIR are created" \
+		|| die "rc=${rc} $(find "${ROOT}/deeppd") ${out}"
+
+	rm -rf "${ROOT}/pretpd"
+	out=$(PKGDIR=/pretpd qpkg -p -x ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ! -e ${ROOT}/pretpd ]]
+	tend $? "qmerge-test: [qpkg] -p does not create a missing PKGDIR" \
+		|| die "rc=${rc} $(ls -ld "${ROOT}/pretpd" 2>&1) ${out}"
+	out=$(PKGDIR=/pretpd qpkg -p -c 2>&1); rc=$?
+	[[ ${rc} -eq 0 && ! -e ${ROOT}/pretpd ]]
+	tend $? "qmerge-test: [qpkg] -p -c with a missing PKGDIR has nothing to clean" \
+		|| die "rc=${rc} $(ls -ld "${ROOT}/pretpd" 2>&1) ${out}"
+
 	rm -rf "${ROOT}/altpd" "${ROOT}/mainpd" "${ROOT}/newpd"
 	mkdir -p "${ROOT}/altpd" "${ROOT}/mainpd"
 	out=$(PKGDIR=/mainpd qpkg -P /altpd -x ${gvpv} 2>&1); rc=$?
