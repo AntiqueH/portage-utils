@@ -49,6 +49,10 @@ static struct option const qpkg_long_opts[] = {
 	{"xpak",     no_argument, NULL, 'x'},
 	{"pretend",  no_argument, NULL, 'p'},
 	{"pkgdir",    a_argument, NULL, 'P'},
+	{"include-config", a_argument, NULL, 127},
+	{"include-unmodified-config", a_argument, NULL, 128},
+	{"umask",     a_argument, NULL, 129},
+	{"ignore-default-opts", no_argument, NULL, 130},
 	COMMON_LONG_OPTS
 };
 static const char * const qpkg_opts_help[] = {
@@ -58,6 +62,10 @@ static const char * const qpkg_opts_help[] = {
 	"force building of tbz2/xpak instead of BINPKG_FORMAT",
 	"pretend only",
 	"alternate package directory",
+	"include all files protected by CONFIG_PROTECT (y or n, default n)",
+	"include protected files not modified since installation (y or n, default n)",
+	"umask used during package creation (default is 0077)",
+	"do not use the QUICKPKG_DEFAULT_OPTS variable",
 	COMMON_OPTS_HELP
 };
 #define qpkg_usage(ret) usage(ret, QPKG_FLAGS, qpkg_long_opts, qpkg_opts_help, NULL, lookup_applet_idx("qpkg"))
@@ -544,6 +552,254 @@ static int qpkg_read_disk_flags
   return flags;
 }
 
+#define QPKG_CFG_PLACEHOLDER \
+  "# empty file because --include-config=n when `quickpkg` was used\n"
+
+static bool    qpkg_include_config = false;
+static bool    qpkg_include_unmod  = false;
+static mode_t  qpkg_umask          = 0077;
+static array  *qpkg_excluded       = NULL;
+static size_t  qpkg_excluded_total = 0;
+
+static bool qpkg_yn_parse
+(
+  const char *val,
+  bool       *out
+)
+{
+  if (strcmp(val, "y") == 0)
+  {
+    *out = true;
+    return true;
+  }
+  if (strcmp(val, "n") == 0)
+  {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+static bool qpkg_umask_parse
+(
+  const char *val,
+  mode_t     *out
+)
+{
+  mode_t      m = 0;
+  const char *p;
+
+  if (val[0] == '\0')
+    return false;
+  for (p = val; *p != '\0'; p++)
+  {
+    if (*p < '0' ||
+        *p > '7')
+      return false;
+    m = (m << 3) | (mode_t)(*p - '0');
+    if (m > 0777)
+      return false;
+  }
+  *out = m;
+  return true;
+}
+
+static void qpkg_default_opts_apply
+(
+  void
+)
+{
+  int          dargc;
+  char       **dargv;
+  int          i;
+  const char  *val;
+  bool         b;
+  mode_t       m;
+
+  if (quickpkg_default_opts == NULL ||
+      quickpkg_default_opts[0] == '\0')
+    return;
+
+  makeargv(quickpkg_default_opts, &dargc, &dargv);
+  for (i = 1; i < dargc; i++)
+  {
+    val = NULL;
+    if (strncmp(dargv[i], "--include-config", 16) == 0 &&
+        (dargv[i][16] == '=' ||
+         dargv[i][16] == '\0'))
+    {
+      if (dargv[i][16] == '=')
+        val = dargv[i] + 17;
+      else if (i + 1 < dargc)
+        val = dargv[++i];
+      if (val == NULL ||
+          !qpkg_yn_parse(val, &b))
+        warn("QUICKPKG_DEFAULT_OPTS: invalid --include-config value");
+      else
+        qpkg_include_config = b;
+    }
+    else if (strncmp(dargv[i], "--include-unmodified-config", 27) == 0 &&
+             (dargv[i][27] == '=' ||
+              dargv[i][27] == '\0'))
+    {
+      if (dargv[i][27] == '=')
+        val = dargv[i] + 28;
+      else if (i + 1 < dargc)
+        val = dargv[++i];
+      if (val == NULL ||
+          !qpkg_yn_parse(val, &b))
+        warn("QUICKPKG_DEFAULT_OPTS: invalid "
+             "--include-unmodified-config value");
+      else
+        qpkg_include_unmod = b;
+    }
+    else if (strncmp(dargv[i], "--umask", 7) == 0 &&
+             (dargv[i][7] == '=' ||
+              dargv[i][7] == '\0'))
+    {
+      if (dargv[i][7] == '=')
+        val = dargv[i] + 8;
+      else if (i + 1 < dargc)
+        val = dargv[++i];
+      if (val == NULL ||
+          !qpkg_umask_parse(val, &m))
+        warn("QUICKPKG_DEFAULT_OPTS: invalid umask");
+      else
+        qpkg_umask = m;
+    }
+  }
+  freeargv(dargc, dargv);
+}
+
+static size_t qpkg_path_under
+(
+  const char *path,
+  const char *ent
+)
+{
+  size_t len = strlen(ent);
+
+  while (len > 1 &&
+         ent[len - 1] == '/')
+    len--;
+  if (len == 0 ||
+      strncmp(path, ent, len) != 0)
+    return 0;
+  if (path[len] != '\0' &&
+      path[len] != '/' &&
+      ent[len - 1] != '/')
+    return 0;
+  return len;
+}
+
+static bool qpkg_config_protected
+(
+  const char  *path,
+  int          cp_argc,
+  char       **cp_argv,
+  int          cpm_argc,
+  char       **cpm_argv
+)
+{
+  size_t eplen = sizeof(CONFIG_EPREFIX) - 2;
+  size_t prot  = 0;
+  size_t len;
+  int    i;
+
+  if (eplen > 0 &&
+      strncmp(path, CONFIG_EPREFIX, eplen + 1) == 0)
+    path += eplen;
+
+  for (i = 1; i < cp_argc; i++)
+  {
+    len = qpkg_path_under(path, cp_argv[i]);
+    if (len > prot)
+      prot = len;
+  }
+  if (prot == 0)
+    return false;
+
+  for (i = 1; i < cpm_argc; i++)
+  {
+    len = qpkg_path_under(path, cpm_argv[i]);
+    if (len >= prot)
+      return false;
+  }
+  return true;
+}
+
+static void qpkg_excluded_flush
+(
+  bool show
+)
+{
+  size_t  n;
+  char   *name;
+
+  if (qpkg_excluded == NULL)
+    return;
+  if (show)
+  {
+    fflush(stdout);
+    array_for_each(qpkg_excluded, n, name)
+      warn("Excluded config: '%s'", name);
+    qpkg_excluded_total += array_cnt(qpkg_excluded);
+  }
+  array_deepfree(qpkg_excluded, free);
+  qpkg_excluded = NULL;
+}
+
+static void qpkg_perms
+(
+  const char *path,
+  const char *dst,
+  bool        isdir
+)
+{
+  char        pdir[_Q_PATH_MAX];
+  struct stat pst;
+  struct stat st;
+  mode_t      bits = isdir ? 02070 : 0060;
+  mode_t      want;
+
+  if (stat(path, &st) != 0)
+    return;
+  want = st.st_mode & 07777;
+  if (!isdir)
+    want = 0666 & ~qpkg_umask;
+  snprintf(pdir, sizeof(pdir), "%s%s", portroot, dst);
+  if (stat(pdir, &pst) == 0)
+  {
+    if (st.st_gid == pst.st_gid ||
+        chown(path, (uid_t)-1, pst.st_gid) == 0)
+      want |= pst.st_mode & bits;
+  }
+  if (want != (st.st_mode & 07777))
+    (void)chmod(path, want);
+}
+
+static void qpkg_dir_perms
+(
+  char       *dir,
+  const char *dst,
+  bool        with_parent
+)
+{
+  char *sl;
+
+  if (with_parent)
+  {
+    sl = strrchr(dir, '/');
+    if (sl != NULL)
+    {
+      *sl = '\0';
+      qpkg_perms(dir, dst, true);
+      *sl = '/';
+    }
+  }
+  qpkg_perms(dir, dst, true);
+}
+
 /* libarchive imlpementation over the old format
  * needs a little more docs love here */
 static bool
@@ -564,7 +820,16 @@ qpkg_write_image(struct archive *a, tree_pkg_ctx *pkg, char *line,
 	size_t plen = strlen(prefix);
 	int portroot_fd = tree_pkg_get_portroot_fd(pkg);
 	bool gerr = false;
+	int cp_argc;
+	int cpm_argc;
+	char **cp_argv;
+	char **cpm_argv;
+	const char *abspath;
+	char *cfghash;
+	bool prot;
 
+	makeargv(config_protect, &cp_argc, &cp_argv);
+	makeargv(config_protect_mask, &cpm_argc, &cpm_argv);
 	ard = archive_read_disk_new();
 	archive_read_disk_set_behavior(ard, qpkg_read_disk_flags());
 	lres = archive_entry_linkresolver_new();
@@ -576,6 +841,7 @@ qpkg_write_image(struct archive *a, tree_pkg_ctx *pkg, char *line,
 			continue;
 		if (check_pkg_install_mask(e->name) != 0)
 			continue;
+		abspath = e->name;
 		if (e->name[0] == '/')
 			e->name++;
 		switch (e->type) {
@@ -594,6 +860,49 @@ qpkg_write_image(struct archive *a, tree_pkg_ctx *pkg, char *line,
 				if (fstat(fd, &st) < 0) {
 					close(fd);
 					continue;
+				}
+
+				prot = false;
+				if (!qpkg_include_config &&
+					S_ISREG(st.st_mode) &&
+					qpkg_config_protected(abspath, cp_argc, cp_argv,
+						cpm_argc, cpm_argv))
+				{
+					prot = true;
+					if (qpkg_include_unmod)
+					{
+						cfghash = hash_file_at(portroot_fd, e->name, HASH_MD5);
+						if (cfghash != NULL &&
+							e->digest != NULL &&
+							strcasecmp(e->digest, cfghash) == 0)
+							prot = false;
+					}
+				}
+				if (prot)
+				{
+					if (qpkg_excluded == NULL)
+						qpkg_excluded = array_new();
+					array_append_strcpy(qpkg_excluded, abspath);
+
+					entry = archive_entry_new();
+					snprintf(ename, sizeof(ename), "%s%s", prefix, e->name);
+					archive_entry_copy_stat(entry, &st);
+					(void)archive_read_disk_entry_from_file(ard, entry,
+						fd, &st);
+					archive_entry_set_pathname(entry, ename);
+					archive_entry_xattr_clear(entry);
+					archive_entry_sparse_clear(entry);
+					archive_entry_set_nlink(entry, 1);
+					archive_entry_set_size(entry,
+						(la_int64_t)(sizeof(QPKG_CFG_PLACEHOLDER) - 1));
+					if (archive_write_header(a, entry) != ARCHIVE_OK ||
+						archive_write_data(a, QPKG_CFG_PLACEHOLDER,
+							sizeof(QPKG_CFG_PLACEHOLDER) - 1) !=
+						(la_ssize_t)(sizeof(QPKG_CFG_PLACEHOLDER) - 1))
+						gerr = true;
+					archive_entry_free(entry);
+					close(fd);
+					break;
 				}
 
 				entry = archive_entry_new();
@@ -707,6 +1016,8 @@ qpkg_write_image(struct archive *a, tree_pkg_ctx *pkg, char *line,
 	} while (true);
 	archive_entry_linkresolver_free(lres);
 	archive_read_free(ard);
+	freeargv(cp_argc, cp_argv);
+	freeargv(cpm_argc, cpm_argv);
 
 	return gerr;
 }
@@ -1075,6 +1386,7 @@ qgpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 		i = snprintf(buf, sizeof(buf), "%s%s/%s",
 					 portroot, dst, atom->CATEGORY);
 	mkdir_p(buf, 0755);
+	qpkg_dir_perms(buf, dst, atom->BUILDID > 0);
 
 	if (atom->BUILDID > 0)
 		snprintf(buf + i, sizeof(buf) - i, "/%s-%u.gpkg.tar",
@@ -1100,8 +1412,11 @@ qgpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 		return 1;
 	}
 
+	qpkg_perms(buf, dst, false);
+
 	printf("%s%s%s KiB\n",
 			RED, make_human_readable_str(st.st_size, 1, KILOBYTE), NORM);
+	qpkg_excluded_flush(true);
 
 	return 0;
 #else
@@ -1321,6 +1636,7 @@ qpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 		i = snprintf(buf, sizeof(buf), "%s%s/%s",
 					 portroot, dst, atom->CATEGORY);
 	mkdir_p(buf, 0755);
+	qpkg_dir_perms(buf, dst, atom->BUILDID > 0);
 
 	if (atom->BUILDID > 0)
 		snprintf(buf + i, sizeof(buf) - i, "/%s-%u.xpak",
@@ -1339,10 +1655,34 @@ qpkg_make(tree_pkg_ctx *pkg, qpkg_cb_args *args)
 		return 1;
 	}
 
+	qpkg_perms(buf, dst, false);
+
 	printf("%s%s%s KiB\n",
 			RED, make_human_readable_str(st.st_size, 1, KILOBYTE), NORM);
+	qpkg_excluded_flush(true);
 
 	return 0;
+}
+
+static int qpkg_build
+(
+  tree_pkg_ctx *pkg,
+  qpkg_cb_args *args,
+  bool          gpkg
+)
+{
+  mode_t old;
+  int    ret;
+
+  qpkg_excluded_flush(false);
+  old = umask(qpkg_umask);
+  if (gpkg)
+    ret = qgpkg_make(pkg, args);
+  else
+    ret = qpkg_make(pkg, args);
+  umask(old);
+  qpkg_excluded_flush(false);
+  return ret;
 }
 
 int
@@ -1357,10 +1697,11 @@ qpkg_backup(tree_pkg_ctx *pkg)
 		close(cwd);
 		return 1;
 	}
-	if (strcmp(binpkg_format, "gpkg") == 0)
-		ret = qgpkg_make(pkg, NULL);
-	else
-		ret = qpkg_make(pkg, NULL);
+	qpkg_include_config = false;
+	qpkg_include_unmod  = false;
+	qpkg_umask          = 0077;
+	qpkg_default_opts_apply();
+	ret = qpkg_build(pkg, NULL, strcmp(binpkg_format, "gpkg") == 0);
 	if (fchdir(cwd) != 0)
 		ret = 1;
 	close(cwd);
@@ -1389,13 +1730,8 @@ qpkg_cb(tree_pkg_ctx *pkg, void *priv)
 		atom->BUILDID++;
 	}
 
-	if (args->build_gpkg) {
-		if (qgpkg_make(pkg, args) == 0)
-			args->pkgs_made++;
-	} else {
-		if (qpkg_make(pkg, args) == 0)
-			args->pkgs_made++;
-	}
+	if (qpkg_build(pkg, args, args->build_gpkg) == 0)
+		args->pkgs_made++;
 
 	return 0;
 }
@@ -1412,6 +1748,12 @@ int qpkg_main(int argc, char **argv)
 	char bindir[_Q_PATH_MAX];
 	char *sl;
 	bool bindir_absent = false;
+	bool ignore_default_opts = false;
+	bool optb;
+	int cl_config = -1;
+	int cl_unmod = -1;
+	mode_t cl_umask = 0;
+	bool cl_umask_set = false;
 	qpkg_cb_args cb_args;
 
 	VAL_CLEAR(cb_args);
@@ -1430,9 +1772,34 @@ int qpkg_main(int argc, char **argv)
 			restrict_chmod = 1;
 			cb_args.bindir = optarg;
 			break;
+		case 127:
+			if (!qpkg_yn_parse(optarg, &optb))
+				err("--include-config takes y or n");
+			cl_config = optb ? 1 : 0;
+			break;
+		case 128:
+			if (!qpkg_yn_parse(optarg, &optb))
+				err("--include-unmodified-config takes y or n");
+			cl_unmod = optb ? 1 : 0;
+			break;
+		case 129:
+			if (!qpkg_umask_parse(optarg, &cl_umask))
+				err("invalid umask: %s", optarg);
+			cl_umask_set = true;
+			break;
+		case 130: ignore_default_opts = true;       break;
 		COMMON_GETOPTS_CASES(qpkg)
 		}
 	}
+
+	if (!ignore_default_opts)
+		qpkg_default_opts_apply();
+	if (cl_config != -1)
+		qpkg_include_config = cl_config == 1;
+	if (cl_unmod != -1)
+		qpkg_include_unmod = cl_unmod == 1;
+	if (cl_umask_set)
+		qpkg_umask = cl_umask;
 
 	/* setup temp dirs */
 	if (cb_args.bindir[0] != '/')
@@ -1561,6 +1928,11 @@ int qpkg_main(int argc, char **argv)
 	if (cb_args.pkgs_made > 0)
 		qprintf(" %s*%s Packages can be found in %s\n",
 				GREEN, NORM, cb_args.bindir);
+	if (qpkg_excluded_total > 0)
+	{
+		warn("Excluded config files: %zu", qpkg_excluded_total);
+		warn("See --help if you would like to include config files.");
+	}
 
 	return (cb_args.pkgs_made > 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }

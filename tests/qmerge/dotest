@@ -52,6 +52,7 @@ unset CONFIG_PROTECT CONFIG_PROTECT_MASK EPREFIX
 
 export QMERGE=1
 export FEATURES='config-protect-if-modified'
+export QUICKPKG_DEFAULT_OPTS='--include-config=y'
 
 mktmpdir
 
@@ -1924,6 +1925,127 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	rm -rf "${ROOT}/altpd" "${ROOT}/mainpd" "${ROOT}/newpd"
 	rm -rf "${ROOT}/rox" "${ROOT}/keepmode" "${ROOT}/freshpd"
 
+	qc_ph='# empty file because --include-config=n when `quickpkg` was used'
+	qc_conf() {
+		local f d="${ROOT}/qcx"
+		f=$(find "${ROOT}/qcpd" -type f -name "${gvpv}*" | head -1)
+		rm -rf "${d}"; mkdir -p "${d}"
+		if [[ ${f} == *.gpkg.tar ]] ; then
+			tar -xf "${f}" -C "${d}" && \
+				tar -xzf "$(find "${d}" -name 'image.tar.gz')" -C "${d}"
+			cat "${d}/image/etc/${1}"
+		else
+			tar -xjf "${f}" -C "${d}" 2>/dev/null
+			cat "${d}/etc/${1}"
+		fi
+	}
+	qc_build() {
+		rm -rf "${ROOT}/qcpd"
+		out=$(BINPKG_COMPRESS=gzip qpkg -P /qcpd "$@" ${gvpv} 2>&1); rc=$?
+	}
+	qc_live=$(< "${ROOT}/etc/some.conf")
+
+	QUICKPKG_DEFAULT_OPTS= qc_build -x
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_ph}" && \
+	   ${out} == *"Excluded config: '/etc/some.conf'"* && \
+	   ${out} == *"Excluded config files: "* && \
+	   -s ${ROOT}/qcx/usr/bin/qmerge-test ]] && \
+		cmp -s "${ROOT}/qcx/usr/bin/qmerge-test" "${ROOT}/usr/bin/qmerge-test"
+	tend $? "qmerge-test: [qpkg] xpak leaves CONFIG_PROTECT files out by default" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS= qc_build -g
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_ph}" && \
+	   ${out} == *"Excluded config: '/etc/some.conf'"* ]]
+	tend $? "qmerge-test: [qpkg] gpkg leaves CONFIG_PROTECT files out by default" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS= qc_build -g --include-config=y
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_live}" && \
+	   ${out} != *"Excluded config"* ]]
+	tend $? "qmerge-test: [qpkg] --include-config=y packs the config files" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS= qc_build -x --include-unmodified-config=y
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_live}" && \
+	   ${out} != *"Excluded config: '/etc/some.conf'"* ]]
+	tend $? "qmerge-test: [qpkg] --include-unmodified-config=y packs an unmodified config file" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	cp -p "${ROOT}/etc/some.conf" "${ROOT}/qc-some.conf.keep"
+	echo secret-of-this-machine >> "${ROOT}/etc/some.conf"
+	QUICKPKG_DEFAULT_OPTS= qc_build -x --include-unmodified-config=y
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_ph}" && \
+	   ${out} == *"Excluded config: '/etc/some.conf'"* ]]
+	tend $? "qmerge-test: [qpkg] --include-unmodified-config=y leaves a modified config file out" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+	cp -p "${ROOT}/qc-some.conf.keep" "${ROOT}/etc/some.conf"
+	rm -f "${ROOT}/qc-some.conf.keep"
+
+	QUICKPKG_DEFAULT_OPTS= CONFIG_PROTECT_MASK=/etc/some.conf qc_build -x
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_live}" && \
+	   ${out} != *"Excluded config: '/etc/some.conf'"* ]]
+	tend $? "qmerge-test: [qpkg] a CONFIG_PROTECT_MASK file is packed" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS= CONFIG_PROTECT_MASK=/etc/some qc_build -x
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_ph}" ]]
+	tend $? "qmerge-test: [qpkg] CONFIG_PROTECT_MASK /etc/some does not cover /etc/some.conf" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS='--include-config=y' qc_build -x
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_live}" ]]
+	tend $? "qmerge-test: [qpkg] QUICKPKG_DEFAULT_OPTS is applied" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS='--include-config=y' qc_build -x --ignore-default-opts
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_ph}" ]]
+	tend $? "qmerge-test: [qpkg] --ignore-default-opts skips QUICKPKG_DEFAULT_OPTS" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	QUICKPKG_DEFAULT_OPTS='--include-config=y' qc_build -x --include-config=n
+	[[ ${rc} -eq 0 && $(qc_conf some.conf) == "${qc_ph}" ]]
+	tend $? "qmerge-test: [qpkg] the command line has prio over QUICKPKG_DEFAULT_OPTS" \
+		|| die "rc=${rc} conf=$(qc_conf some.conf) ${out}"
+
+	out=$(qpkg --include-config=maybe ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -ne 0 && ${out} == *"takes y or n"* ]]
+	tend $? "qmerge-test: [qpkg] --include-config with a bad value is refused" \
+		|| die "rc=${rc} ${out}"
+	out=$(qpkg --umask=9 ${gvpv} 2>&1); rc=$?
+	[[ ${rc} -ne 0 && ${out} == *"invalid umask"* ]]
+	tend $? "qmerge-test: [qpkg] --umask with a bad value is refused" \
+		|| die "rc=${rc} ${out}"
+
+	qc_mode() {
+		rm -rf "${ROOT}/qcpd"; mkdir -p "${ROOT}/qcpd"; chmod "${1}" "${ROOT}/qcpd"
+		shift
+		out=$( umask 022; qpkg -P /qcpd "$@" ${gvpv} 2>&1 ); rc=$?
+		qc_m=$(stat -c %a "$(find "${ROOT}/qcpd" -type f -name "${gvpv}*" | head -1)")
+	}
+	qc_mode 0700 -x
+	[[ ${rc} -eq 0 && ${qc_m} == 600 ]]
+	tend $? "qmerge-test: [qpkg] xpak is created 0600 under umask 022" \
+		|| die "rc=${rc} mode=${qc_m} ${out}"
+	qc_mode 0700 -g
+	[[ ${rc} -eq 0 && ${qc_m} == 600 ]]
+	tend $? "qmerge-test: [qpkg] gpkg is created 0600 under umask 022" \
+		|| die "rc=${rc} mode=${qc_m} ${out}"
+	qc_mode 0770 -g
+	[[ ${rc} -eq 0 && ${qc_m} == 660 ]]
+	tend $? "qmerge-test: [qpkg] package file takes the group bits of PKGDIR" \
+		|| die "rc=${rc} mode=${qc_m} ${out}"
+	qc_mode 0700 -g --umask=022
+	[[ ${rc} -eq 0 && ${qc_m} == 644 ]]
+	tend $? "qmerge-test: [qpkg] --umask=022 gives a 0644 package file" \
+		|| die "rc=${rc} mode=${qc_m} ${out}"
+	QUICKPKG_DEFAULT_OPTS='--umask 022' qc_mode 0700 -x
+	[[ ${rc} -eq 0 && ${qc_m} == 644 ]]
+	tend $? "qmerge-test: [qpkg] --umask from QUICKPKG_DEFAULT_OPTS is applied" \
+		|| die "rc=${rc} mode=${qc_m} ${out}"
+	rm -rf "${ROOT}/qcpd" "${ROOT}/qcx"
+	unset -f qc_conf qc_build qc_mode
+
 	# clean up tests' artifacts and leave no gpkg behind for later blocks
 	yes | qmerge -FU qmerge-test >/dev/null 2>&1
 	rm -rf "${gvex}" "${gvex}.bak" "${gvroot}/qmerge-test" "${gvstore}" cfggv
@@ -3155,6 +3277,13 @@ if [[ -n ${GPKG_ENABLED} ]] ; then
 	[[ $? -eq 0 || -n $(qlist -Iv 2>/dev/null) ]] && \
 		[[ $(qlist -Iv 2>/dev/null) == *qmerge-test-1.3* ]]
 	tend $? "qmerge-test: [unmerge-backup] rollback merges from the backup" || die "${out}"
+
+	out=$(yes | env QUICKPKG_DEFAULT_OPTS= FEATURES="${ubfeat} unmerge-backup" \
+		qmerge -FU qmerge-test 2>&1)
+	[[ ${out} == *"Saving"* && \
+	   ${out} == *"Excluded config: '/etc/some.conf'"* ]]
+	tend $? "qmerge-test: [unmerge-backup] snapshot leaves CONFIG_PROTECT files out by default" \
+		|| die "${out}"
 	yes | qmerge -FU qmerge-test >/dev/null 2>&1
 	rm -rf "${ubroot}/qmerge-test"
 	rm -f "${ubroot}"/qmerge-test-*.gpkg.tar
